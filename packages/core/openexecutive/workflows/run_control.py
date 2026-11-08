@@ -13,6 +13,9 @@ the database (``persistence.stop_run``) and calls ``stop(run_id)``:
 * otherwise (the driver is handling an event between steps), ``watch``
   raises ``RunStopped`` the next time it is asked for an event.
 
+A sign-off that was already on its way when Stop landed is not sent:
+``gate.checkpoint_gate`` raises ``RunStopped`` for a run marked ``stopped``.
+
 A driver catches ``RunStopped`` and writes nothing: the row is already
 ``stopped``, and ``complete_run`` / ``fail_run`` / a checkpoint never write
 over that. What the run already did stays done.
@@ -46,13 +49,19 @@ class _Run:
 _runs: dict[str, _Run] = {}
 
 
-async def watch(run_id: str, events: AsyncIterator[T]) -> AsyncIterator[T]:
-    """``events``, until the run is stopped: then ``RunStopped``."""
+async def watch(
+    run_id: str, events: AsyncIterator[T], *, quiet: bool = False
+) -> AsyncIterator[T]:
+    """``events``, until the run is stopped: then ``RunStopped``, or with
+    ``quiet`` the events just end (for a driver whose own ending already
+    copes with a run that produced nothing)."""
     run = _Run(task=None)
     _runs[run_id] = run
     try:
         while True:
             if run.stopping:
+                if quiet:
+                    return
                 raise RunStopped
             # The task asking for this event is the one a Stop cancels.
             run.task = asyncio.current_task()
@@ -65,10 +74,18 @@ async def watch(run_id: str, events: AsyncIterator[T]) -> AsyncIterator[T]:
                 if run.stopping and run.task is not None:
                     # Our own cancel: undo it for the driver, end the run.
                     run.task.uncancel()
+                    if quiet:
+                        return
                     raise RunStopped from None
                 raise
             finally:
                 run.inside = False
+            # Stopped while this event was being made: don't hand it on (a
+            # sign-off question would go out for a run that is over).
+            if run.stopping:
+                if quiet:
+                    return
+                raise RunStopped
             yield item
     finally:
         if _runs.get(run_id) is run:

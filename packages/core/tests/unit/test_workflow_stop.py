@@ -92,6 +92,51 @@ async def test_stop_between_events_ends_at_the_next_one() -> None:
     assert seen == [0, 1]
 
 
+@pytest.mark.asyncio
+async def test_an_event_made_as_stop_lands_is_not_handed_on() -> None:
+    async def events() -> AsyncIterator[str]:
+        run_control.stop("r3")  # Stop lands while this event is being made
+        yield "sign-off question"
+
+    seen: list[str] = []
+    with pytest.raises(run_control.RunStopped):
+        async for item in run_control.watch("r3", events()):
+            seen.append(item)
+    assert seen == []
+
+
+@pytest.mark.asyncio
+async def test_a_quiet_driver_just_ends() -> None:
+    async def events() -> AsyncIterator[int]:
+        for i in range(5):
+            yield i
+
+    seen: list[int] = []
+    async for item in run_control.watch("r4", events(), quiet=True):
+        seen.append(item)
+        if item == 1:
+            run_control.stop("r4")
+    assert seen == [0, 1]
+
+
+@pytest.mark.asyncio
+async def test_no_sign_off_goes_out_for_a_stopped_run(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.workflows import gate, gate_delivery
+
+    sent: list[str] = []
+
+    async def deliver(event: Any, **kw: Any) -> Any:
+        sent.append(kw["run_id"])
+        raise AssertionError("must not deliver")
+
+    monkeypatch.setattr(gate_delivery, "deliver_gate_question", deliver)
+    wf_persistence.create_run("g1", "weekly_wf", "Weekly", {})
+    wf_persistence.stop_run("g1")
+    with pytest.raises(run_control.RunStopped):
+        await gate.checkpoint_gate(run_id="g1", event=object(), db_path=db)  # type: ignore[arg-type]
+    assert sent == []
+
+
 def test_stopping_a_run_this_process_is_not_driving_is_a_no_op() -> None:
     assert run_control.stop("nobody") is False
 
@@ -127,6 +172,24 @@ def test_stop_route_stops_once(client: TestClient, monkeypatch: pytest.MonkeyPat
     assert client.post("/workflows/runs/s2/stop").status_code == 409
 
 
+def test_a_teammate_stops_only_their_own_run(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(people_route, "caller_is_principal", lambda request: False)
+    monkeypatch.setattr(run_control, "stop", lambda run_id: True)
+    monkeypatch.setattr(workflows_route, "_visible_run", lambda run_id, request: wf_persistence.get_run(run_id))
+    wf_persistence.create_run("t1", "weekly_wf", "Weekly", {}, owner_person_id=2)
+    wf_persistence.create_run("t2", "weekly_wf", "Weekly", {}, owner_person_id=1)
+    assert client.post("/workflows/runs/t1/stop").status_code == 403
+    assert (wf_persistence.get_run("t1") or {})["status"] == "running"
+    assert client.post("/workflows/runs/t2/stop").status_code == 200
+
+
+def test_a_finished_run_cannot_be_stopped(client: TestClient) -> None:
+    wf_persistence.create_run("f1", "weekly_wf", "Weekly", {}, owner_person_id=1)
+    wf_persistence.complete_run("f1", "done")
+    assert client.post("/workflows/runs/f1/stop").status_code == 409
+    assert (wf_persistence.get_run("f1") or {})["status"] == "done"
+
+
 # ---------------------------------------------------------------------------
 # action step limits
 # ---------------------------------------------------------------------------
@@ -150,6 +213,7 @@ async def test_the_same_result_four_times_ends_the_step(monkeypatch: pytest.Monk
 
     monkeypatch.setattr(act, "_call_tool", same)
     monkeypatch.setattr(act, "_audit", lambda *a, **k: None)
+    monkeypatch.setattr(act, "_counts_on_step_budget", lambda name: True)
     calls = _calls()
     for _ in range(act.REPEAT_LIMIT):
         content, is_error = await calls.call("oe__browser_look", {})
@@ -191,6 +255,21 @@ async def test_browser_calls_from_a_script_count_on_the_step_limit(monkeypatch: 
     results = [await calls.script_call("oe__browser_look", {}) for _ in range(5)]
     assert [is_error for _, is_error in results] == [False, False, False, True, True]
     assert "tool-call budget" in results[-1][0]
+
+
+@pytest.mark.asyncio
+async def test_a_read_polled_for_a_status_is_not_a_repeat(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def pending(name: str, arguments: dict[str, Any], info: Any, workflow: str) -> tuple[str, bool]:
+        return '{"status": "pending"}', False
+
+    monkeypatch.setattr(act, "_call_tool", pending)
+    monkeypatch.setattr(act, "_audit", lambda *a, **k: None)
+    monkeypatch.setattr(act, "_counts_on_step_budget", lambda name: False)
+    calls = _calls()
+    for _ in range(act.REPEAT_LIMIT + 2):
+        content, is_error = await calls.call("oe__browser_look", {})
+        assert not is_error
+    assert calls.ended is None
 
 
 def test_progress_counts_the_calls_used() -> None:

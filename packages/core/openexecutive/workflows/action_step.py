@@ -677,9 +677,14 @@ class _StepCalls:
                     self._wrote = True
                     if self._policy is not None:
                         self._policy.note_written(content, info)
-                # Calls on the step's own limit (direct ones, the browser's
-                # from a script): a script's cheap repeats are its own business.
-                if signal is None and not is_error and budget is self._budget:
+                # Only page actions (the browser's, direct or from a script)
+                # count as repeats: a page that looks the same after four
+                # scrolls has nothing more to show, while a read tool polled
+                # for a status may rightly come back the same while it waits.
+                if (
+                    signal is None and not is_error and budget is self._budget
+                    and _counts_on_step_budget(name)
+                ):
                     self._note_repeat(name, arguments, content)
         _audit(self._workflow_name, self._step_id, name, outcome, targets)
         self._actions.append((name, outcome))
