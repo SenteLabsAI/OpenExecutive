@@ -5,6 +5,7 @@ import {
   alsoInLine,
   buildMoveSeed,
   cardLink,
+  draftRowId,
   checkedLabel,
   clockLabel,
   isNewSince,
@@ -169,4 +170,12 @@ test("rowTarget: a row opens what its source names, like a point", () => {
   // A draft with only a thread opens nothing.
   assert.equal(rowTarget({ source: { kind: "mail", thread_id: "t1" } }), null);
   assert.equal(rowTarget({ source: null }), null);
+});
+
+test("draftRowId reads a draft row's id and nothing else", () => {
+  assert.equal(draftRowId({ kind: "draft", key: "draft:42" }), 42);
+  assert.equal(draftRowId({ kind: "mail", key: "draft:42" }), null);
+  assert.equal(draftRowId({ kind: "draft", key: "draft:abc" }), null);
+  assert.equal(draftRowId({ kind: "draft", key: "draft:0" }), null);
+  assert.equal(draftRowId({ kind: "draft", key: "mail:t1" }), null);
 });

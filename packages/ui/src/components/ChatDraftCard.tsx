@@ -6,6 +6,7 @@ import Button from "@/components/ui/Button";
 import {
   ReplySendError,
   changeChatDraft,
+  deleteChatDraft,
   getChatDraft,
   sendChatDraft,
   setChatDraftText,
@@ -69,7 +70,18 @@ function Who({ to, cc, subject }: { to: string[]; cc: string[]; subject: string 
   );
 }
 
-export default function ChatDraftCard({ draft }: { draft: ChatDraft }) {
+// Home's Needs you opens a draft here too, with `canDelete` (a Delete that
+// removes it from your Drafts) and `onFinished` (told once it is sent or
+// isn't in your Drafts any more, so the row can go).
+export default function ChatDraftCard({
+  draft,
+  canDelete = false,
+  onFinished,
+}: {
+  draft: ChatDraft;
+  canDelete?: boolean;
+  onFinished?: () => void;
+}) {
   const [now, setNow] = useState<ChatDraftState | null>(null);
   const [busy, setBusy] = useState(false);
   const [working, setWorking] = useState<string | null>(null);
@@ -102,10 +114,30 @@ export default function ChatDraftCard({ draft }: { draft: ChatDraft }) {
     return () => ctl.abort();
   }, [draft.row]);
 
+  const finished = Boolean(done) || now?.status === "sent" || now?.status === "gone";
+  useEffect(() => {
+    if (finished) onFinished?.();
+  }, [finished, onFinished]);
+
   const failed = (err: unknown, fallback: string) => {
     const code = err instanceof ReplySendError ? err.code : "";
     setError(err instanceof Error ? err.message : fallback);
     if (STALE.has(code)) void load();
+  };
+
+  const remove = async () => {
+    setBusy(true);
+    setError(null);
+    setConfirm(null);
+    try {
+      const state = await deleteChatDraft(draft.row);
+      if (state.status === "gone") setDone("✓ Deleted from your Drafts.");
+      else setNow(state);
+    } catch (err) {
+      failed(err, "Couldn't delete it.");
+    } finally {
+      setBusy(false);
+    }
   };
 
   const send = async (threadMovedOn = false) => {
@@ -272,6 +304,16 @@ export default function ChatDraftCard({ draft }: { draft: ChatDraft }) {
                 now === null && (
                   <span className="text-xs text-fg-muted">Or change it in your Drafts and send it from there.</span>
                 )
+              )}
+              {canDelete && canChange && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void remove()}
+                  className="min-h-10 cursor-pointer px-2 text-sm font-medium text-rose-500 disabled:opacity-50"
+                >
+                  Delete
+                </button>
               )}
             </div>
             {canChange && (

@@ -236,3 +236,71 @@ async def change(
 
     saved, note = await _save(person, row_id, caller=caller, gmail=gmail, now=now, words_for=rewritten)
     return saved, new, note
+
+
+async def discard(
+    person: Any, row_id: int, *, caller: Any, gmail: Any = None, now: datetime | None = None,
+) -> dict[str, Any]:
+    """Delete the draft ``row_id`` from the person's Drafts, on their tap.
+    It is read first, and one changed in their mailbox since the row's
+    version is theirs to delete there. Outlook also checks the version as
+    it deletes; Gmail has no such check, so an edit made in the instant
+    between that read and the delete is not caught there. Returns its state
+    (``GONE`` once deleted, or the state it already had); raises
+    ``SendRefused``. Sends nothing."""
+    from openexecutive.audit import rows_for_person
+    from openexecutive.delegation import drafts
+    from openexecutive.delegation.gmail import GmailError, normalize_email
+    from openexecutive.delegation.inbox import _audit
+    from openexecutive.delegation.reply_send import _CHAT_SENDING, SendRefused, _check_caller
+    from openexecutive.delegation.settings import is_enabled
+
+    now = now or datetime.now(UTC)
+    row = _row(person, row_id)
+    with rows_for_person(person.id):
+        _check_caller(caller, normalize_email(person.email))
+        closed = _closed(row)
+        if closed is not None:
+            return closed
+        if not is_enabled(person.id):
+            raise SendRefused(409, "act_as_me_off", "Turn on Act as me to delete it here, or delete it in your Drafts.")
+        if row.id in _CHANGING or row.id in _CHAT_SENDING:
+            raise SendRefused(409, "busy", "This draft is being changed or sent right now. Try again in a moment.")
+        _CHANGING.add(row.id)
+        try:
+            client = await _client(person, gmail)
+            current = await _read(row, client, now)
+            if current["status"] == CHANGED:
+                raise SendRefused(
+                    409, "draft_changed", "This draft was changed in your mailbox, so delete it there.", state=current,
+                )
+            if current["status"] != OPEN:
+                return current
+            try:
+                deleted = await client.delete_draft(row.draft_id)
+            except GmailError as exc:
+                raise SendRefused(
+                    502, "gmail_error", "Couldn't delete it in your mailbox. Try again in a moment.",
+                ) from exc
+            if not deleted:
+                # Already gone, or (Outlook) left alone because it changed or
+                # stopped being a draft meanwhile: say what it is now, and
+                # never call it deleted.
+                after = await _read(row, client, now)
+                if after["status"] == CHANGED:
+                    raise SendRefused(
+                        409, "draft_changed", "This draft was changed in your mailbox, so delete it there.",
+                        state=after,
+                    )
+                if after["status"] == OPEN:
+                    raise SendRefused(
+                        502, "gmail_error", "Couldn't delete it in your mailbox. Try again in a moment.",
+                    )
+                return after
+            drafts.mark_gone(row.id, now)
+            _audit("delegation_chat_draft_deleted", f"Person {person.id} deleted a chat draft on its card", {
+                "person_id": person.id, "draft_row": row.id,
+            })
+            return {"status": GONE}
+        finally:
+            _CHANGING.discard(row.id)
