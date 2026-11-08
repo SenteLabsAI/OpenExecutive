@@ -1101,7 +1101,16 @@ _PROGRESS_MAX = 80
 def progress_line(name: str, arguments: Any) -> str:
     """What a running step is doing, in plain words, for the run's progress
     card: "Opening example.com…", 'Searching my inbox for "invoice"…'. Reads
-    the same wording as the chat's activity line, never the raw tool name."""
+    the same wording as the chat's activity line, never the raw tool name.
+    The arguments are the model's, and a label must never fail a run, so any
+    error falls back to the tool's plain name."""
+    try:
+        return _progress_line(name, arguments)
+    except Exception:
+        return f"Using {plain_tool_name(name)}…"
+
+
+def _progress_line(name: str, arguments: Any) -> str:
     from urllib.parse import urlparse
 
     from openexecutive.orchestrator import activity_labels, extensions, tool_labels
