@@ -214,6 +214,15 @@ def test_no_skips_the_held_call_and_the_run_goes_on(
     assert 'Click "Buy now" on shop.example — skipped (declined)' in artifact
 
 
+def test_a_long_carry_on_record_keeps_its_newest_part() -> None:
+    from openexecutive.workflows.action_step import _latest
+
+    record = "Looked at the cart. " * 500 + "done: Order 1042 placed"
+    kept = _latest(record, 2000)
+    assert kept.endswith("done: Order 1042 placed") and len(kept) < 2100
+    assert _latest("short", 2000) == "short"
+
+
 def test_a_yes_to_a_new_target_is_not_the_tools_ok(browser: _Browser, audit: list[dict[str, Any]]) -> None:
     """Only a hold the tool asked for runs as approved; a new-target hold
     allowed the target, nothing more."""
