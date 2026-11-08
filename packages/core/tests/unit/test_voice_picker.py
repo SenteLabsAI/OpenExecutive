@@ -1,5 +1,5 @@
-"""The three general voices (Direct, Supportive, Analytical), legacy named
-voices, and playing a voice per session for evals."""
+"""The three voices (Direct, Supportive, Analytical) and playing a voice per
+session for evals."""
 from __future__ import annotations
 
 import asyncio
@@ -49,27 +49,29 @@ def test_general_voices_load_with_picker_copy(_isolated: Path) -> None:
         "analytical": "Analytical",
     }
     for slug in GENERAL:
-        assert metas[slug].is_legacy is False
         assert metas[slug].description
         assert metas[slug].sample
         assert get_active_body(slug, db_path=_isolated)
 
 
-def test_named_voices_are_legacy_but_still_resolve(_isolated: Path) -> None:
-    legacy = [m for m in list_personas(db_path=_isolated) if m.is_legacy]
-    assert {m.slug for m in legacy} >= {"tim-cook", "satya-nadella", "jensen-huang"}
-    assert not {m.slug for m in legacy} & set(GENERAL)
-    body = get_active_body("tim-cook", db_path=_isolated)
-    assert body and body != get_active_body(None, db_path=_isolated)
+def test_only_the_three_voices_ship(_isolated: Path) -> None:
+    assert {p.stem for p in _BUILTIN_DIR.glob("*.md")} == set(GENERAL)
+    assert {m.slug for m in list_personas(db_path=_isolated)} == set(GENERAL)
+
+
+def test_a_removed_voice_falls_back_to_direct(_isolated: Path) -> None:
+    """An install whose Executive still names a removed voice speaks as Direct."""
+    assert get_persona("a-removed-voice", db_path=_isolated) is None
+    body = get_active_body("a-removed-voice", db_path=_isolated)
+    assert body == get_active_body(None, db_path=_isolated)
 
 
 def test_customized_builtin_keeps_its_picker_metadata(_isolated: Path) -> None:
-    loader.upsert_persona("tim-cook", "Tim", "Custom body", db_path=_isolated)
-    p = get_persona("tim-cook", db_path=_isolated)
-    assert p is not None and p.is_legacy is True and p.body == "Custom body"
     loader.upsert_persona("supportive", "Kind", "Warm body", db_path=_isolated)
+    p = get_persona("supportive", db_path=_isolated)
+    assert p is not None and p.body == "Warm body" and p.description
     meta = next(m for m in list_personas(db_path=_isolated) if m.slug == "supportive")
-    assert meta.is_customized and meta.description and not meta.is_legacy
+    assert meta.is_customized and meta.description
 
 
 @pytest.mark.parametrize("path", sorted(_BUILTIN_DIR.glob("*.md")), ids=lambda p: p.stem)

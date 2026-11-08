@@ -304,6 +304,47 @@ def _sender_card_choice(event: Any, joins: Any) -> str | None:
     return None
 
 
+# What create_alert answers when the question is for the person in the chat.
+ASK_IN_REPLY = (
+    "Nothing was raised. You are talking with the person this card would ask, so "
+    "ask them in your reply instead and carry on from their answer. Don't say you "
+    "raised a card."
+)
+
+# What create_alert answers once the alert is handed to review.
+SENT_FOR_REVIEW = (
+    "Sent for review. It becomes a card only if review keeps it, so don't tell "
+    "them a card is waiting; say what you need in your reply if it matters now."
+)
+
+
+def _asks_the_speaker(session: Any, tool_input: dict[str, Any]) -> bool:
+    """Whether this card would only ask the principal a question while they
+    are in the chat: they speak live (not on mail, not a workflow or other
+    unattended run, not a shared chat) and the card goes to no one else (no
+    department, no other person). Such a question belongs in the reply, not
+    on a card they find later. Never raises; False when unsure."""
+    try:
+        from openexecutive.alerts.models import NEEDS_ANSWER, NEEDS_CHOICE
+        from openexecutive.orchestrator.content_trust import principal_speaking
+
+        needs = str(tool_input.get("needs") or "").strip().lower()
+        if needs not in (NEEDS_ANSWER, NEEDS_CHOICE):
+            return False
+        if _workflow_owner.get() is not None or not principal_speaking(session):
+            return False
+        if str(getattr(session, "origin_channel", "") or "") == "email":
+            return False
+        if getattr(session, "shared_chat", False) is True:
+            return False
+        if str(tool_input.get("department") or "").strip():
+            return False
+        routed = tool_input.get("assigned_to_person_id")
+        return routed is None or routed == getattr(session, "caller_person_id", None)
+    except Exception:
+        return False
+
+
 async def handle_create_alert(tool_input: dict[str, Any]) -> str:
     from openexecutive.alerts.models import AlertEvent
     from openexecutive.alerts.pipeline import schedule_evaluation
@@ -343,6 +384,9 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
         str(tool_input.get("external_id") or ""),
         str(tool_input.get("from_address") or ""),
     )
+    if _asks_the_speaker(current_session.get(), tool_input):
+        logger.info("create_alert: question for the person in the chat; asked in the reply")
+        return json.dumps({"status": "ask_in_reply", "message": ASK_IN_REPLY})
     try:
         source, external_id, from_address, raised_by = _origin_for(
             _team_member_raising(current_session.get()), tool_input,
@@ -391,7 +435,9 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
             },
             private=event.private,
         )
-        return json.dumps({"status": "alert_scheduled", "subject": tool_input["subject"]})
+        return json.dumps({
+            "status": "alert_scheduled", "subject": tool_input["subject"], "message": SENT_FOR_REVIEW,
+        })
     except Exception as exc:
         logger.exception("create_alert: failed")
         audit_log(

@@ -582,9 +582,16 @@ def summarize_action(
         payload["target"] = str(tool_input.get("field") or "") or None
         payload["link"] = "/company-profile"
     elif tool_name == "create_alert":
-        headline = (tool_input.get("headline") or "")[:60]
-        payload["summary"] = f"Flagged alert: {headline}" if headline else "Flagged alert"
-        payload["target"] = headline or None
+        # Only an alert handed to review gets a chip: "ask_in_reply" and
+        # "sender_has_open_card" raised nothing. Review may still drop it, so
+        # the chip doesn't promise a card. The tool's title field is
+        # "subject" (alert_tools.CREATE_ALERT_TOOL); kept cards land on Home.
+        if parsed is not None and parsed.get("status") != "alert_scheduled":
+            return None
+        subject = " ".join(str(tool_input.get("subject") or "").split())[:80]
+        payload["summary"] = f"Flagged for review: {subject}" if subject else "Flagged for review"
+        payload["target"] = subject or None
+        payload["link"] = "/"
     elif tool_name == "draft_artifact":
         title = (tool_input.get("title") or "")[:60]
         payload["summary"] = f"Drafted artifact for review: {title}" if title else "Drafted artifact for review"

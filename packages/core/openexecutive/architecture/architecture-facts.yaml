@@ -708,13 +708,12 @@ providers:
   executive_voices: |
     The Executive's voice persona (personas/builtin/*.md, shadowed by
     voice_personas rows) is substituted into block 0 at {VOICE_PERSONA}.
-    Three general voices are offered by the VoicePicker in Settings ->
+    Three voices ship and are offered by the VoicePicker in Settings ->
     Executive (setup no longer asks; it ends on Home), saving voice_persona_slug through PATCH /agents/executive:
     Direct (slug ``default``, stored as no override), Supportive and
-    Analytical. Frontmatter ``description`` / ``sample`` feed the picker;
-    ``legacy: true`` marks the named-executive voices, hidden from the picker
-    but still loadable (PersonaMeta.is_legacy), so existing picks keep
-    working. Voice files hold disposition only; length rules live in
+    Analytical. Frontmatter ``description`` / ``sample`` feed the picker.
+    The named-executive voices were removed; a slug that names no voice
+    (a removed one included) resolves to Direct in get_active_body. Voice files hold disposition only; length rules live in
     prompts/executive_persona.py, enforced by test_voice_picker. Eval
     scenarios may set ``voice_persona`` (validated by
     evals.scenarios.scenario_voice_persona), carried on
