@@ -1,0 +1,65 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { groupTools, stepApps, toolAction, toolApp } from "../src/lib/workflowTools.ts";
+import { describeCadenceLocal } from "../src/lib/workflowChanges.ts";
+
+test("tools are named by the app they work in", () => {
+  assert.deepEqual(toolApp("oe__browser_click"), { label: "Browser", kind: "browser" });
+  assert.equal(toolApp("google_workspace__send_gmail_message").label, "Gmail");
+  assert.equal(toolApp("ms365__send_mail").label, "Outlook");
+  assert.equal(toolApp("oe__send_email_as_me").label, "Email");
+  assert.equal(toolApp("google_workspace__get_events").label, "Google Calendar");
+  assert.equal(toolApp("google_workspace__append_table_rows").kind, "other");
+  assert.equal(toolApp("google_workspace__read_sheet_values").label, "Google Drive");
+  assert.equal(toolApp("oe__message_person").label, "Messages");
+  assert.equal(toolApp("oe__create_alert").label, "Open Executive");
+  assert.equal(toolApp("hubspot__create_contact").label, "Hubspot");
+});
+
+test("browser tools say what they do to a page", () => {
+  assert.equal(toolAction("oe__browser_navigate"), "open pages");
+  assert.equal(toolAction("oe__browser_look"), "read pages");
+  assert.equal(toolAction("oe__browser_type"), "type");
+  assert.equal(toolAction("google_workspace__send_gmail_message"), "send gmail message");
+});
+
+test("tools group by app, split into changes and look-only, once each", () => {
+  const readOnly = (n) => /look|scroll/.test(n);
+  const groups = groupTools(
+    [
+      "oe__browser_navigate",
+      "oe__browser_look",
+      "oe__browser_click",
+      "oe__browser_scroll",
+      "oe__browser_navigate",
+      "oe__message_person",
+    ],
+    readOnly,
+  );
+  assert.deepEqual(
+    groups.map((g) => [g.app.label, g.changes.map((a) => a.action), g.looks.map((a) => a.action)]),
+    [
+      ["Browser", ["open pages", "click"], ["read pages", "scroll"]],
+      ["Messages", ["message person"], []],
+    ],
+  );
+});
+
+test("a step's apps are listed once, in order", () => {
+  assert.deepEqual(
+    stepApps(["oe__browser_look", "oe__browser_click", "oe__message_person"]).map((a) => a.label),
+    ["Browser", "Messages"],
+  );
+  assert.deepEqual(stepApps([]), []);
+});
+
+test("schedules show in the viewer's own time, with summer time", () => {
+  const winter = new Date(Date.UTC(2026, 10, 8, 12));
+  const summer = new Date(Date.UTC(2026, 6, 8, 12));
+  assert.equal(describeCadenceLocal("weekly@mon@14:00", "America/New_York", winter), "Mondays at 9:00 AM EST");
+  assert.equal(describeCadenceLocal("weekly@mon@14:00", "America/New_York", summer), "Mondays at 10:00 AM EDT");
+  assert.equal(describeCadenceLocal("daily@02:00", "America/New_York", winter), "Every day at 9:00 PM EST");
+  assert.equal(describeCadenceLocal("weekly@mon@02:00", "America/New_York", winter), "Sundays at 9:00 PM EST");
+  assert.equal(describeCadenceLocal(null), "Only when you run it");
+  assert.equal(describeCadenceLocal("odd"), "odd");
+});

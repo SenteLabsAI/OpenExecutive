@@ -29,6 +29,64 @@ export function describeCadence(cadence: string | null | undefined): string {
   return cadence;
 }
 
+const DOW = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+const HHMM = /^(\d{1,2}):(\d{2})$/;
+
+function localTime(d: Date, timeZone?: string): string {
+  return d.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone,
+    timeZoneName: "short",
+  });
+}
+
+/**
+ * The cadence in the viewer's own time: "Mondays at 9:00 AM EST". A saved
+ * cadence is UTC, and a weekly one can land on another day locally, so the
+ * day comes from the converted time. The conversion is anchored on the next
+ * run from `now`, so the offset is the one in force when it fires (summer
+ * time included). `timeZone` and `now` are for tests; the page uses the
+ * browser's zone and the current time. Anything it can't read falls back to
+ * `describeCadence`.
+ */
+export function describeCadenceLocal(
+  cadence: string | null | undefined,
+  timeZone?: string,
+  now: Date = new Date(),
+): string {
+  const raw = (cadence ?? "").trim();
+  const parts = raw.split("@");
+  const y = now.getUTCFullYear();
+  const mo = now.getUTCMonth();
+  const dd = now.getUTCDate();
+  if (parts[0] === "daily" && parts.length === 2) {
+    const m = HHMM.exec(parts[1]);
+    if (m) {
+      const d = new Date(Date.UTC(y, mo, dd, Number(m[1]), Number(m[2])));
+      return `Every day at ${localTime(d, timeZone)}`;
+    }
+  }
+  if (parts[0] === "weekly" && parts.length === 3) {
+    const m = HHMM.exec(parts[2]);
+    const dow = DOW.indexOf(parts[1].toLowerCase());
+    if (m && dow >= 0) {
+      const ahead = (dow - now.getUTCDay() + 7) % 7;
+      const d = new Date(Date.UTC(y, mo, dd + ahead, Number(m[1]), Number(m[2])));
+      const day = d.toLocaleDateString("en-US", { weekday: "long", timeZone });
+      return `${day}s at ${localTime(d, timeZone)}`;
+    }
+  }
+  if (parts[0] === "quarterly" && parts.length === 2) {
+    const m = /^(\d{1,2})-(\d{1,2}):(\d{2})$/.exec(parts[1]);
+    if (m) {
+      const d = new Date(Date.UTC(y, mo, Number(m[1]), Number(m[2]), Number(m[3])));
+      return `Quarterly on day ${Number(m[1])} at ${localTime(d, timeZone)}`;
+    }
+  }
+  return describeCadence(cadence);
+}
+
 /** How to name people, specialists and tools — supplied by the page. */
 export interface ChangeLabels {
   person: (id: number | null | undefined) => string;
