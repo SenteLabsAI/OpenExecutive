@@ -42,9 +42,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import re
+import time
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -64,6 +66,11 @@ _MAX_TOKENS = 4096
 # Model turns allowed beyond the tool budget: one for the final report, a
 # little slack for a turn that only talks.
 _EXTRA_TURNS = 3
+# A step that gets the same result from the same call this many times has
+# found nothing new: it stops and reports what it has.
+REPEAT_LIMIT = 4
+# The longest a step may run, model turns and tool calls together.
+STEP_MAX_S = 15 * 60
 # A long web search can pause the model's turn (``pause_turn``); a paused
 # turn is not one of the step's turns, but at most this many are carried on.
 _MAX_PAUSES = 5
@@ -561,6 +568,11 @@ class _StepCalls:
         self.stopped = False
         # A call that changes something ran.
         self._wrote = False
+        # Why the step was ended early (repeating itself, out of time): no
+        # more calls run, and its report says so.
+        self.ended: str | None = None
+        self._deadline = time.monotonic() + STEP_MAX_S
+        self._repeats: dict[str, int] = {}
 
     def drain(self) -> list[StepYield]:
         events, self._events = self._events, []
@@ -573,10 +585,32 @@ class _StepCalls:
 
     async def script_call(self, name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
         """The same for a call a step script makes, against the script budget."""
+        if _counts_on_step_budget(name):
+            # Each of these counts like a direct call, script or not.
+            return await self._call(name, arguments, self._budget, "this step's tool-call budget is used up")
         return await self._call(
             name, arguments, self._script_budget,
             f"this step's script call budget ({self._script_budget.limit} calls) is used up",
         )
+
+    def out_of_time(self) -> bool:
+        """Whether the step has run its longest; ends it if so."""
+        if self.ended is None and time.monotonic() > self._deadline:
+            self.ended = f"it ran for {STEP_MAX_S // 60} minutes, the longest a step may run"
+        return self.ended is not None
+
+    def _note_repeat(self, name: str, arguments: dict[str, Any], content: str) -> None:
+        """Count a call that came back exactly as before; end the step at
+        ``REPEAT_LIMIT``."""
+        key = hashlib.sha256(
+            json.dumps([name, arguments, content], sort_keys=True, default=str).encode()
+        ).hexdigest()
+        seen = self._repeats.get(key, 0) + 1
+        self._repeats[key] = seen
+        if seen >= REPEAT_LIMIT and self.ended is None:
+            self.ended = (
+                f"it did the same thing {seen} times ({plain_tool_name(name)}) and found nothing new"
+            )
 
     async def _call(
         self, name: str, arguments: dict[str, Any], budget: _Budget, spent_reason: str
@@ -584,6 +618,10 @@ class _StepCalls:
         targets: dict[str, str] | None = None
         if self.stopped:
             (content, is_error), outcome = _refusal(_STOPPED), "refused: step paused"
+        elif self.out_of_time():
+            (content, is_error), outcome = _refusal(
+                f"this step was ended because {self.ended}; finish with what you have"
+            ), "refused: step ended"
         elif name not in self._allowed:
             (content, is_error), outcome = _refusal(
                 f"{name} is not one of this step's tools"
@@ -607,7 +645,7 @@ class _StepCalls:
                 content, is_error, outcome = HELD_TOOL_RESULT, False, "held for approval"
             else:
                 budget.used += 1
-                self._events.append(("progress", progress_line(name, arguments)))
+                self._events.append(("progress", _counted(progress_line(name, arguments), budget)))
                 from openexecutive.orchestrator import extensions
 
                 try:
@@ -639,9 +677,32 @@ class _StepCalls:
                     self._wrote = True
                     if self._policy is not None:
                         self._policy.note_written(content, info)
+                # Calls on the step's own limit (direct ones, the browser's
+                # from a script): a script's cheap repeats are its own business.
+                if signal is None and not is_error and budget is self._budget:
+                    self._note_repeat(name, arguments, content)
         _audit(self._workflow_name, self._step_id, name, outcome, targets)
         self._actions.append((name, outcome))
         return content, is_error
+
+
+def _counts_on_step_budget(name: str) -> bool:
+    """Whether a script's call to ``name`` counts toward the step's own
+    limit (``extensions.counts_on_step_budget``). Never raises: an error is
+    False."""
+    try:
+        from openexecutive.orchestrator import extensions
+
+        return extensions.counts_on_step_budget(name)
+    except Exception:
+        logger.warning("action_step: couldn't read %s's budget", name, exc_info=True)
+        return False
+
+
+def _counted(line: str, budget: _Budget) -> str:
+    """The progress line with how many calls the step has used:
+    "Scrolling (6 of 20)"."""
+    return f"{line.rstrip('…. ')} ({budget.used} of {budget.limit})"
 
 
 class _Budget:
@@ -787,7 +848,7 @@ async def run_action_step(
         # budget, which tells the model so).
         if (
             budget.spent and not (scripts and not script_budget.spent)
-        ) or turn == max_turns - 1 or calls.stopped:
+        ) or turn == max_turns - 1 or calls.stopped or calls.out_of_time():
             kwargs["tool_choice"] = {"type": "none"}
         response, failure = await _model_turn(
             provider, kwargs, step_id=step.id, model=resolved_model, turn=turn
@@ -812,6 +873,8 @@ async def run_action_step(
             report = "\n".join(
                 b["text"] for b in [*paused, *blocks] if b["type"] == "text"
             ).strip()
+            if calls.ended is not None:
+                report = f"I stopped this step early: {calls.ended}.\n\n{report}".strip()
             yield ("output", _format_output(report, actions))
             return
 

@@ -29,6 +29,7 @@ from typing import Any
 
 from openexecutive.audit import log_event as audit_log
 from openexecutive.audit.redaction import ERROR_DETAIL_LEN
+from openexecutive.workflows import run_control
 
 logger = logging.getLogger(__name__)
 
@@ -465,7 +466,7 @@ async def handle_run_workflow(tool_input: dict[str, Any]) -> str:
 
     with private_run(name):
         try:
-            async for event in workflow.run(inputs=wf_inputs, store=store):
+            async for event in run_control.watch(run_id, workflow.run(inputs=wf_inputs, store=store)):
                 # An approval-gate step yields a WaitForHumanEvent (not a
                 # WorkflowEvent): checkpoint the run and stop. Mirrors
                 # api/routes/workflows.py — the resumer applies the timeout policy
@@ -497,6 +498,18 @@ async def handle_run_workflow(tool_input: dict[str, Any]) -> str:
                     private_to_principal = True
                 elif event.type == "error" and event.message:
                     last_error = event.message
+        except run_control.RunStopped:
+            _audit(
+                "run_workflow", "write", False,
+                f"run_workflow {name} stopped run_id={run_id}",
+                {"workflow": name, "run_id": run_id, "status": "stopped"},
+            )
+            return json.dumps({
+                "status": "stopped",
+                "workflow": name,
+                "run_id": run_id,
+                "presentation_hint": "Someone pressed Stop on this run. Say it was stopped; do not re-run it.",
+            })
         except Exception as exc:
             logger.exception("run_workflow: workflow.run crashed")
             last_error = str(exc)[:_EXC_SNIPPET_MAXLEN]

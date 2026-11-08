@@ -9,6 +9,7 @@ import {
   WorkflowMeta,
   WorkflowStepDef,
   runWorkflow,
+  stopWorkflowRun,
 } from "@/lib/api";
 
 type StepState = "pending" | "running" | "done" | "skipped" | "paused";
@@ -39,6 +40,21 @@ export default function WorkflowRunner({
   const [streaming, setStreaming] = useState(false);
   const [started, setStarted] = useState(false);
   const [paused, setPaused] = useState<WorkflowEvent | null>(null);
+  const [stopped, setStopped] = useState(false);
+  const [stopping, setStopping] = useState(false);
+
+  async function handleStop() {
+    if (!runId) return;
+    setStopping(true);
+    try {
+      await stopWorkflowRun(runId);
+      setStopped(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't stop the run.");
+    } finally {
+      setStopping(false);
+    }
+  }
 
   async function handleStart() {
     setStarted(true);
@@ -46,6 +62,7 @@ export default function WorkflowRunner({
     setError(null);
     setRunId(null);
     setPaused(null);
+    setStopped(false);
     setSteps(workflow.steps.map((s) => ({ def: s, state: "pending" })));
 
     try {
@@ -106,6 +123,13 @@ export default function WorkflowRunner({
       );
       return;
     }
+    if (evt.type === "stopped") {
+      setStopped(true);
+      setSteps((prev) =>
+        prev.map((s) => (s.state === "running" ? { ...s, state: "skipped" } : s))
+      );
+      return;
+    }
     if (evt.type === "done" && evt.run_id) {
       // Redirect to the run page to view the artifact
       router.push(`/jobs/runs/${encodeURIComponent(evt.run_id)}`);
@@ -137,16 +161,24 @@ export default function WorkflowRunner({
         <div className="rounded-2xl border border-line bg-surface-elevated p-5 shadow-sm sm:p-6">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-semibold text-fg">Progress</h3>
-            {streaming && (
-              <span className="text-xs text-amber-400 flex items-center gap-1.5">
-                <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-                Running
+            {streaming && !stopped && (
+              <span className="flex items-center gap-3">
+                <span className="text-xs text-amber-400 flex items-center gap-1.5">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                  Running
+                </span>
+                {runId && (
+                  <Button variant="secondary" onClick={handleStop} disabled={stopping}>
+                    {stopping ? "Stopping…" : "Stop run"}
+                  </Button>
+                )}
               </span>
             )}
-            {!streaming && !error && paused && (
+            {stopped && <span className="text-xs text-fg-muted">Stopped</span>}
+            {!streaming && !error && !stopped && paused && (
               <span className="text-xs text-amber-400">Paused</span>
             )}
-            {!streaming && !error && !paused && runId && (
+            {!streaming && !error && !paused && !stopped && runId && (
               <span className="text-xs text-emerald-400">Complete</span>
             )}
             {error && <span className="text-xs text-red-400">Failed</span>}
@@ -179,6 +211,11 @@ export default function WorkflowRunner({
           {paused && (
             <div className="mt-4">
               <PausedNotice event={paused} runId={runId} />
+            </div>
+          )}
+          {stopped && (
+            <div className="mt-4 text-sm text-fg-muted rounded-md border border-line p-3">
+              Stopped. Nothing more runs. What it already did stays done.
             </div>
           )}
           {error && (

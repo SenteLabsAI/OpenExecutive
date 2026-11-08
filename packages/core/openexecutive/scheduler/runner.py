@@ -2488,7 +2488,7 @@ async def _run_dynamic_workflow(action: ScheduledAction, now: datetime) -> None:
 
     from openexecutive.config import get_settings
     from openexecutive.knowledge.store import ChromaDBStore
-    from openexecutive.workflows import get_workflow
+    from openexecutive.workflows import get_workflow, run_control
     from openexecutive.workflows.dynamic_cadence import (
         schedule_dynamic_workflow_cadence,
     )
@@ -2530,7 +2530,7 @@ async def _run_dynamic_workflow(action: ScheduledAction, now: datetime) -> None:
             paused = False
             as_owner = pinned_viewer(viewer_for_person(owner)) if owner is not None else contextlib.nullcontext()
             with as_owner:
-                async for event in workflow.run(inputs=wf_inputs, store=store):
+                async for event in run_control.watch(run_id, workflow.run(inputs=wf_inputs, store=store)):
                     # The pauses a scheduled run CAN take: an action step held
                     # writes (or a call its tool held for an OK), or its tool waits
                     # for something it needs. Nothing waits in-process — the run is
@@ -2564,6 +2564,9 @@ async def _run_dynamic_workflow(action: ScheduledAction, now: datetime) -> None:
                 artifact = ""  # the resumer delivers it once the owner answers
             else:
                 complete_run(run_id, artifact or "(no artifact)")
+        except run_control.RunStopped:
+            # Someone pressed Stop: the run is marked stopped, nothing to file.
+            artifact = ""
         except Exception as exc:
             logger.exception("scheduler: dynamic_workflow %r (action %d) failed", name, action.id)
             with contextlib.suppress(Exception):

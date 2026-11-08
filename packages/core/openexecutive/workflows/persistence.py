@@ -37,6 +37,8 @@ New status values beyond running/done/error:
                    claims such a row (resolved -> running) and executes the
                    steps after the gate.
   timed_out      — awaiting_until passed, timeout policy applied
+  stopped        — someone pressed Stop (``stop_run``, ``workflows.run_control``).
+                   Terminal: nothing writes over it.
 """
 from __future__ import annotations
 
@@ -176,7 +178,7 @@ def complete_run(
     with _get_conn(_resolve(db_path)) as conn:
         conn.execute(
             "UPDATE workflow_runs SET status = 'done', artifact = ?, updated_at = ? "
-            "WHERE run_id = ?",
+            "WHERE run_id = ? AND status != 'stopped'",
             (artifact, now, run_id),
         )
 
@@ -190,9 +192,27 @@ def fail_run(
     with _get_conn(_resolve(db_path)) as conn:
         conn.execute(
             "UPDATE workflow_runs SET status = 'error', error = ?, updated_at = ? "
-            "WHERE run_id = ?",
+            "WHERE run_id = ? AND status != 'stopped'",
             (error, now, run_id),
         )
+
+
+# What a Stop can end: a run that hasn't finished.
+STOPPABLE = ("running", "awaiting_human", "resolved")
+
+
+def stop_run(run_id: str, db_path: Path | None = None) -> bool:
+    """Mark an unfinished run ``stopped``. Returns whether it was unfinished.
+    Clears its resume payload, so the resumer never picks it up again."""
+    now = datetime.now(UTC).isoformat()
+    marks = ", ".join("?" for _ in STOPPABLE)
+    with _get_conn(_resolve(db_path)) as conn:
+        cur = conn.execute(
+            f"UPDATE workflow_runs SET status = 'stopped', resume_state_json = NULL, "  # noqa: S608 — constant marks
+            f"resume_claim = NULL, updated_at = ? WHERE run_id = ? AND status IN ({marks})",
+            (now, run_id, *STOPPABLE),
+        )
+        return cur.rowcount > 0
 
 
 def get_run(run_id: str, db_path: Path | None = None) -> dict[str, Any] | None:
@@ -403,7 +423,7 @@ def save_checkpoint(
                    resume_claim = NULL,
                    resume_attempts = 0,
                    updated_at = ?
-             WHERE run_id = ?{clause}
+             WHERE run_id = ? AND status != 'stopped'{clause}
             """,
             params,
         )
