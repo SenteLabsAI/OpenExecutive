@@ -430,8 +430,9 @@ export default function DepartmentDetailPage() {
           )}
           {dept && (
             <>
-              {/* Header */}
-              <div className="flex items-start justify-between mb-6 gap-4">
+              {/* Header. On a phone the buttons go under the mission, so the
+                  name and mission keep the full width. */}
+              <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
                 <div className="min-w-0">
                   <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg">{dept.config.title}</h1>
                   <div className="text-[15px] text-fg-muted mt-1.5">
