@@ -1163,6 +1163,15 @@ LAST_ROUND_NOTE = (
 )
 
 
+# Said in place of a round's results when nothing came back to put there (a
+# round the model ended on a tool call the loop had no call for). The API
+# refuses a user message with no content, which would end the whole turn
+# mid-task, after its earlier steps already ran.
+EMPTY_ROUND_NOTE = (
+    "Nothing came back from that step. Carry on from where you are: make the "
+    "call again if you still need it, or answer from what you have."
+)
+
 def _round_separator(tail: str, text: str) -> str:
     """What goes between the text already streamed (its last characters,
     ``tail``) and a new round's first ``text``: a paragraph break, less what
@@ -3864,6 +3873,12 @@ class Executive:
                 yield {"type": "handing_over"}
             if iteration == max_iterations - 1 and not handing_over:
                 tool_results.append({"type": "text", "text": LAST_ROUND_NOTE})
+            if not tool_results:
+                logger.warning(
+                    "round %d ended on %s with no tool call to answer; blocks=%s",
+                    iteration, final_msg.stop_reason, [b.get("type") for b in response_content],
+                )
+                tool_results.append({"type": "text", "text": EMPTY_ROUND_NOTE})
             current_messages.append({"role": "user", "content": tool_results})
             # Bounded to the messages this loop appended: current_messages
             # is a shallow copy, so anything at a lower index is still owned
