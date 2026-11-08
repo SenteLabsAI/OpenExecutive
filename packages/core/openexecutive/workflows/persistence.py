@@ -233,7 +233,8 @@ def list_runs(
     (`run_visible_to`; None = nobody on the roster: team runs only); the
     default "all" is for the server's own reads, never a person's.
     `with_body` adds each run's `inputs` (parsed) and the start of its
-    `artifact` (`BODY_CHARS`), enough to say what came of it."""
+    `artifact` (`BODY_CHARS`), enough to say what came of it. A run paused
+    until something is ready also has `waiting_for`."""
     if not _resolve(db_path).exists():
         return []
     clauses: list[str] = []
@@ -252,12 +253,19 @@ def list_runs(
     params.append(limit)
     with _get_conn(_resolve(db_path)) as conn:
         rows = conn.execute(
-            "SELECT run_id, workflow_name, title, status, created_at, updated_at"
+            "SELECT run_id, workflow_name, title, status, created_at, updated_at, "
+            "CASE WHEN status = 'awaiting_human' AND json_valid(state_json) "
+            "THEN json_extract(state_json, '$.waiting_for') END AS waiting_for"
             + (f", inputs, substr(artifact, 1, {BODY_CHARS}) AS artifact " if with_body else " ")
             + f"FROM workflow_runs {where}ORDER BY updated_at DESC LIMIT ?",
             params,
         ).fetchall()
     out = [dict(r) for r in rows]
+    for run in out:
+        # Only a run paused until something is ready says what
+        # (``extensions.workflow_wait``): "browser:12", say.
+        if not isinstance(run.get("waiting_for"), str) or not run["waiting_for"]:
+            run.pop("waiting_for", None)
     if with_body:
         for run in out:
             try:

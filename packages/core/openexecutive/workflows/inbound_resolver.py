@@ -58,6 +58,10 @@ def _load_awaiting_runs(
             continue
         if run.get("updated_at", "") < cutoff:
             continue
+        # A run waiting for something to be ready (``extensions.workflow_wait``)
+        # asked nothing: no message is an answer to it, and it picks itself up.
+        if _parse_state(run).get("waiting_for"):
+            continue
         result.append(run)
     return result
 

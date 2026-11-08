@@ -45,6 +45,11 @@ class HeldCall(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     # (argument key, value) pairs that were not yet approved.
     targets: list[tuple[str, str]] = Field(default_factory=list)
+    # Held by the tool itself (``extensions.workflow_hold``) rather than for a
+    # new target: what the owner is asked, in their words. Such a call stopped
+    # its step, so a yes runs it and then carries the step on from there.
+    why: str = ""
+    carry_on: bool = False
 
 
 class WorkflowResumeState(BaseModel):
@@ -86,10 +91,16 @@ class WorkflowResumeState(BaseModel):
     # What paused the run. "gate": an approval-gate step at gate_step_index.
     # "held_writes": the action step at gate_step_index held writes to new
     # targets (``held``); the step itself has run, and the owner's answer
-    # decides whether those exact calls run before the next step. Payloads
-    # written before this field existed parse as "gate".
-    kind: Literal["gate", "held_writes"] = "gate"
+    # decides whether those exact calls run before the next step. "waiting":
+    # a tool of the action step at gate_step_index needed something that
+    # wasn't there (``waiting_for``, see ``extensions.workflow_wait``); the
+    # step runs again from the start once it is. Payloads written before this
+    # field existed parse as "gate".
+    kind: Literal["gate", "held_writes", "waiting"] = "gate"
     held: list[HeldCall] = Field(default_factory=list)
+    waiting_for: str = ""
+    # What it waits for, in the owner's words ("your browser").
+    waiting_what: str = ""
     # Scheduled runs DM their artifact on completion; a run that paused
     # completes in the resumer instead, which delivers it to this person.
     deliver_to_person_id: int | None = None
@@ -136,6 +147,10 @@ class WaitForHumanEvent(BaseModel):
     # another thread. Empty for web/scheduler-originated runs, which fall back
     # to channel matching.
     origin_session_id: str = ""
+    # What a "waiting" pause waits for (``extensions.workflow_wait``'s key), so
+    # ``resumer.resume_waiting`` finds the runs to pick up once it is ready.
+    # Empty for every other pause.
+    waiting_for: str = ""
     # Engine payload for continuing the run after the gate is answered.
     # `exclude=True` is load-bearing: `state_json` is the checkpoint the
     # inbound resolver reads, and it branches on which keys are PRESENT (a row
