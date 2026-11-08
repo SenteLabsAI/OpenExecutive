@@ -132,8 +132,8 @@ export interface NodeLike {
 
 /**
  * Files can be dropped anywhere on the documents panel. React bubbles events
- * from a portal (the viewer and other side panels) to this panel too, so a
- * drop counts only when its target is inside the panel's own DOM.
+ * from a portal to this panel too, so a drop counts only when its target is
+ * inside the panel's own DOM. (The side panels are rendered outside it.)
  */
 export function dropLandsOnPanel(panel: NodeLike, target: unknown): boolean {
   return target != null && panel.contains(target);

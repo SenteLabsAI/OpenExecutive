@@ -236,7 +236,10 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
         },
       };
 
+  // The side panels sit outside the drop area, so a file dropped on one
+  // isn't uploaded.
   return (
+    <>
     <div
       {...dropHandlers}
       className={`space-y-4 max-w-5xl rounded-2xl transition-shadow ${
@@ -359,8 +362,9 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
         </div>
       )}
 
-      <Viewer doc={viewing} onClose={() => setViewing(null)} />
     </div>
+      <Viewer doc={viewing} onClose={() => setViewing(null)} />
+    </>
   );
 }
 
