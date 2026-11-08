@@ -97,7 +97,7 @@ def _figures(person_id: int, since: str, session_id: str | None, db_path: Path |
     return [{
         "kind": "worked_out", "id": int(r["id"]), "title": f"{r['subject']}: {r['figure']}",
         "source": r["source"], "status": "active", "created_at": r["created_at"], "can_undo": True,
-    } for r in rows]
+    } for r in rows if not worked_out._status_like(r["subject"], r["figure"], r["source"])]
 
 
 def _lessons(person_id: int, since: str, session_id: str | None, db_path: Path | None) -> list[dict[str, Any]]:
