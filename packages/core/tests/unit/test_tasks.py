@@ -83,6 +83,22 @@ def test_reopen_refuses_a_second_copy(team: SimpleNamespace) -> None:
     assert open_loops.reopen_task(first, reopened_by_person_id=team.principal).reason == "duplicate"
 
 
+def test_reopen_refuses_an_archived_owner_or_one_at_cap(
+    team: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    left = _task(team.sara)
+    open_loops.close_open_loop(left, reason="done")
+    people_store.archive_person(team.sara)
+    people_registry.invalidate()
+    assert open_loops.reopen_task(left, reopened_by_person_id=team.principal).reason == "owner_archived"
+
+    full = _task(team.ben, "the Q3 numbers")
+    open_loops.close_open_loop(full, reason="done")
+    _task(team.ben, "the board deck")
+    monkeypatch.setenv("ATTUNEMENT_MAX_OPEN_LOOPS_PER_PERSON", "1")
+    assert open_loops.reopen_task(full, reopened_by_person_id=team.principal).reason == "owner_at_cap"
+
+
 def test_update_words_notes_status_due_and_owner(team: SimpleNamespace) -> None:
     loop_id = _task(team.sara)
     due = date.today() + timedelta(days=5)
