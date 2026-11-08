@@ -573,9 +573,12 @@ def summarize_action(
         payload["target"] = str(tool_input.get("field") or "") or None
         payload["link"] = "/company-profile"
     elif tool_name == "create_alert":
-        headline = (tool_input.get("headline") or "")[:60]
-        payload["summary"] = f"Flagged alert: {headline}" if headline else "Flagged alert"
-        payload["target"] = headline or None
+        # The tool's title field is "subject" (alert_tools.CREATE_ALERT_TOOL);
+        # the card lands in Needs you on Home.
+        subject = " ".join(str(tool_input.get("subject") or "").split())[:80]
+        payload["summary"] = f"Raised a card: {subject}" if subject else "Raised a card for review"
+        payload["target"] = subject or None
+        payload["link"] = "/"
     elif tool_name == "draft_artifact":
         title = (tool_input.get("title") or "")[:60]
         payload["summary"] = f"Drafted artifact for review: {title}" if title else "Drafted artifact for review"

@@ -26,8 +26,8 @@ test("repeats of the same action collapse into one chip, in first-seen order", (
 
 test("built-in actions with different wording stay separate chips", () => {
   const groups = groupActions([
-    { tool: "create_alert", summary: "Flagged alert: churn risk" },
-    { tool: "create_alert", summary: "Flagged alert: late invoice" },
+    { tool: "create_alert", summary: "Raised a card: churn risk" },
+    { tool: "create_alert", summary: "Raised a card: late invoice" },
   ]);
   assert.equal(groups.length, 2);
 });
@@ -53,7 +53,7 @@ test("a chip opens its list for a repeat or a connected tool with a target", () 
   assert.equal(opensDetails(single), true);
   const [bare] = groupActions([drive(null)]);
   assert.equal(opensDetails(bare), false);
-  const [builtIn] = groupActions([{ tool: "create_alert", summary: "Flagged alert: x", target: "x" }]);
+  const [builtIn] = groupActions([{ tool: "create_alert", summary: "Raised a card: x", target: "x" }]);
   assert.equal(opensDetails(builtIn), false);
   const [linked] = groupActions([{ ...drive("x"), link: "/artifacts" }]);
   assert.equal(opensDetails(linked), false);
