@@ -356,7 +356,7 @@ def test_reflection_block_needs_enough_history(team: SimpleNamespace) -> None:
     _seed(team.sara, outcomes.SOURCE_OPEN_LOOP, "replied", 3)
     _seed(team.sara, outcomes.SOURCE_RESEARCH, "ignored", 2)
     [line] = outcomes.render_for_reflection()
-    assert "Sara Kim" in line and "open-loop chases 3/3 answered" in line
+    assert "Sara Kim" in line and "task chases 3/3 answered" in line
     assert "research" not in line
     text = _render_reflection_context(period_label="p", today_data={}, activity=[],
                                       recent_alerts=[], external_signals=[], outreach=[line])

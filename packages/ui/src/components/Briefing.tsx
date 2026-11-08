@@ -30,7 +30,16 @@ import { greeting, homeSummary, type SummaryPart } from "@/lib/briefingSummary";
 import { cardFromSearch } from "@/lib/cardMentions";
 import { FIRST_RUN_LINKS } from "@/lib/firstRun";
 import { principalIdOf } from "@/lib/dueSoon";
-import { goalTotals, realDepartments } from "@/lib/glance";
+import {
+  counted,
+  departmentsText,
+  goalTotals,
+  goalsText,
+  peopleText,
+  realDepartments,
+  tasksText,
+  watchingText,
+} from "@/lib/glance";
 import { groupHandled } from "@/lib/handled";
 import {
   NEEDS_YOU_OLDER_AFTER_DAYS,
@@ -42,7 +51,6 @@ import {
   splitOlder,
 } from "@/lib/needsYou";
 import { BRIEFING_REFRESH_INTERVAL_MS, shouldRefreshOnFocus } from "@/lib/narrativeFreshness";
-import { reviewRanLabel } from "@/lib/rhythmCards";
 import type { SnoozeChoice } from "@/lib/snooze";
 import InfoTip from "./InfoTip";
 import { ACTION_CARDS_TIP, ActionCardItem, useActionCards } from "./ActionCards";
@@ -54,7 +62,6 @@ import {
   InFlightPanelBody,
   MonitoringPanelBody,
   PracticeClientsPanelBody,
-  inFlightNext,
 } from "./briefing/AwarenessPanels";
 import DoneForYou, { DONE_FOR_YOU_ID } from "./briefing/DoneForYou";
 import { anyWorking } from "@/lib/doneForYou";
@@ -74,7 +81,7 @@ import {
   useOpenLoops,
   useWeeklyReview,
 } from "./briefing/SoloPanels";
-import { DepartmentsPanelBody, PeoplePanelBody, peopleSummary } from "./briefing/TeamPanels";
+import { DepartmentsPanelBody, PeoplePanelBody } from "./briefing/TeamPanels";
 import { buttonClass } from "./ui/Button";
 import OverflowMenu from "./ui/OverflowMenu";
 import SidePanel from "./ui/SidePanel";
@@ -113,15 +120,11 @@ type PanelKey =
 
 interface Tile {
   key: string;
-  // A tile opens its side panel, or else goes to its page.
+  // An item opens its side panel, or else goes to its page.
   panel?: PanelKey;
   href?: string;
-  // The small heading over the number.
-  kicker: string;
-  value: string;
-  label: string;
-  sub: string;
-  subTone?: keyof typeof TONE_TEXT;
+  // What it says, whole ("5 goals, 1 at risk").
+  text: string;
 }
 
 interface BriefingProps {
@@ -548,18 +551,15 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
   // departments, under way, monitoring) is one quiet line at the bottom.
   const summary: SummaryPart[] = today ? homeSummary(needsYouCount, doneRows.length) : [];
 
-  // At a glance — only the tiles with something to show, what's yours first.
+  // At a glance — one quiet line, only the items with something to show,
+  // what's yours first. Each item reads on its own: the line has no headings.
   const tiles: Tile[] = [];
   if (today) {
     if (glance.actAsMe)
       tiles.push({
         key: "actAsMe",
         href: "/settings/act-as-me",
-        kicker: "Act as me",
-        value: String(glance.actAsMe),
-        label: "handled for you",
-        sub: "this week",
-        subTone: "emerald",
+        text: `${glance.actAsMe} handled as you this week`,
       });
     const view = openLoops.view;
     if (loopOwnerId != null && (openLoops.error || (view && (view.items.length > 0 || view.later > 0)))) {
@@ -567,140 +567,66 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
       tiles.push({
         key: "dueSoon",
         panel: "dueSoon",
-        kicker: "Due soon",
-        value: String(view?.items.length ?? "–"),
-        label: "open loops",
-        sub: overdue > 0 ? `${overdue} overdue` : view && view.items.length > 0 ? "this week" : `${view?.later ?? 0} later`,
-        subTone: overdue > 0 ? "amber" : undefined,
+        text: view ? tasksText(view.items.length, overdue, view.later) : "Tasks",
       });
     }
     if (goals.goals > 0)
-      tiles.push({
-        key: "goals",
-        href: "/goals",
-        kicker: "Goals",
-        value: String(goals.goals),
-        label: goals.goals === 1 ? "goal" : "goals",
-        sub: goals.atRisk > 0 ? `${goals.atRisk} at risk` : "on track",
-        subTone: goals.atRisk > 0 ? "amber" : "emerald",
-      });
-    if (glance.workflows && glance.workflows.scheduled > 0) {
-      const runs = glance.workflows.runsThisWeek;
+      tiles.push({ key: "goals", href: "/goals", text: goalsText(goals.goals, goals.atRisk) });
+    if (glance.workflows && glance.workflows.scheduled > 0)
       tiles.push({
         key: "workflows",
         href: "/jobs",
-        kicker: "Workflows",
-        value: String(glance.workflows.scheduled),
-        label: "on a schedule",
-        sub: runs > 0 ? `${runs} ${runs === 1 ? "run" : "runs"} this week` : "no runs yet this week",
+        text: `${counted(glance.workflows.scheduled, "workflow", "workflows")} on a schedule`,
       });
-    }
     // Watching: what's on the watchlist, with the signals waiting to be read.
     const signals = monitoringProposals.length;
-    if ((glance.watching && glance.watching.watched > 0) || signals > 0) {
-      const fired = glance.watching?.firedThisWeek ?? 0;
+    if ((glance.watching && glance.watching.watched > 0) || signals > 0)
       tiles.push({
         key: "watching",
         ...(signals > 0 ? { panel: "monitoring" as const } : { href: "/watchlist" }),
-        kicker: "Watching",
-        value: String(glance.watching?.watched || signals),
-        label: glance.watching?.watched ? "things" : signals === 1 ? "signal" : "signals",
-        sub:
-          signals > 0
-            ? `${signals} new ${signals === 1 ? "signal" : "signals"}`
-            : fired > 0
-              ? `${fired} spoke up this week`
-              : "quiet",
-        subTone: signals > 0 ? "amber" : undefined,
+        text: watchingText(glance.watching?.watched ?? 0, signals),
       });
-    }
     if (handledRows.length > 0)
       tiles.push({
         key: "handled",
         panel: "handled",
-        kicker: "Handled",
-        value: String(handledRows.length),
-        label: "by the Executive",
-        sub: "since your last brief",
-        subTone: "emerald",
+        text: `${handledRows.length} handled since your last brief`,
       });
     if (solo) {
-      if (projects.error || (projects.projects && projects.projects.length > 0)) {
+      if (projects.error || (projects.projects && projects.projects.length > 0))
         tiles.push({
           key: "projects",
           panel: "projects",
-          kicker: "Your projects",
-          value: String(projects.projects?.length ?? "–"),
-          label: "active",
-          sub: "",
+          text: projects.projects
+            ? counted(projects.projects.length, "active project", "active projects")
+            : "Your projects",
         });
-      }
-      if (weeklyReview) {
-        tiles.push({
-          key: "weeklyReview",
-          panel: "weeklyReview",
-          kicker: "This week's review",
-          value: "Ready",
-          label: "next week's top three",
-          sub: reviewRanLabel(weeklyReview.completed_at) || weeklyReview.period || "",
-        });
-      }
+      if (weeklyReview)
+        tiles.push({ key: "weeklyReview", panel: "weeklyReview", text: "This week's review is ready" });
     } else {
       // Only once departments are set up: the goals with no department are on
-      // the Goals tile.
+      // the Goals item.
       if (activeRealDepts.length > 0)
         tiles.push({
           key: "departments",
           panel: "departments",
-          kicker: "Departments",
-          value: String(attentionRealDepts.length > 0 ? attentionRealDepts.length : activeRealDepts.length),
-          label: "departments",
-          sub:
-            attentionRealDepts.length > 0 ? (deptAtRiskCount > 0 ? "at risk" : "need attention") : "on track",
-          subTone: attentionRealDepts.length > 0 ? "amber" : "emerald",
+          text: departmentsText(activeRealDepts.length, attentionRealDepts.length, deptAtRiskCount > 0),
         });
       if (showPeople && today) {
         const people = today.people;
         const busy = people.filter((p) => p.status === "needs_reply" || p.status === "awaiting").length;
-        const s = peopleSummary(people);
-        tiles.push({
-          key: "people",
-          panel: "people",
-          kicker: "People",
-          value: String(busy > 0 ? busy : people.length),
-          label: busy > 0 ? "to follow up" : "people",
-          sub: busy > 0 ? s.text : "all clear",
-          subTone: s.hasOverdue ? "rose" : busy > 0 ? "amber" : "emerald",
-        });
+        tiles.push({ key: "people", panel: "people", text: peopleText(people.length, busy) });
       }
     }
     if (otherProposals.length > 0)
-      tiles.push({
-        key: "team",
-        panel: "team",
-        kicker: "Across the team",
-        value: String(otherProposals.length),
-        label: "with teammates",
-        sub: "waiting on someone else",
-      });
+      tiles.push({ key: "team", panel: "team", text: `${otherProposals.length} waiting on teammates` });
     if (inFlight.length > 0)
-      tiles.push({
-        key: "inFlight",
-        panel: "inFlight",
-        kicker: "Under way",
-        value: String(inFlight.length),
-        label: "in progress",
-        sub: inFlightNext(inFlight),
-        subTone: inFlight.some((f) => f.overdue) ? "amber" : undefined,
-      });
+      tiles.push({ key: "inFlight", panel: "inFlight", text: `${inFlight.length} under way` });
     if (practiceClients.length > 0)
       tiles.push({
         key: "clients",
         panel: "clients",
-        kicker: "Across your clients",
-        value: String(practiceClients.length),
-        label: "parked clients",
-        sub: "",
+        text: counted(practiceClients.length, "parked client", "parked clients"),
       });
   }
 
@@ -1109,7 +1035,7 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
               {tiles.length > 0 && (
                 <nav aria-label="More" className="mb-8 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-fg-muted">
                   {tiles.map((t) => {
-                    const text = `${t.value} ${t.label}`;
+                    const text = t.text;
                     const cls = "hover:text-fg hover:underline underline-offset-4";
                     const panel = t.panel;
                     return panel ? (

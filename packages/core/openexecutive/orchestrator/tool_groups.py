@@ -47,7 +47,7 @@ GROUPS: dict[str, tuple[str, tuple[str, ...]]] = {
         ("cancel_followup", "leave_out_of_brief", "list_followups", "mark_draft_sent", "move_followup"),
     ),
     "goals": (
-        "department goals, decision outcomes, open loops",
+        "department goals, decision outcomes, tasks",
         (
             "assign_open_loop",
             "close_open_loop",
