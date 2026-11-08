@@ -238,6 +238,11 @@ function JobsPageInner() {
   const readyMade = workflows.filter((w) => !w.is_custom);
   const readyMadeCount = readyMade.filter((w) => !w.background).length;
   const offWorkflows = customDefs.filter((d) => !d.is_active);
+  // Set by the review card's "Turn on workflow", which lands back here.
+  const turnedOnName = searchParams.get("turned_on");
+  const turnedOnTitle = turnedOnName
+    ? customDefs.find((d) => d.name === turnedOnName && d.is_active)?.title
+    : undefined;
   const ownWorkflows = workflows.filter((w) => w.is_custom && !w.background);
   const openRuns = runCounts.active + runCounts.awaiting;
 
@@ -266,6 +271,15 @@ function JobsPageInner() {
       )}
       {error && (
         <div className="mb-4 text-[15px] text-red-400">Error: {error}</div>
+      )}
+
+      {!loading && tab === "catalog" && turnedOnTitle && (
+        <p
+          role="status"
+          className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-3 py-1 text-sm font-medium text-emerald-500"
+        >
+          <span aria-hidden="true">✓</span> {turnedOnTitle} is on
+        </p>
       )}
 
       {!loading && tab === "catalog" && (
