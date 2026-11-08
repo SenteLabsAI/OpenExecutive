@@ -37,7 +37,7 @@ offering Accept (``can_answer``).
 invite is accepted with no tap when plain code finds nothing against it
 (``refusal``): Approvals is not on Careful, the sender is on their team or
 in their contacts (anyone under Hands-off), signed sign-ins or local login, nothing clashes, nothing sensitive in the
-title, their sign-in can answer, and the daily limit and once-a-day-per-thread
+title below Hands-off (``handle_it.content_hold``), their sign-in can answer, and the daily limit and once-a-day-per-thread
 rule of Handle it for me (``handle_it.count_refusal``) allow it. It never
 declines on its own. Accepted ones are listed with the replies it sent
 (``handled``: ``GET /delegation/handled``, Today's ``sent_as_you``), the
@@ -435,6 +435,9 @@ def _refusal(
         return "stranger"
     if not handle_it.signing_ok():
         return "signing_off"
+    held = handle_it.content_hold(title)
+    if held:
+        return held
     if clash is None:
         return "calendar_unread"
     if clash:

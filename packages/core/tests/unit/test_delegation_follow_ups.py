@@ -249,10 +249,16 @@ def test_the_send_path_rechecks_a_stranger(owner: Any, models: dict[str, Any]) -
     assert refused.value.code == "stranger" and mailbox.sent == []
 
 
-def test_a_link_or_amount_goes(owner: Any) -> None:
+@pytest.mark.parametrize(("body", "code"), [
+    ("Hi Dana, the slides are at https://files.example.com/x", "link"),
+    ("Hi Dana, any news on the 20% figure?", "amount"),
+    ("Hi Dana, any news on the contract?", "sensitive"),
+])
+def test_on_balanced_a_link_amount_or_topic_waits(owner: Any, body: str, code: str) -> None:
     _on(owner, "balanced")
-    for body in ("Hi Dana, the slides are at https://files.example.com/x", "Hi Dana, any news on the 20% figure?"):
-        assert _check(owner, _nudge(body=body)) is None
+    assert _check(owner, _nudge(body=body)) == code
+    _on(owner, "hands_off")
+    assert _check(owner, _nudge(body=body)) is None
 
 
 def test_a_nudge_stays_short(owner: Any) -> None:

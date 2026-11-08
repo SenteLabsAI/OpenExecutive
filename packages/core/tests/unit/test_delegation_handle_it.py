@@ -269,10 +269,23 @@ def test_a_stranger_gets_the_reply_on_hands_off(
     assert result.handled == 1 and mailbox.sent == ["d1"]
 
 
-def test_a_reply_with_a_link_or_amount_goes(switched_on: Any) -> None:
-    for body in ("The agenda is at https://docs.example.com/agenda.", "Sure, we can do it for $4,000.",
-                 "Yes, I'll sign the contract tomorrow."):
-        assert _check(switched_on, reply=_reply(body=body)) is None
+@pytest.mark.parametrize(("body", "code"), [
+    ("The agenda is at https://docs.example.com/agenda.", "link"),
+    ("Sure, we can do it for $4,000.", "amount"),
+    ("Yes, I'll sign the contract tomorrow.", "sensitive"),
+    ("Here's the new password for the portal.", "sensitive"),
+])
+def test_below_hands_off_a_reply_with_a_link_amount_or_topic_waits(
+    switched_on: Any, monkeypatch: pytest.MonkeyPatch, body: str, code: str,
+) -> None:
+    assert _check(switched_on, reply=_reply(body=body)) == code
+    _hands_off(monkeypatch)
+    assert _check(switched_on, reply=_reply(body=body)) is None
+
+
+def test_below_hands_off_the_email_s_own_topic_holds_the_reply(switched_on: Any) -> None:
+    message = _msg("m1", "t1", text="Can you approve the invoice before Friday?")
+    assert _check(switched_on, message=message) == "sensitive"
 
 
 def test_without_signed_sign_ins_on_a_server_nothing_goes(

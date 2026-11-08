@@ -11807,8 +11807,11 @@ delegation:
     executive_on_thread), thread_recent (one auto-send per thread per day,
     delegation_handled), in_a_row (last own message in the thread was an
     auto-send), daily_limit (DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY,
-    default 20). The sensitive-topic list, link and amount checks, the
-    stranger rule and the per-mode limits are gone.
+    default 20). Below Hands-off also stranger (not team, contact or past
+    correspondent), sensitive (SENSITIVE topics in the email, its subject or
+    the reply), link and amount (handle_it.content_hold, also on follow-ups
+    and, topic only, invite titles); Hands-off sends them. The per-mode
+    limits are gone.
     Only when it passes, a last look (delegation.injection_check.held_back:
     one tool-less classifier-model call reading the sender's new words as
     plain text in an <email> block, up to 20,000 chars) asks whether they

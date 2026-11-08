@@ -30,6 +30,9 @@ with the reason recorded.
   isn't one of the kinds that need a reply;
 - the reply goes to anyone the email didn't already go to;
 - the reply is longer than ``MAX_BODY_CHARS``;
+- below Hands-off, the email or the reply touches money, contracts,
+  credentials and the like (``SENSITIVE``), or the reply carries a link or
+  an amount (``content_hold``);
 - the draft carries a flag other than ``ALLOWED_FLAGS`` (they asked whether
   it's an AI, recipients were trimmed, the draft names the Executive
   (``names_the_executive``), ...). The Executive merely being on the email
@@ -59,6 +62,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -93,6 +97,35 @@ THREAD_WINDOW = timedelta(days=1)
 # Draft flags a reply may carry and still be sent on its own.
 ALLOWED_FLAGS = frozenset({"others_on_thread", "executive_on_thread"})
 
+# Below Hands-off, replies about these topics, or with a link or an amount,
+# wait on a card (``content_hold``); Hands-off sends them. Matched as whole
+# words in the email, its subject and the reply. A false match costs a tap.
+SENSITIVE = (
+    "access token", "acquisition", "agreement", "api key", "attorney", "bank", "board", "bonus",
+    "budget", "compensation", "compliance", "confidential", "contract", "contracts", "counsel",
+    "court", "credentials", "diagnosis", "discount", "equity", "fire", "fired", "firing", "gdpr",
+    "health", "hire", "hiring", "investor", "investors", "invoice", "invoices", "journalist",
+    "lawsuit", "lawyer", "layoff", "layoffs", "legal", "login", "medical", "merger", "nda",
+    "offer letter", "paid", "passcode", "password", "passwords", "pay", "payment", "payments",
+    "payroll", "press", "price", "prices", "pricing", "quote", "refund", "reporter", "resign",
+    "resignation", "salary", "secret", "secrets", "settlement", "social security", "ssn",
+    "subpoena", "term sheet", "terminate", "termination", "token", "tokens", "wire",
+)
+_SENSITIVE_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(w).replace(r"\ ", r"\s+") for w in SENSITIVE) + r")\b", re.IGNORECASE,
+)
+# A scheme, www., a bare host with a path ("bit.ly/x9Z"), or a bare host on
+# a common top-level domain.
+_LINK_RE = re.compile(
+    r"(?:https?://|www\.|\b[\w-]+(?:\.[\w-]+)+/\S*"
+    r"|\b[\w-]+(?:\.[\w-]+)*\.(?:com|net|org|io|co|ly|ai|app|dev|me|info|biz|us|uk|link|xyz|gl|to|site|online)\b)",
+    re.IGNORECASE,
+)
+_AMOUNT_RE = re.compile(
+    r"[$€£¥₹]\s*\d|\d\s*%|\b\d[\d,.]*\s*(?:usd|eur|gbp|dollars?|euros?|pounds?|percent)\b",
+    re.IGNORECASE,
+)
+
 # What each refusal tells the person on the card.
 REASONS: dict[str, str] = {
     "level": "Approvals is on Careful, so what it would send as you waits for you.",
@@ -115,6 +148,9 @@ REASONS: dict[str, str] = {
     "handle_it_off": "Handle it for me was off by the time it came to send.",
     # Meeting invites (delegation.invites).
     "stranger": "Below Hands-off it acts on its own only for people you know.",
+    "sensitive": "Below Hands-off, mail about money, contracts, passwords and the like waits for you.",
+    "link": "Below Hands-off, a reply with a link waits for you.",
+    "amount": "Below Hands-off, a reply with an amount waits for you.",
     "clash": "It clashes with something already on your calendar.",
     "calendar_unread": "It couldn't check your calendar for clashes, so it asked instead.",
     "calendar_write": "Your calendar sign-in can't answer invites yet. Connect it again under Read my calendar.",
@@ -130,6 +166,23 @@ def hands_off(*, db_path: Path | None = None) -> bool:
     except Exception:
         logger.warning("delegation.handle_it: couldn't read Approvals — not Hands-off", exc_info=True)
         return False
+
+
+def content_hold(*texts: str, link_texts: tuple[str, ...] = (), db_path: Path | None = None) -> str | None:
+    """Below Hands-off, why what it would send on its own touches money,
+    contracts, credentials and the like (``sensitive``), or carries a link
+    (``link``) or an amount (``amount``); None when it doesn't or on
+    Hands-off. ``texts`` are read for topics and amounts, ``link_texts``
+    (what it would send) for links."""
+    if hands_off(db_path=db_path):
+        return None
+    if any(_SENSITIVE_RE.search(t or "") for t in texts):
+        return "sensitive"
+    if any(_LINK_RE.search(t or "") for t in link_texts):
+        return "link"
+    if any(_AMOUNT_RE.search(t or "") for t in texts):
+        return "amount"
+    return None
 
 
 def approvals_hold(*, db_path: Path | None = None) -> bool:
@@ -336,6 +389,12 @@ def _refusal(
         return "long"
     if any(f not in ALLOWED_FLAGS for f in reply.flags):
         return "flagged"
+    held = content_hold(
+        getattr(message, "subject", "") or "", getattr(message, "text", "") or "", reply.subject or "",
+        reply.body or "", link_texts=(reply.body or "",), db_path=db_path,
+    )
+    if held:
+        return held
     return _last_checks(person_id, thread, own, now, db_path)
 
 
@@ -399,6 +458,12 @@ def _follow_up_refusal(
         return "long"
     if any(f not in ALLOWED_FLAGS for f in reply.flags):
         return "flagged"
+    held = content_hold(
+        getattr(sent, "subject", "") or "", reply.subject or "", reply.body or "",
+        link_texts=(reply.body or "",), db_path=db_path,
+    )
+    if held:
+        return held
     return count_refusal(person_id, str(getattr(sent, "thread_id", "") or ""), now, db_path=db_path)
 
 
