@@ -873,7 +873,9 @@ async def reset_all_state(
                                # Always in the loop: notes and switches.
                                *HISTORY_TABLES,
                                # Take the lead: switches, rules, its log.
-                               *TAKE_THE_LEAD_TABLES):
+                               *TAKE_THE_LEAD_TABLES,
+                               # Each department's own notes.
+                               "department_notes"):
                     if _conn.execute(
                         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (_table,)
                     ).fetchone():

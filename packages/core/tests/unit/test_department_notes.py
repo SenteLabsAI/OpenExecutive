@@ -77,3 +77,22 @@ def test_router_reads_local_notes_when_peer_memory_is_empty(monkeypatch: pytest.
     dn.add("growth", "decision", "Hold the spring launch.", now=NOW)
     got = asyncio.run(router._prefetch_department_for_call({"specialist": "marketing", "query": "launch"}, None))
     assert "Hold the spring launch." in got
+
+
+def test_old_notes_expire() -> None:
+    dn.add("growth", "decision", "An old call.", now=NOW - timedelta(days=dn.MAX_AGE_DAYS + 5))
+    dn.add("growth", "decision", "A fresh call.", now=NOW)
+    text = dn.for_prompt("growth", "call")
+    assert "fresh" in text and "old call" not in text
+
+
+def test_factory_reset_and_blank_slot_clear_the_table() -> None:
+    import inspect
+
+    from openexecutive.cli.fixture_loader import reset_all_state
+    from openexecutive.clients.slots import _BLANK_WIPE_TABLES
+
+    assert dn.TABLE in _BLANK_WIPE_TABLES
+    assert f'"{dn.TABLE}"' in inspect.getsource(reset_all_state)
+    # Before departments, like the department's other rows.
+    assert _BLANK_WIPE_TABLES.index(dn.TABLE) < _BLANK_WIPE_TABLES.index("departments")

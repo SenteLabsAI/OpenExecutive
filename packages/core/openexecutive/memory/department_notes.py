@@ -10,7 +10,8 @@ memory is off or has nothing.
 
 Notes are company work, not anyone's private words: anyone whose question
 reaches the department's specialist may see them. Each department keeps its
-newest ``KEEP`` notes. Nothing here raises.
+newest ``KEEP`` notes, none older than ``MAX_AGE_DAYS``. A factory reset and
+a switch into a blank client slot clear the table. Nothing here raises.
 """
 
 from __future__ import annotations
@@ -18,13 +19,14 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 TABLE = "department_notes"
 KEEP = 200
+MAX_AGE_DAYS = 365
 MAX_BODY = 4_000
 MAX_CHARS = 1_500
 _PER_NOTE = 400
@@ -91,6 +93,8 @@ def add(
                 f"SELECT id FROM {TABLE} WHERE department_slug = ? ORDER BY id DESC LIMIT ?)",
                 (department_slug, department_slug, KEEP),
             )
+            cutoff = ((now or datetime.now(UTC)) - timedelta(days=MAX_AGE_DAYS)).isoformat()
+            conn.execute(f"DELETE FROM {TABLE} WHERE created_at < ?", (cutoff,))  # noqa: S608 — constant table name
             conn.commit()
             return int(cur.lastrowid) if cur.lastrowid is not None else None
         finally:
