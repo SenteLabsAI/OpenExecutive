@@ -10,6 +10,7 @@ import {
   getReflection,
   listStandingFacts,
   listWorkedOut,
+  type ReflectionLesson,
   type StandingFact,
   type WorkedOutFigure,
 } from "@/lib/api";
@@ -107,7 +108,8 @@ export default function KnowsOverview({ pulse, lastVisit }: { pulse: PulseData; 
   // undefined while loading; null when this viewer keeps none (the link goes).
   const [figures, setFigures] = useState<WorkedOutFigure[] | null | undefined>(undefined);
   const [notes, setNotes] = useState<number | null | undefined>(undefined);
-  const [misses, setMisses] = useState<number | null | undefined>(undefined);
+  // The lessons in use, newest first.
+  const [lessons, setLessons] = useState<ReflectionLesson[] | null | undefined>(undefined);
   // A list that couldn't be read says so, rather than looking empty.
   const [failed, setFailed] = useState<{ facts?: boolean; figures?: boolean }>({});
 
@@ -143,10 +145,17 @@ export default function KnowsOverview({ pulse, lastVisit }: { pulse: PulseData; 
       });
     getReflection()
       .then((state) => {
-        if (!cancelled) setMisses(state ? state.misses.length : null);
+        if (cancelled) return;
+        setLessons(
+          state
+            ? state.lessons
+                .filter((l) => l.retired_at === null)
+                .sort((a, b) => b.created_at.localeCompare(a.created_at))
+            : null,
+        );
       })
       .catch(() => {
-        if (!cancelled) setMisses(null);
+        if (!cancelled) setLessons(null);
       });
     return () => {
       cancelled = true;
@@ -215,15 +224,21 @@ export default function KnowsOverview({ pulse, lastVisit }: { pulse: PulseData; 
           </Group>
         )}
 
-        {misses !== null && (
+        {lessons !== null && (
           <Group
             title="Learning"
-            description="What fell short in your chats, and what it learned from it."
+            description="What I picked up from our chats."
             href="/memories?tab=reflection"
-            count={misses === undefined ? null : Math.max(misses, 1)}
+            count={lessons === undefined ? null : Math.max(lessons.length, 1)}
           >
             <p className="text-[15px] text-fg-muted">
-              {misses === undefined ? <Spinner /> : misses === 0 ? "Nothing fell short lately." : `${misses} answers fell short and were looked at again.`}
+              {lessons === undefined ? (
+                <Spinner />
+              ) : lessons.length === 0 ? (
+                "Nothing yet. What I learn from our chats shows up here."
+              ) : (
+                `${lessons.length} ${lessons.length === 1 ? "lesson" : "lessons"} in use. Newest ${formatDate(lessons[0].created_at)}: ${lessons[0].text}`
+              )}
             </p>
           </Group>
         )}

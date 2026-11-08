@@ -58,8 +58,7 @@ const SCREENS: Record<Exclude<PulseView, "overview" | "does">, { title: string; 
   },
   reflection: {
     title: "Learning",
-    description:
-      "How it gets better from your chats: what fell short, what it learned, and whether it would go right today.",
+    description: "I learn from every chat. These are the lessons I use, in your words.",
   },
 };
 
