@@ -1710,6 +1710,12 @@ _DONE_LABELS: dict[str, str] = {
 }
 
 
+_DONE_HEADLINE_KEYS: dict[str, tuple[str, ...]] = {
+    "create_alert": ("subject",),
+    "suggest_workflow": ("reason",),
+}
+
+
 def _done_label(tool: str, tool_input: dict[str, Any], result: str) -> str:
     """One plain line for a call the routing pass made: what it did, to whom,
     and the start of what it said. A call held for approval says so."""
@@ -1735,8 +1741,11 @@ def _done_label(tool: str, tool_input: dict[str, Any], result: str) -> str:
         except Exception:
             pass
         label = f"Posted to {team}"
+    # Only the headline of a card or a suggestion: a message's own words
+    # stay between the Executive and its recipient, since everyone who can
+    # open the run reads this document.
     what = ""
-    for key in ("subject", "text", "intent", "reason", "summary", "message"):
+    for key in _DONE_HEADLINE_KEYS.get(tool, ()):
         value = tool_input.get(key)
         if isinstance(value, str) and value.strip():
             what = " ".join(value.split())

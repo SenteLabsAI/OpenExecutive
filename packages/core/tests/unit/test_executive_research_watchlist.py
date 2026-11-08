@@ -434,3 +434,24 @@ def test_render_artifact_shows_watches_in_words_and_hides_the_mechanics() -> Non
         "Per-specialist", "`",
     ):
         assert hidden not in art
+
+
+def test_what_i_did_names_who_was_messaged_but_not_what_was_said(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Everyone who can open the run reads the write-up, so a message's
+    words stay out of it; a card keeps its headline."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "openexecutive.people.store.get_person",
+        lambda pid: SimpleNamespace(full_name="Jane Doe", email="jane@example.com"),
+    )
+    dm = er._done_label("message_person", {"person_id": 4, "text": "The Q1 list is ..."}, "sent")
+    assert dm == "Messaged Jane Doe"
+    held = er._done_label(
+        "message_person", {"person_id": 4, "text": "secret"}, '{"status": "waiting_for_approval"}',
+    )
+    assert held == "Waiting for your OK: messaged Jane Doe"
+    card = er._done_label("create_alert", {"subject": "Stripe fees change", "body": "detail"}, "ok")
+    assert card == "Flagged for you: Stripe fees change"
