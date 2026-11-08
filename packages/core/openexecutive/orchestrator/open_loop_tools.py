@@ -280,9 +280,14 @@ def _assigner(session: Any) -> int | None:
 def _in_speakers_words(text: str, session: Any) -> bool | None:
     """Whether ``text`` appears in what the speaker typed this turn. None when
     the message carries an attachment, whose words can't be told apart from
-    theirs (``delegation.settings.own_words``)."""
+    theirs (``delegation.settings.own_words``). Always True on Hands-off
+    (``fact_tools.words_checked``)."""
     from openexecutive.attunement.open_loops import _quote_in_message
     from openexecutive.delegation.settings import own_words, turn_delegation
+    from openexecutive.orchestrator.fact_tools import words_checked
+
+    if not words_checked():
+        return True
 
     pin = turn_delegation(session)
     spoken = own_words(pin.speaker_text if pin is not None else "")

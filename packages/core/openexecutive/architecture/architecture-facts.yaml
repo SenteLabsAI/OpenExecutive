@@ -2673,7 +2673,10 @@ memory:
         is shared — and then `private_used`), rendered before the
         quiet check and carried in `build_brief_fingerprint(teammate_changes=)`
         so a correction alone un-suppresses the brief.
-      - `source_quote` (at least 2 words / 8 chars) must appear, normalized
+      - On Hands-off (fact_tools.words_checked false, levels.relaxed) the
+        own-words checks below pass, for open loops too: the owner trusts
+        their Executive's wording (2026-11-08).
+      - Below Hands-off, `source_quote` (at least 2 words / 8 chars) must appear, normalized
         like the episodic quote gate, in the principal's own words this turn:
         `delegation.settings.own_words(TurnDelegation.speaker_text)` — the
         adapter-hydrated `<outbound_reply_context>` backstory stripped (first
