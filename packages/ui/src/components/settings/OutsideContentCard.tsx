@@ -10,6 +10,7 @@ import {
   type OutsideContentSetting,
 } from "@/lib/api";
 import { PageSpinner } from "@/components/ui/Spinner";
+import { APPROVALS_CHANGED_EVENT } from "@/lib/approvalsLevel";
 
 const OPTIONS: {
   value: OutsideContentMode;
@@ -51,12 +52,19 @@ export default function OutsideContentCard() {
 
   useEffect(() => {
     const ctrl = new AbortController();
-    getOutsideContent(ctrl.signal)
-      .then(setSetting)
-      .catch(() => {
-        if (!ctrl.signal.aborted) setError("Couldn't load this setting.");
-      });
-    return () => ctrl.abort();
+    const load = () =>
+      getOutsideContent(ctrl.signal)
+        .then(setSetting)
+        .catch(() => {
+          if (!ctrl.signal.aborted) setError("Couldn't load this setting.");
+        });
+    void load();
+    // The sidebar's quick picker saves the same setting.
+    window.addEventListener(APPROVALS_CHANGED_EVENT, load);
+    return () => {
+      ctrl.abort();
+      window.removeEventListener(APPROVALS_CHANGED_EVENT, load);
+    };
   }, []);
 
   if (setting && !setting.can_change) return null;
@@ -67,6 +75,7 @@ export default function OutsideContentCard() {
     setError(null);
     try {
       setSetting(await setOutsideContent(mode));
+      window.dispatchEvent(new Event(APPROVALS_CHANGED_EVENT));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't save that. Try again.");
     } finally {
