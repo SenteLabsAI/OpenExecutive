@@ -124,3 +124,42 @@ export function formatInterval(minutes: number): string {
   }
   return `every ${minutes} min`;
 }
+
+/** The bit of a DOM node the drop rules need, so they test without a DOM. */
+export interface NodeLike {
+  contains(other: unknown): boolean;
+}
+
+/**
+ * Files can be dropped anywhere on the documents panel. React bubbles events
+ * from a portal to this panel too, so a drop counts only when its target is
+ * inside the panel's own DOM. (The side panels are rendered outside it.)
+ */
+export function dropLandsOnPanel(panel: NodeLike, target: unknown): boolean {
+  return target != null && panel.contains(target);
+}
+
+/** A drag leaves the panel only when the pointer goes outside it, not when it crosses a child. */
+export function dragLeavesPanel(panel: NodeLike, relatedTarget: unknown): boolean {
+  return relatedTarget == null || !panel.contains(relatedTarget);
+}
+
+/** One upload batch at a time: a drop while files are still being added is ignored. */
+export function acceptsDrop(uploading: boolean, fileCount: number): boolean {
+  return !uploading && fileCount > 0;
+}
+
+/** The big "Add your first documents" box: only with no documents, and not mid-upload. */
+export function showEmptyDropBox({
+  loaded,
+  count,
+  uploading,
+  canAdd = true,
+}: {
+  loaded: boolean;
+  count: number;
+  uploading: boolean;
+  canAdd?: boolean;
+}): boolean {
+  return loaded && count === 0 && !uploading && canAdd;
+}

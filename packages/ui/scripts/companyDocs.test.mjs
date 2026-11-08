@@ -84,3 +84,33 @@ test("sizes and intervals read naturally", () => {
   assert.equal(formatInterval(120), "every 2 hours");
   assert.equal(formatInterval(15), "every 15 min");
 });
+
+test("drops count only on the panel's own DOM, not a side panel portal", async () => {
+  const { dropLandsOnPanel, dragLeavesPanel } = await import("../src/lib/companyDocs.ts");
+  const child = { id: "row" };
+  const portal = { id: "viewer" };
+  const panel = { contains: (n) => n === child };
+  assert.equal(dropLandsOnPanel(panel, child), true);
+  assert.equal(dropLandsOnPanel(panel, portal), false);
+  assert.equal(dropLandsOnPanel(panel, null), false);
+  // Crossing into a child keeps the highlight; leaving the panel clears it.
+  assert.equal(dragLeavesPanel(panel, child), false);
+  assert.equal(dragLeavesPanel(panel, portal), true);
+  assert.equal(dragLeavesPanel(panel, null), true);
+});
+
+test("one upload batch at a time", async () => {
+  const { acceptsDrop } = await import("../src/lib/companyDocs.ts");
+  assert.equal(acceptsDrop(false, 2), true);
+  assert.equal(acceptsDrop(true, 2), false);
+  assert.equal(acceptsDrop(false, 0), false);
+});
+
+test("the big drop box shows only with no documents and no upload running", async () => {
+  const { showEmptyDropBox } = await import("../src/lib/companyDocs.ts");
+  assert.equal(showEmptyDropBox({ loaded: true, count: 0, uploading: false }), true);
+  assert.equal(showEmptyDropBox({ loaded: true, count: 0, uploading: true }), false);
+  assert.equal(showEmptyDropBox({ loaded: true, count: 3, uploading: false }), false);
+  assert.equal(showEmptyDropBox({ loaded: false, count: 0, uploading: false }), false);
+  assert.equal(showEmptyDropBox({ loaded: true, count: 0, uploading: false, canAdd: false }), false);
+});
