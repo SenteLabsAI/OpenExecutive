@@ -69,6 +69,34 @@ def test_what_is_never_kept(label: str, raw: Any) -> None:
     assert wo.check_figure(raw, reply=REPLY, read=READ, today=TODAY) is None, label
 
 
+def test_the_apps_own_status_is_never_kept() -> None:
+    reply = "Open loops overdue since 28 Oct: 5 loops: 112, 118, 119, 120, 121, all overdue."
+    read = "[list_open_loops]\n112 118 119 120 121 overdue Morning Brief"
+    for raw in (
+        {"subject": "Open loops overdue since 28 Oct", "figure": "5", "source": "Morning Brief"},
+        {"subject": "Overdue items", "figure": "112, 118, 119, 120, 121", "source": "Morning Brief"},
+        {"subject": "Overdue items", "figure": "#112", "source": "Morning Brief"},
+    ):
+        assert wo.check_figure(raw, reply=reply, read=read, today=TODAY) is None, raw
+    # Thousands separators and a pair of numbers are still figures.
+    assert not wo._status_like("$1,243,800", "330,241 of 2,100,000", "Oct 31 2026")
+
+
+def test_status_tools_dont_feed_the_pass() -> None:
+    assert not wo.eligible(REPLY, [("list_open_loops", "112 overdue"), ("list_followups", "3 due")])
+    assert wo._read_text([("list_open_loops", "112 overdue"), ("read_document", "reserves 330,241")]) == (
+        "[read_document]\nreserves 330,241")
+
+
+def test_a_status_figure_already_kept_is_not_shown_or_read_back() -> None:
+    _keep(1, "Open loops overdue since 28 Oct", "5 loops: 112, 118, 119, all overdue", "Morning Brief")
+    _keep(1, "Reserves held", "$330,241")
+    assert [f["subject"] for f in wo.list_figures(1)] == ["Reserves held"]
+    from openexecutive.memory import changes
+
+    assert [c["title"] for c in changes._figures(1, "2000-01-01", None, None)] == ["Reserves held: $330,241"]
+
+
 def test_a_future_or_bad_date_is_dropped_not_the_figure() -> None:
     for bad in ("2027-01-01", "last week"):
         fig = wo.check_figure(_raw(as_of=bad), reply=REPLY, read=READ, today=TODAY)
@@ -240,9 +268,101 @@ def test_both_chat_paths_read_and_keep_figures() -> None:
 
     for method in (executive.Executive.stream_chat, executive.Executive.stream_chat_with_committee):
         src = inspect.getsource(method)
-        assert "build_worked_out_block, person_id, user_message, session=session" in src, method.__name__
+        assert "build_worked_out_block, person_id, _lookup_text(memory_text, user_message), session=session" in src, (
+            method.__name__)
         assert "schedule_worked_out_pass(" in src and "private=touched_mail" in src, method.__name__
+        # Nothing from a turn the person wrote nothing in (an app's own ask).
+        assert "if own_text.strip():\n" in src, method.__name__
     assert "<worked_out>" in inspect.getsource(executive.Executive._build_messages)
+
+
+def test_lookups_rank_on_the_speakers_own_words() -> None:
+    from openexecutive.orchestrator.executive import _lookup_text
+
+    assert _lookup_text("waitlist count?", "[What you sent on this call: storage bin $119]\nwaitlist count?") == (
+        "waitlist count?")
+    assert _lookup_text(None, "plan prices") == "plan prices"
+    assert _lookup_text("", "notes before a call") == "notes before a call"
+
+
+@pytest.mark.parametrize(("label", "raw", "reply"), [
+    ("a passcode", _raw(subject="Customer review Zoom passcode", figure="QX7F2K 9"), "Passcode QX7F2K 9."),
+    ("a meeting id", _raw(subject="Q1 planning meeting ID", figure="847 5788 2253"), "Meeting ID 847 5788 2253."),
+    ("a clock time", _raw(subject="Customer review new time", figure="Tue Nov 10, 3:00-4:00 PM ET"),
+     "Moved to Tue Nov 10, 3:00-4:00 PM ET."),
+    ("an error count", _raw(subject="Stripe BillingError occurrences", figure="40"), "It happened 40 times."),
+    ("watch suggestions", _raw(subject="Watch suggestions waiting", figure="5"), "5 waiting."),
+    ("read from the brief", _raw(subject="Waitlist count", figure="312", source="Morning Brief"),
+     "312 per the Morning Brief."),
+])
+def test_what_is_no_figure_or_only_repeated_is_not_kept(label: str, raw: dict[str, Any], reply: str) -> None:
+    assert wo.check_figure(raw, reply=reply, read=READ + "\nMorning Brief", today=TODAY) is None, label
+
+
+def test_a_figure_heard_on_a_call_says_so() -> None:
+    reply = "On the Nov 3 call: launch to about 20 people first."
+    fig = wo.check_figure(
+        _raw(subject="First launch batch", figure="about 20 people", source="Daily meeting notes, Nov 3 call"),
+        reply=reply, read="[read_meeting]\nDaily meeting notes, Nov 3: about 20", today=TODAY)
+    assert fig is not None and fig.source == "heard on a call: Daily meeting notes, Nov 3 call"
+
+
+def test_one_row_per_thing_however_it_was_worded() -> None:
+    _keep(1, "Waitlist count (admin overview)", "310", "Admin overview")
+    _keep(1, "Waitlist count (brief)", "312", "Admin overview")
+    _keep(1, "Waitlist count (launch email)", "315", "Admin overview")
+    assert [f["figure"] for f in wo.list_figures(1)] == ["315"]
+
+
+def test_different_things_with_similar_names_stay_apart() -> None:
+    for plan, price in (("Starter", "$100"), ("Growth", "$200"), ("Scale", "$300")):
+        _keep(1, f"{plan} plan monthly price", price, "Pricing doc")
+    assert len(wo.list_figures(1)) == 3
+
+
+def test_another_word_makes_another_figure() -> None:
+    _keep(1, "Q3 revenue", "$4.2M", "Ledger")
+    _keep(1, "Q3 revenue growth", "12%", "Ledger")
+    _keep(1, "Pine View net to owner per month", "$9,000", "Ledger")
+    _keep(1, "Pine View net to owner", "$108,000", "Ledger")
+    assert sorted(f["figure"] for f in wo.list_figures(1)) == ["$108,000", "$4.2M", "$9,000", "12%"]
+
+
+def test_figures_from_one_turn_never_replace_each_other() -> None:
+    ids = wo.add_figures(1, [wo.Figure("Reserves held", "$1", "Ledger"), wo.Figure("reserves held", "$2", "Ledger")],
+                         session_id="s1", private=False)
+    assert len(ids) == 2 and len(wo.list_figures(1)) == 2
+
+
+@pytest.mark.parametrize("figure", ["Invoice #4471 total: $1,200", "Ranked #1 of 40", "Pins sold: 140",
+                                    "Ratio 3:15 to 1"])
+def test_a_figure_that_only_looks_like_ids_or_a_time_is_kept(figure: str) -> None:
+    fig = wo.check_figure(_raw(subject="Order figures", figure=figure), reply=f"Per the DCA statement: {figure}",
+                          read=READ, today=TODAY)
+    assert fig is not None, figure
+
+
+def test_a_target_or_forecast_is_its_own_figure() -> None:
+    _keep(1, "Q3 revenue", "$1.2M", "Ledger")
+    _keep(1, "Q3 revenue target", "$1.5M", "Ledger")
+    _keep(1, "Headcount", "14", "People list")
+    _keep(1, "Headcount plan", "18", "People list")
+    assert sorted(f["figure"] for f in wo.list_figures(1)) == ["$1.2M", "$1.5M", "14", "18"]
+
+
+def test_a_document_called_a_brief_or_digest_is_still_a_source() -> None:
+    reply = "The creative brief puts the launch budget at $40,000."
+    fig = wo.check_figure(_raw(subject="Launch budget", figure="$40,000", source="Creative brief, Q3 launch doc"),
+                          reply=reply, read="[read_document]\nCreative brief: budget 40,000", today=TODAY)
+    assert fig is not None
+
+
+def test_a_longer_question_needs_more_than_one_word_in_common() -> None:
+    _keep(1, "Starter plan monthly price", "$100", "Pricing doc")
+    _keep(1, "Acme XL storage bin price", "$119.99", "Google search prices")
+    got = [f["subject"] for f in wo.figures_for(1, "What are our plan prices, monthly and yearly?")]
+    assert got == ["Starter plan monthly price"]
+    assert [f["subject"] for f in wo.figures_for(1, "storage bin?")] == ["Acme XL storage bin price"]
 
 
 # --------------------------------------------------------------------------- #
@@ -305,3 +425,12 @@ def test_an_edit_onto_another_figures_subject_replaces_that_figure() -> None:
     assert [(f["id"], f["figure"]) for f in figures] == [(other, "$330,241")]
     assert older not in [f["id"] for f in figures]
     assert [f["figure"] for f in wo.list_figures(2)] == ["$12"]
+
+
+def test_only_the_apps_own_loops_are_status() -> None:
+    """"Open loops" and "5 loops" are the app's status; any other loop is a
+    real figure, kept and shown so the person can see and forget it."""
+    assert wo._status_like("Open loops overdue", "5", "")
+    assert wo._status_like("Overdue", "5 loops", "")
+    assert not wo._status_like("Feedback loops closed per sprint", "14", "sprint review")
+    assert not wo._status_like("Closed-loop test pass rate", "92%", "QA report")

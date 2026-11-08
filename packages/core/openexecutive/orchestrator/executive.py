@@ -970,6 +970,14 @@ def _speaker_text(memory_text: str | None, user_message: str) -> str:
     return memory_text if memory_text is not None else user_message
 
 
+def _lookup_text(memory_text: str | None, user_message: str) -> str:
+    """What the memory lookups (lessons, figures, standing facts) rank
+    against: the speaker's own words when the caller gave them, so notes put
+    before the question (a call's recap, a shared screen) don't steer them;
+    the prompt when there are none."""
+    return _speaker_text(memory_text, user_message).strip() or user_message
+
+
 def _sync_consulted_departments_to_honcho(
     consulted_specialists: list[str],
     user_message: str,
@@ -1531,16 +1539,19 @@ class Executive:
             # What this workspace asked for differently before (memory.lessons):
             # a SQLite read, off the event loop like the facts.
             lessons = await asyncio.to_thread(
-                build_lessons_block, person_id, user_message, count=not chat_replay.is_replay(session)
+                build_lessons_block, person_id, _lookup_text(memory_text, user_message),
+                count=not chat_replay.is_replay(session)
             )
             from openexecutive.memory.worked_out import build_worked_out_block
 
             worked_out = await asyncio.to_thread(
-                build_worked_out_block, person_id, user_message, session=session
+                build_worked_out_block, person_id, _lookup_text(memory_text, user_message), session=session
             )
             if standing_facts is None:
                 # A SQLite read: off the event loop, like the other context.
-                standing_facts = await asyncio.to_thread(render_facts_for_prompt, query=user_message)
+                standing_facts = await asyncio.to_thread(
+                    render_facts_for_prompt, query=_lookup_text(memory_text, user_message)
+                )
             messages = self._build_messages(
                 session,
                 user_message,
@@ -1746,8 +1757,11 @@ class Executive:
             # when the turn touched their mailbox).
             from openexecutive.memory.worked_out import schedule_worked_out_pass
 
-            schedule_worked_out_pass(full_response, turn_calls, session=session,
-                                     person_id=person_id, private=touched_mail)
+            # Not from a turn the person wrote nothing in (``memory_text=""``,
+            # e.g. an app's own ask): its numbers repeat what it was shown.
+            if own_text.strip():
+                schedule_worked_out_pass(full_response, turn_calls, session=session,
+                                         person_id=person_id, private=touched_mail)
 
             # Mirror the completed exchange into Honcho so its server-side
             # extraction can update the peer card. Fire-and-forget; the
@@ -1756,7 +1770,7 @@ class Executive:
             # their contacts, mail they forwarded): the reply summarises that
             # mail, and peer and department memory are read on other people's
             # turns. Nor for a turn that touched the speaker's own mailbox.
-            if not _private_to_principal(session) and kept:
+            if not _private_to_principal(session) and kept and own_text.strip():
                 from openexecutive.memory.honcho_client import sync_turn as _honcho_sync
                 _honcho_sync(
                     speaker_text,
@@ -1925,15 +1939,18 @@ class Executive:
 
         working_style = build_style_block(person_id)
         lessons = await asyncio.to_thread(
-            build_lessons_block, person_id, user_message, count=not chat_replay.is_replay(session)
+            build_lessons_block, person_id, _lookup_text(memory_text, user_message),
+                count=not chat_replay.is_replay(session)
         )
         from openexecutive.memory.worked_out import build_worked_out_block
 
         worked_out = await asyncio.to_thread(
-            build_worked_out_block, person_id, user_message, session=session
+            build_worked_out_block, person_id, _lookup_text(memory_text, user_message), session=session
         )
         if standing_facts is None:
-            standing_facts = await asyncio.to_thread(render_facts_for_prompt, query=user_message)
+            standing_facts = await asyncio.to_thread(
+                render_facts_for_prompt, query=_lookup_text(memory_text, user_message)
+            )
         messages = self._build_messages(
             session,
             user_message,
@@ -2296,13 +2313,14 @@ class Executive:
             # What it worked out — see stream_chat.
             from openexecutive.memory.worked_out import schedule_worked_out_pass
 
-            schedule_worked_out_pass(final_response, turn_calls, session=session,
-                                     person_id=person_id, private=touched_mail)
+            if own_text.strip():
+                schedule_worked_out_pass(final_response, turn_calls, session=session,
+                                         person_id=person_id, private=touched_mail)
 
         # Mirror the completed exchange into Honcho (see stream_chat for
         # rationale, and for why a turn private to the principal — or one
         # that touched the speaker's own mailbox — is not).
-        if not _private_to_principal(session) and kept:
+        if not _private_to_principal(session) and kept and own_text.strip():
             from openexecutive.memory.honcho_client import sync_turn as _honcho_sync
             _honcho_sync(
                 speaker_text,

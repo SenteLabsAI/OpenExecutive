@@ -866,9 +866,15 @@ def test_only_a_fact_over_30_days_old_shows_its_date(db: Path) -> None:
 
 
 def test_both_chat_paths_sort_facts_by_the_message() -> None:
+    """Facts are sorted by the speaker's own words (memory_text), falling back
+    to the message, never by framing the person didn't write."""
     import inspect
 
     from openexecutive.orchestrator import executive
 
     for method in (executive.Executive.stream_chat, executive.Executive.stream_chat_with_committee):
-        assert "render_facts_for_prompt, query=user_message" in inspect.getsource(method), method.__name__
+        source = inspect.getsource(method)
+        assert "render_facts_for_prompt, query=_lookup_text(memory_text, user_message)" in source, method.__name__
+    assert executive._lookup_text(None, "the message") == "the message"
+    assert executive._lookup_text("their words", "framed prompt") == "their words"
+    assert executive._lookup_text("", "framed prompt") == "framed prompt"
