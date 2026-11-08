@@ -77,6 +77,31 @@ def test_research_says_what_it_did() -> None:
     )
 
 
+def test_research_line_counts_each_plain_step_including_held_ones() -> None:
+    artifact = _research(4, [
+        {"tool": "message_person", "ok": True, "result_preview": "sent", "done_label": "Messaged Dana: hi"},
+        {"tool": "send_department_message", "ok": True, "result_preview": "sent",
+         "done_label": "Posted to Sales: hi"},
+        {"tool": "create_alert", "ok": True, "result_preview": "raised", "done_label": "Flagged for you: x"},
+        {"tool": "message_person", "ok": True,
+         "result_preview": '{"status": "waiting_for_approval"}',
+         "done_label": "Waiting for your OK: messaged Lee: hi"},
+    ])
+    assert run_outcome.outcome_line(_run("executive_research", artifact=artifact)) == (
+        "Looked at 4 updates. Sent 2 messages, flagged 1 thing for you and left 1 step for your OK."
+    )
+
+
+def test_research_line_reads_runs_written_before_the_plain_write_up() -> None:
+    artifact = (
+        "# Executive research\n\n## Findings reviewed\n_3 finding(s) after dedup; x._\n\n"
+        "## Actions routed\n- ✓ `send_slack_dm` — sent\n- ✗ `message_person` — unknown tool — skipped\n"
+    )
+    assert run_outcome.outcome_line(_run("executive_research", artifact=artifact)) == (
+        "Looked at 3 updates. Sent 1 message."
+    )
+
+
 def test_quiet_research_says_nothing_needed_you() -> None:
     line = run_outcome.outcome_line(_run("executive_research", artifact=_research(1, [])))
     assert line == "Looked at 1 update. Nothing needed you."

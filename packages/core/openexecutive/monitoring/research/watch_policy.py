@@ -1345,6 +1345,8 @@ def _summary(proposal: WatchProposal, outcome: str, detail: str) -> dict[str, An
         "ok": outcome != "rejected",
         "outcome": outcome,
         "slug": proposal.slug,
+        # What the research write-up shows: the watch in words, not its slug.
+        "label": (proposal.display_label or proposal.target)[:160],
     }
 
 

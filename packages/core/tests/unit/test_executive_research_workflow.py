@@ -298,7 +298,8 @@ async def test_workflow_runs_end_to_end_with_stubbed_specialists(
     assert "verify" not in {e.step_id for e in step_starts}
     assert artifact, "workflow produced no artifact"
     assert "Acme raised $50M" in artifact
-    assert "send_slack_dm" in artifact
+    assert "## What I did\n- Messaged someone" in artifact
+    assert "send_slack_dm" not in artifact
     assert result_data is not None
     assert len(result_data["findings"]) == 1  # deduped
     # Consensus attribution
