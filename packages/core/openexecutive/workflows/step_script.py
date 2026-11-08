@@ -224,6 +224,8 @@ CHAT_OWN_TOOLS: tuple[str, ...] = (
     "add_watchlist_entry",
     "assign_open_loop",
     "close_open_loop",
+    "reopen_open_loop",
+    "update_open_loop",
     "create_alert",
     "create_goal",
     "find_alerts",

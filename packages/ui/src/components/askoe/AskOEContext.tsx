@@ -58,6 +58,7 @@ const ROUTE_GUIDE_MAP: Array<{ prefix: string; guideId: string; title: string }>
   { prefix: "/skills", guideId: "skills", title: "How it's done" },
   { prefix: "/memories", guideId: "pulse", title: "Memory" },
   { prefix: "/review", guideId: "review", title: "Review queue" },
+  { prefix: "/tasks", guideId: "people", title: "Tasks" },
   { prefix: "/jobs", guideId: "jobs", title: "Workflows" },
   { prefix: "/artifacts", guideId: "artifacts", title: "Documents" },
   { prefix: "/watchlist", guideId: "watchlist", title: "Watch list" },

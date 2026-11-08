@@ -55,7 +55,9 @@ GROUPS: dict[str, tuple[str, tuple[str, ...]]] = {
             "list_department_goals",
             "list_open_loops",
             "record_decision_outcome",
+            "reopen_open_loop",
             "update_department_goal",
+            "update_open_loop",
         ),
     ),
     "watch_and_alerts": (

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { type FormEvent, Fragment, type ReactNode, useCallback, useEffect, useId, useState } from "react";
 
@@ -329,7 +330,10 @@ function OpenLoopsSection({
       <h2 className={SECTION_TITLE_CLS}>Tasks</h2>
       <p className={INTRO_CLS}>
         Things they committed to, were asked for in conversation, or were assigned here.
-        Overdue ones are followed up automatically; close one once it&apos;s done.
+        Overdue ones are followed up automatically; close one once it&apos;s done.{" "}
+        <Link href="/tasks" className="text-accent hover:underline">
+          All tasks
+        </Link>
       </p>
       {canList && (
         <>

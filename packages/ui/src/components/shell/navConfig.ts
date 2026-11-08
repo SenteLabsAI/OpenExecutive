@@ -158,6 +158,12 @@ function youTabs(isOnboarded: boolean, roleKind: RoleKind | null): NavItem[] {
 
 const WORK_TABS: NavItem[] = [
   {
+    href: "/tasks",
+    label: "Tasks",
+    icon: "check-circle",
+    description: "What you and your team owe, with who, when and where it came from.",
+  },
+  {
     href: "/jobs",
     label: "Workflows",
     icon: "doc",
@@ -228,7 +234,7 @@ export function buildHubs({
     key: "work",
     label: "Work",
     icon: "briefcase",
-    description: "Workflows, finished documents and the watch list.",
+    description: "Tasks, workflows, finished documents and the watch list.",
     tabs: WORK_TABS,
   };
   const people: Hub =

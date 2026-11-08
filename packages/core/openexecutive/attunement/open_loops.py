@@ -271,6 +271,49 @@ class OpenLoop:
     due_at: str
     created_at: str
     originating_session_id: str | None
+    # The task view (GET /tasks): open / in_progress / waiting while open,
+    # "done" once closed; notes; when it last changed; and, once closed, when
+    # and why.
+    status: str = "open"
+    notes: str = ""
+    updated_at: str | None = None
+    completed_at: str | None = None
+    closed_reason: str | None = None
+
+
+# A task's status while it is open. Closed tasks read "done" whatever the
+# reason (the reason is kept apart).
+TASK_STATUSES = ("open", "in_progress", "waiting")
+_NOTES_MAX = 1000
+
+_LOOP_COLUMNS = (
+    "id, assigned_to_person_id, intent_text, awaiting_response_since, created_at, "
+    "originating_session_id, task_status, task_notes, task_updated_at, "
+    "task_completed_at, task_closed_reason, task_closed_due_at"
+)
+
+
+def _loop_from_row(r: Any, names: dict[int, str]) -> OpenLoop:
+    owner = int(r["assigned_to_person_id"])
+    is_open = r["awaiting_response_since"] is not None
+    status = (r["task_status"] or "open") if is_open else "done"
+    if status not in TASK_STATUSES and status != "done":
+        status = "open"
+    due = r["awaiting_response_since"] if is_open else (r["task_closed_due_at"] or "")
+    return OpenLoop(
+        id=int(r["id"]),
+        owner_person_id=owner,
+        owner_name=names.get(owner, f"person #{owner}"),
+        description=str(r["intent_text"]),
+        due_at=str(due or ""),
+        created_at=str(r["created_at"]),
+        originating_session_id=r["originating_session_id"],
+        status=status,
+        notes=str(r["task_notes"] or ""),
+        updated_at=r["task_updated_at"] or str(r["created_at"]),
+        completed_at=r["task_completed_at"],
+        closed_reason=r["task_closed_reason"],
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -326,8 +369,7 @@ def list_open_loops(
     if not resolved.exists():
         return []
     sql = (
-        "SELECT id, assigned_to_person_id, intent_text, awaiting_response_since, "
-        "created_at, originating_session_id FROM scheduled_actions "
+        f"SELECT {_LOOP_COLUMNS} FROM scheduled_actions "
         "WHERE kind = ? AND awaiting_response_since IS NOT NULL "
         "  AND assigned_to_person_id IS NOT NULL"
     )
@@ -340,18 +382,7 @@ def list_open_loops(
     with _get_conn(resolved) as conn:
         rows = conn.execute(sql, params).fetchall()
     names = _person_names() if rows else {}
-    return [
-        OpenLoop(
-            id=int(r["id"]),
-            owner_person_id=int(r["assigned_to_person_id"]),
-            owner_name=names.get(int(r["assigned_to_person_id"]), f"person #{r['assigned_to_person_id']}"),
-            description=str(r["intent_text"]),
-            due_at=str(r["awaiting_response_since"]),
-            created_at=str(r["created_at"]),
-            originating_session_id=r["originating_session_id"],
-        )
-        for r in rows
-    ]
+    return [_loop_from_row(r, names) for r in rows]
 
 
 def count_open_loops(person_id: int, db_path: Path | None = None) -> int:
@@ -451,6 +482,7 @@ def assign_open_loop(
     assigned_by_person_id: int,
     due_date: date | None = None,
     originating_session_id: str | None = None,
+    notes: str | None = None,
     db_path: Path | None = None,
 ) -> AssignResult:
     """Open a loop someone asked for explicitly — the chat tool and the People
@@ -497,6 +529,12 @@ def assign_open_loop(
                         originating_session_id=originating_session_id, db_path=db_path)
     if loop_id is None:
         return AssignResult(None, "duplicate")
+    clean_notes = _clean(notes or "", _NOTES_MAX).translate(_MARKUP_DEFANG)
+    if clean_notes:
+        from openexecutive.memory.episodic import _get_conn
+
+        with _get_conn(_db(db_path)) as conn:
+            conn.execute("UPDATE scheduled_actions SET task_notes = ? WHERE id = ?", (clean_notes, loop_id))
     _audit(
         f"open loop #{loop_id} assigned to person {owner.id}",
         {"op": "loop_assigned", "loop_id": loop_id, "owner_person_id": owner.id,
@@ -524,10 +562,13 @@ def close_open_loop(
             "SELECT assigned_to_person_id FROM scheduled_actions WHERE id = ? AND kind = ?",
             (loop_id, OPEN_LOOP_KIND),
         ).fetchone()
+        now = datetime.now(UTC).isoformat()
         cur = conn.execute(
-            "UPDATE scheduled_actions SET awaiting_response_since = NULL "
+            "UPDATE scheduled_actions SET task_closed_due_at = awaiting_response_since, "
+            "awaiting_response_since = NULL, task_completed_at = ?, task_closed_reason = ?, "
+            "task_updated_at = ? "
             "WHERE id = ? AND kind = ? AND awaiting_response_since IS NOT NULL",
-            (loop_id, OPEN_LOOP_KIND),
+            (now, reason, now, loop_id, OPEN_LOOP_KIND),
         )
         closed = cur.rowcount > 0
     owner_id = owner_row["assigned_to_person_id"] if owner_row else None
@@ -562,24 +603,280 @@ def get_open_loop(loop_id: int, *, db_path: Path | None = None) -> OpenLoop | No
         return None
     with _get_conn(resolved) as conn:
         row = conn.execute(
-            "SELECT id, assigned_to_person_id, intent_text, awaiting_response_since, "
-            "created_at, originating_session_id FROM scheduled_actions "
+            f"SELECT {_LOOP_COLUMNS} FROM scheduled_actions "
             "WHERE id = ? AND kind = ? AND awaiting_response_since IS NOT NULL "
             "  AND assigned_to_person_id IS NOT NULL",
             (loop_id, OPEN_LOOP_KIND),
         ).fetchone()
     if row is None:
         return None
-    owner = int(row["assigned_to_person_id"])
-    return OpenLoop(
-        id=int(row["id"]),
-        owner_person_id=owner,
-        owner_name=_person_names().get(owner, f"person #{owner}"),
-        description=str(row["intent_text"]),
-        due_at=str(row["awaiting_response_since"]),
-        created_at=str(row["created_at"]),
-        originating_session_id=row["originating_session_id"],
+    return _loop_from_row(row, _person_names())
+
+
+# --------------------------------------------------------------------------- #
+# Tasks: the same rows seen as a list people manage (GET /tasks, the Tasks
+# page and the chat tools): every state, edits, reopen.
+# --------------------------------------------------------------------------- #
+
+_PREFIX_RE = re.compile(r"^(?P<prefix>.+? committed to: |.+? asked .+? for: )(?P<title>.*)$", re.DOTALL)
+
+
+def task_title(description: str) -> str:
+    """The thing itself, without who owes it: "Ben Lee committed to: send the
+    quote" -> "send the quote". Anything else is returned as stored."""
+    m = _PREFIX_RE.match(description)
+    return m.group("title").strip() if m else description
+
+
+def get_task(loop_id: int, *, db_path: Path | None = None) -> OpenLoop | None:
+    """One task by id, open or closed."""
+    from openexecutive.memory.episodic import _get_conn
+
+    resolved = _db(db_path)
+    if not resolved.exists():
+        return None
+    with _get_conn(resolved) as conn:
+        row = conn.execute(
+            f"SELECT {_LOOP_COLUMNS} FROM scheduled_actions "
+            "WHERE id = ? AND kind = ? AND assigned_to_person_id IS NOT NULL",
+            (loop_id, OPEN_LOOP_KIND),
+        ).fetchone()
+    return _loop_from_row(row, _person_names()) if row is not None else None
+
+
+def list_tasks(
+    *,
+    owner_person_id: int | None = None,
+    state: str = "open",
+    status: str | None = None,
+    due_before: datetime | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    db_path: Path | None = None,
+) -> tuple[list[OpenLoop], int]:
+    """A page of tasks and how many match in all. ``state`` "open" lists the
+    open ones soonest due first (``status`` narrows to one open status and
+    ``due_before`` to those due by then); "done" lists the closed ones, most
+    recently closed first."""
+    from openexecutive.memory.episodic import _get_conn
+
+    resolved = _db(db_path)
+    if not resolved.exists():
+        return [], 0
+    where = "kind = ? AND assigned_to_person_id IS NOT NULL"
+    params: list[Any] = [OPEN_LOOP_KIND]
+    if state == "done":
+        where += " AND awaiting_response_since IS NULL"
+        order = "COALESCE(task_completed_at, created_at) DESC, id DESC"
+    else:
+        where += " AND awaiting_response_since IS NOT NULL"
+        order = "awaiting_response_since, id"
+        if status in TASK_STATUSES:
+            where += " AND COALESCE(task_status, 'open') = ?"
+            params.append(status)
+        if due_before is not None:
+            where += " AND awaiting_response_since <= ?"
+            params.append(due_before.isoformat())
+    if owner_person_id is not None:
+        where += " AND assigned_to_person_id = ?"
+        params.append(owner_person_id)
+    with _get_conn(resolved) as conn:
+        total = int(conn.execute(f"SELECT COUNT(*) AS n FROM scheduled_actions WHERE {where}", params)
+                    .fetchone()["n"])
+        rows = conn.execute(
+            f"SELECT {_LOOP_COLUMNS} FROM scheduled_actions WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
+            [*params, max(1, min(limit, 200)), max(0, offset)],
+        ).fetchall()
+    names = _person_names() if rows else {}
+    return [_loop_from_row(r, names) for r in rows], total
+
+
+@dataclass(frozen=True)
+class TaskChange:
+    """What :func:`update_task` or :func:`reopen_task` did: the task as it now
+    stands, or why not. On ``conflict`` the task is the latest copy and
+    ``fields`` names what someone else changed first."""
+
+    task: OpenLoop | None
+    reason: str | None = None
+    fields: tuple[str, ...] = ()
+
+
+def _due_date_of(loop: OpenLoop) -> str | None:
+    if not loop.due_at:
+        return None
+    try:
+        return datetime.fromisoformat(loop.due_at).astimezone(_user_tz()).date().isoformat()
+    except ValueError:
+        return None
+
+
+def _field_value(loop: OpenLoop, field: str) -> Any:
+    if field == "title":
+        return task_title(loop.description)
+    if field == "notes":
+        return loop.notes
+    if field == "status":
+        return loop.status
+    if field == "due_date":
+        return _due_date_of(loop)
+    if field == "owner_person_id":
+        return loop.owner_person_id
+    return None
+
+
+def update_task(
+    loop_id: int,
+    *,
+    edited_by_person_id: int,
+    title: str | None = None,
+    notes: str | None = None,
+    status: str | None = None,
+    due_date: date | None = None,
+    owner_person_id: int | None = None,
+    base: dict[str, Any] | None = None,
+    db_path: Path | None = None,
+) -> TaskChange:
+    """Change an open task's words, notes, status, due date or owner.
+
+    ``base`` holds the values the editor last saw for the fields they change;
+    when one of those changed since, nothing is written and the reason is
+    ``conflict`` (edits to other fields still apply when sent on their own).
+    Never raises on a refusal: ``reason`` is one of ``not_found``, ``closed``,
+    ``conflict``, ``missing_text``, ``bad_status``, ``unknown_owner``,
+    ``owner_is_contact``, ``owner_archived``, ``owner_at_cap``, ``duplicate``."""
+    from openexecutive.config import get_settings
+    from openexecutive.memory.episodic import _get_conn
+    from openexecutive.people.store import get_person
+
+    loop = get_task(loop_id, db_path=db_path)
+    if loop is None:
+        return TaskChange(None, "not_found")
+    if loop.status == "done":
+        return TaskChange(loop, "closed")
+    wanted = {
+        k: v for k, v in (
+            ("title", title), ("notes", notes), ("status", status),
+            ("due_date", due_date.isoformat() if due_date else None),
+            ("owner_person_id", owner_person_id),
+        ) if v is not None
+    }
+    stale = tuple(
+        f for f in wanted
+        if base is not None and f in base and base[f] != _field_value(loop, f)
+        and wanted[f] != _field_value(loop, f)
     )
+    if stale:
+        return TaskChange(loop, "conflict", stale)
+
+    sets: list[str] = []
+    params: list[Any] = []
+    description = loop.description
+    owner_id = loop.owner_person_id
+    if title is not None:
+        clean = _clean(title, _TEXT_MAX).translate(_MARKUP_DEFANG)
+        if len(clean) < _TEXT_MIN:
+            return TaskChange(loop, "missing_text")
+        m = _PREFIX_RE.match(description)
+        description = f"{m.group('prefix')}{clean}" if m else clean
+    if owner_person_id is not None and owner_person_id != loop.owner_person_id:
+        owner = get_person(owner_person_id)
+        if owner is None or owner.id is None:
+            return TaskChange(loop, "unknown_owner")
+        if owner.kind != "team":
+            return TaskChange(loop, "owner_is_contact")
+        if owner.archived:
+            return TaskChange(loop, "owner_archived")
+        settings = get_settings()
+        if count_open_loops(owner.id, db_path=db_path) >= settings.attunement_max_open_loops_per_person:
+            return TaskChange(loop, "owner_at_cap")
+        editor = get_person(edited_by_person_id)
+        editor_name = editor.full_name if editor is not None else "Someone"
+        what = task_title(description)
+        description = (
+            f"{owner.full_name} committed to: {what}" if edited_by_person_id == owner.id
+            else f"{editor_name} asked {owner.full_name} for: {what}"
+        )
+        owner_id = owner.id
+        sets += ["assigned_to_person_id = ?", "channel_ref = ?"]
+        params += [owner.id, f"person:{owner.id}"]
+    if description != loop.description or owner_id != loop.owner_person_id:
+        sets += ["intent_text = ?", "scope_key = ?"]
+        params += [description, _scope_key(owner_id, description)]
+    if notes is not None:
+        sets.append("task_notes = ?")
+        params.append(_clean(notes, _NOTES_MAX).translate(_MARKUP_DEFANG))
+    if status is not None:
+        if status not in TASK_STATUSES:
+            return TaskChange(loop, "bad_status")
+        sets.append("task_status = ?")
+        params.append(status)
+    if due_date is not None:
+        today = datetime.now(_user_tz()).date()
+        due = _resolve_due(due_date.isoformat(), today=today, default_days=0)
+        sets.append("awaiting_response_since = ?")
+        params.append(due.isoformat())
+    if not sets:
+        return TaskChange(loop)
+    sets.append("task_updated_at = ?")
+    params.append(datetime.now(UTC).isoformat())
+    resolved = _db(db_path)
+    try:
+        with _get_conn(resolved) as conn:
+            cur = conn.execute(
+                f"UPDATE scheduled_actions SET {', '.join(sets)} "
+                "WHERE id = ? AND kind = ? AND awaiting_response_since IS NOT NULL",
+                [*params, loop_id, OPEN_LOOP_KIND],
+            )
+    except sqlite3.IntegrityError:
+        return TaskChange(loop, "duplicate")
+    if cur.rowcount == 0:
+        return TaskChange(get_task(loop_id, db_path=db_path), "closed")
+    _audit(
+        f"task #{loop_id} changed",
+        {"op": "task_updated", "loop_id": loop_id, "fields": sorted(wanted),
+         "edited_by_person_id": edited_by_person_id},
+    )
+    return TaskChange(get_task(loop_id, db_path=db_path))
+
+
+def reopen_task(loop_id: int, *, reopened_by_person_id: int, db_path: Path | None = None) -> TaskChange:
+    """Open a closed task again, due when it was if that is still ahead, else
+    after the default window. ``reason`` ``not_found``, ``open`` (it already
+    is) or ``duplicate`` (the same task is open again already)."""
+    from openexecutive.config import get_settings
+    from openexecutive.memory.episodic import _get_conn
+
+    loop = get_task(loop_id, db_path=db_path)
+    if loop is None:
+        return TaskChange(None, "not_found")
+    if loop.status != "done":
+        return TaskChange(loop, "open")
+    now = datetime.now(UTC)
+    try:
+        was_due = datetime.fromisoformat(loop.due_at) if loop.due_at else None
+    except ValueError:
+        was_due = None
+    due = was_due if was_due is not None and was_due > now else (
+        now + timedelta(days=max(get_settings().attunement_loop_default_due_days, 1))
+    )
+    try:
+        with _get_conn(_db(db_path)) as conn:
+            cur = conn.execute(
+                "UPDATE scheduled_actions SET awaiting_response_since = ?, task_status = 'open', "
+                "task_completed_at = NULL, task_closed_reason = NULL, task_closed_due_at = NULL, "
+                "task_updated_at = ? WHERE id = ? AND kind = ? AND awaiting_response_since IS NULL",
+                (due.isoformat(), now.isoformat(), loop_id, OPEN_LOOP_KIND),
+            )
+    except sqlite3.IntegrityError:
+        return TaskChange(loop, "duplicate")
+    if cur.rowcount == 0:
+        return TaskChange(get_task(loop_id, db_path=db_path), "open")
+    _audit(
+        f"task #{loop_id} reopened",
+        {"op": "task_reopened", "loop_id": loop_id, "reopened_by_person_id": reopened_by_person_id},
+    )
+    return TaskChange(get_task(loop_id, db_path=db_path))
 
 
 def close_loops_for_person(person_id: int, *, reason: str, db_path: Path | None = None) -> int:

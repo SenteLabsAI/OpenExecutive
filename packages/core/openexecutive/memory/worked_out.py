@@ -87,7 +87,7 @@ _ASIDE = re.compile(r"\([^)]*\)")
 _STATUS_TOOLS = frozenset({
     "assign_open_loop", "check_admin_request", "close_open_loop", "list_apps", "list_artifacts",
     "list_department_goals", "list_followups", "list_open_loops", "list_people", "list_watchlist",
-    "list_workflows",
+    "list_workflows", "reopen_open_loop", "update_open_loop",
 })
 
 _TASKS: set[asyncio.Task[Any]] = set()

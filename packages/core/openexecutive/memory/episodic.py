@@ -348,6 +348,15 @@ def initialize_db(db_path: Path | None = None) -> None:
             ("required_scope", "TEXT"),
             # Who queued the row (ScheduledAction.created_by_person_id).
             ("created_by_person_id", "INTEGER"),
+            # Tasks (kind 'open_loop', attunement/open_loops.py): the status
+            # while open, notes, when it last changed, and on close when and
+            # why, plus the due time it had so a reopen can restore it.
+            ("task_status", "TEXT"),
+            ("task_notes", "TEXT"),
+            ("task_updated_at", "TEXT"),
+            ("task_completed_at", "TEXT"),
+            ("task_closed_reason", "TEXT"),
+            ("task_closed_due_at", "TEXT"),
         ):
             if col not in _sa_existing:
                 try:
