@@ -199,6 +199,16 @@ export function rowTarget(row: { source?: TimedPoint["source"] }): PointTarget {
   return pointTarget({ text: "", source: row.source });
 }
 
+/** The draft a "draft" row is about (its `draft:<id>` key), for the draft's
+ * own Send, See draft and Delete; null for any other row. */
+export function draftRowId(row: { kind: string; key: string }): number | null {
+  if (row.kind !== "draft") return null;
+  const m = /^draft:(\d+)$/.exec(row.key);
+  if (!m) return null;
+  const id = Number(m[1]);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /** A row's time: "2:31 PM" today, "Yesterday", else "Nov 2"; null for a

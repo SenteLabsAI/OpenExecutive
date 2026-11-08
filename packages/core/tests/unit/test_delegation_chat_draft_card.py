@@ -213,3 +213,51 @@ def test_a_draft_with_files_is_changed_in_the_mailbox(db: Path, owner: Any, monk
     # The row keeps the version Send compares with.
     assert drafts.get_row(row).message_id == before
     assert not drafts.set_version(row, "not-the-version", "x")
+
+
+def test_delete_removes_it_from_their_drafts(db: Path, owner: Any) -> None:
+    mailbox, row = _chat_draft(owner)
+    gone = asyncio.run(chat_draft_card.discard(owner, row, caller=LOCAL, gmail=mailbox, now=LATER))
+    assert gone == {"status": chat_draft_card.GONE}
+    assert "d1" not in mailbox.drafts and mailbox.sent == []
+    # Marked gone, so Home's row for it goes and Send refuses.
+    assert drafts.get_row(row).gone_at
+    assert _refused(send_chat_draft(owner, row, caller=LOCAL, gmail=mailbox, now=LATER)).code == "draft_gone"
+    # Again: already gone, nothing more to do.
+    again = asyncio.run(chat_draft_card.discard(owner, row, caller=LOCAL, gmail=mailbox, now=LATER))
+    assert again == {"status": chat_draft_card.GONE}
+
+
+def test_delete_leaves_a_draft_changed_in_the_mailbox(db: Path, owner: Any) -> None:
+    mailbox, row = _chat_draft(owner)
+    mailbox.edit("d1")
+    refused = _refused(chat_draft_card.discard(owner, row, caller=LOCAL, gmail=mailbox, now=LATER))
+    assert refused.code == "draft_changed"
+    assert "d1" in mailbox.drafts and not drafts.get_row(row).gone_at
+
+
+def test_the_delete_route_deletes_only_the_callers_own_draft(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from openexecutive.api.routes import delegation as route
+    from openexecutive.delegation import gmail as gmail_module
+
+    mailbox, row = _chat_draft(owner)
+    monkeypatch.setattr(gmail_module, "gmail_for", lambda email: mailbox)
+    app = FastAPI()
+    app.include_router(route.router)
+    client = TestClient(app)
+    headers = {"x-caller-email": _send_tests.OWNER}
+    theirs = drafts.record(owner.id + 1, source=drafts.SOURCE_CHAT, thread_id=None, draft_id="dz",
+                           message_id="mz", now=NOW)
+    resp = client.delete(f"/delegation/drafts/{theirs}", headers=headers)
+    assert resp.status_code == 404 and resp.json()["detail"]["code"] == "draft_not_found"
+    monkeypatch.delenv("OE_LOCAL_LOGIN")
+    resp = client.delete(f"/delegation/drafts/{row}", headers=headers)
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "caller_signing_required"
+    assert "d1" in mailbox.drafts
+    monkeypatch.setenv("OE_LOCAL_LOGIN", "1")
+    resp = client.delete(f"/delegation/drafts/{row}", headers=headers)
+    assert resp.status_code == 200 and resp.json()["status"] == "gone"
+    assert "d1" not in mailbox.drafts

@@ -462,7 +462,10 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
       })
       .catch((e) => console.error("Dismissing a Right now row failed", e));
   }, []);
-  const rightNowActions = { replies, onContinue, onDismiss: onDismissRow };
+  const onRowGone = useCallback((row: RightNowRow) => {
+    setToday((t) => t && { ...t, right_now: (t.right_now ?? []).filter((r) => r.key !== row.key) });
+  }, []);
+  const rightNowActions = { replies, onContinue, onDismiss: onDismissRow, onGone: onRowGone };
 
   const dateLabel = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
 

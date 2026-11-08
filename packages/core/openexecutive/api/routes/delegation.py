@@ -1305,6 +1305,21 @@ async def send_chat_draft(request: Request, row_id: int, body: ChatDraftSendIn) 
     return ChatDraftSentOut()
 
 
+@router.delete("/delegation/drafts/{row_id}", response_model=ChatDraftOut)
+async def delete_chat_draft(request: Request, row_id: int) -> ChatDraftOut:
+    """Delete a draft chat wrote as the caller from their Drafts, on their
+    tap (``delegation.chat_draft_card.discard``). Only the version its card
+    last saw; their own drafts only. Sends nothing."""
+    from openexecutive.delegation.chat_draft_card import discard
+    from openexecutive.delegation.reply_send import SendRefused
+
+    person = _caller(request)
+    try:
+        return ChatDraftOut(**await discard(person, row_id, caller=api_caller.caller(request)))
+    except SendRefused as refused:
+        raise _draft_refused(refused) from None
+
+
 @router.put("/delegation/replies/{decision_id}/recipients", response_model=ReplyCardOut)
 async def update_delegation_reply_recipients(
     request: Request, decision_id: int, body: ReplyRecipientsUpdate,
