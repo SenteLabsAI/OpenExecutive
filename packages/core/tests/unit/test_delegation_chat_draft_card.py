@@ -236,6 +236,20 @@ def test_delete_leaves_a_draft_changed_in_the_mailbox(db: Path, owner: Any) -> N
     assert "d1" in mailbox.drafts and not drafts.get_row(row).gone_at
 
 
+def test_delete_never_reports_a_draft_it_left_alone_as_deleted(
+    db: Path, owner: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mailbox, row = _chat_draft(owner)
+
+    async def left_alone(draft_id: str) -> bool:
+        mailbox.edit(draft_id)  # changed in the mailbox between the read and the delete
+        return False
+
+    monkeypatch.setattr(mailbox, "delete_draft", left_alone)
+    refused = _refused(chat_draft_card.discard(owner, row, caller=LOCAL, gmail=mailbox, now=LATER))
+    assert refused.code == "draft_changed"
+    assert "d1" in mailbox.drafts and not drafts.get_row(row).gone_at
+
 def test_the_delete_route_deletes_only_the_callers_own_draft(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     from fastapi import FastAPI
     from fastapi.testclient import TestClient

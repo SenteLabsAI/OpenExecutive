@@ -274,11 +274,25 @@ async def discard(
             if current["status"] != OPEN:
                 return current
             try:
-                await client.delete_draft(row.draft_id)
+                deleted = await client.delete_draft(row.draft_id)
             except GmailError as exc:
                 raise SendRefused(
                     502, "gmail_error", "Couldn't delete it in your mailbox. Try again in a moment.",
                 ) from exc
+            if not deleted:
+                # Left alone (it changed or stopped being a draft meanwhile)
+                # or already gone: say what it is now, and never call it deleted.
+                after = await _read(row, client, now)
+                if after["status"] == CHANGED:
+                    raise SendRefused(
+                        409, "draft_changed", "This draft was changed in your mailbox, so delete it there.",
+                        state=after,
+                    )
+                if after["status"] == OPEN:
+                    raise SendRefused(
+                        502, "gmail_error", "Couldn't delete it in your mailbox. Try again in a moment.",
+                    )
+                return after
             drafts.mark_gone(row.id, now)
             _audit("delegation_chat_draft_deleted", f"Person {person.id} deleted a chat draft on its card", {
                 "person_id": person.id, "draft_row": row.id,
