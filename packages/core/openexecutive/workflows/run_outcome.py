@@ -101,11 +101,13 @@ def _research_line(artifact: str) -> str:
     """`executive_research._render_artifact`: findings, then what it did."""
     found = re.search(r"_(\d+) (?:updates? reviewed|finding\(s\) after dedup)", artifact)
     looked = int(found.group(1)) if found else 0
-    messages = flagged = other = 0
+    messages = flagged = other = held = 0
     for line in _section(artifact, "What I did"):
         if not line.startswith("- "):
             continue
-        if line.startswith(("- Messaged", "- Posted to")):
+        if line.startswith("- Waiting for your OK"):
+            held += 1
+        elif line.startswith(("- Messaged", "- Posted to")):
             messages += 1
         elif line.startswith("- Flagged for you"):
             flagged += 1
@@ -133,6 +135,7 @@ def _research_line(artifact: str) -> str:
             _count(messages, "sent {n} message", "sent {n} messages"),
             _count(flagged, "flagged {n} thing for you", "flagged {n} things for you"),
             _count(other, "took {n} other step", "took {n} other steps"),
+            _count(held, "left {n} step for your OK", "left {n} steps for your OK"),
             _count(watching, "started watching {n} thing", "started watching {n} things"),
             _count(suggested, "suggested {n} thing to watch", "suggested {n} things to watch"),
         ) if part
