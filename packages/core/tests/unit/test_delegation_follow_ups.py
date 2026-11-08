@@ -227,3 +227,8 @@ def test_a_link_or_amount_goes(owner: Any) -> None:
     _on(owner, "balanced")
     for body in ("Hi Dana, the slides are at https://files.example.com/x", "Hi Dana, any news on the 20% figure?"):
         assert _check(owner, _nudge(body=body)) is None
+
+
+def test_a_nudge_stays_short(owner: Any) -> None:
+    _on(owner, "hands_off")
+    assert _check(owner, _nudge(body="Hi Dana, " + "x" * 700)) == "long"

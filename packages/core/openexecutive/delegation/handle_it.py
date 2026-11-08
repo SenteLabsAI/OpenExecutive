@@ -83,6 +83,8 @@ DEFAULT_MODE = "balanced"
 MIN_CONFIDENCE = 0.8
 # The longest reply or follow-up it sends on its own.
 MAX_BODY_CHARS = 4000
+# A follow-up is a nudge: it stays short.
+FOLLOW_UP_MAX_CHARS = 600
 
 KNOWN_RELATIONS = frozenset({"team", "contact", "correspondent"})
 # The classifier kinds a reply may be sent for on its own.
@@ -389,7 +391,7 @@ def _follow_up_refusal(
     going = [*reply.to, *reply.cc]
     if not going or len(going) > MAX_RECIPIENTS or set(going) != allowed:
         return "recipients"
-    if len(reply.body or "") > MAX_BODY_CHARS:
+    if len(reply.body or "") > FOLLOW_UP_MAX_CHARS:
         return "long"
     if any(f not in ALLOWED_FLAGS for f in reply.flags):
         return "flagged"
