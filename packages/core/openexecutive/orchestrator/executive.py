@@ -2883,9 +2883,8 @@ class Executive:
             # mail read is checked once its round is done (check_mail_read
             # below), and Balanced then holds it all only if one was flagged
             # or too big to check; a round that reads mail holds it all for
-            # that round, since its reads aren't checked yet. Posts to
-            # everyone and roster changes stay shut at every level
-            # (delegation.lockdown.mail_turn_withholds).
+            # that round, since its reads aren't checked yet; Hands-off holds
+            # none of it (delegation.lockdown.mail_turn_withholds).
             mail_touched_uses: list[dict[str, Any]] = []
             reads_mail_now = any(
                 tu["name"] in MAILBOX_TOOL_NAMES or tu["name"] in _OWN_RECALL_TOOL_NAMES for tu in dispatch_uses

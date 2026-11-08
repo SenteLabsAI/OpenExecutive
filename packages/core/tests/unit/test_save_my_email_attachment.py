@@ -417,6 +417,8 @@ def test_the_gateways_share_gate_still_runs_on_the_code_built_share(roster: Simp
     result = _save(session)
     assert result["status"] == "saved_not_shared"
     assert storage.named("google_workspace__manage_drive_access") == []
+    # Below Hands-off the grant waits on an Approve card, and the model says so.
+    assert "Approve card" in result["detail"]
 
 
 # --------------------------------------------------------------------------- #

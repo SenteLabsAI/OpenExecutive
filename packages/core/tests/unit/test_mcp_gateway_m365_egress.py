@@ -1177,3 +1177,34 @@ def test_onedrive_writes_fail_closed_when_drives_cannot_be_read(drives: Any) -> 
     args = {"drive-id": OWN_DRIVE, "driveItem-id": "01A", "body": {"name": "x", "folder": {}}}
     assert _blocked(_call(gateway, args, [], tool_name="microsoft_365__create-onedrive-folder"))
     assert _writes(call) == []
+
+
+def test_hands_off_replies_to_someone_not_in_people_as_gmail_does() -> None:
+    """Approvals is the one gate: under Hands-off an Outlook reply skips the
+    roster check, as a Gmail send does."""
+    from openexecutive.orchestrator import levels
+
+    gateway, session_call = _make_gateway_with_message(_graph_message(STRANGER, to=[EXEC_ADDR]))
+    args = {"messageId": "AAMkAGI=", "body": {"Comment": "sure"}}
+    with patch.object(levels, "relaxed", return_value=True):
+        result = _call(gateway, args, [ROSTER], tool_name="microsoft_365__reply-mail-message")
+    assert result == '{"ok": true}'
+    assert _lookups(session_call) == []
+
+
+def test_below_hands_off_a_reply_to_someone_not_in_people_is_a_card() -> None:
+    from openexecutive.orchestrator import levels
+
+    gateway, session_call = _make_gateway_with_message(_graph_message(STRANGER, to=[EXEC_ADDR]))
+    args = {"messageId": "AAMkAGI=", "body": {"Comment": "sure"}}
+    seen: list[str] = []
+
+    def card_or(blocked: str, tool: str, arguments: dict[str, Any], *, reason: str) -> str:
+        seen.append(reason)
+        return '{"status": "waiting_for_approval"}'
+
+    with patch.object(levels, "card_or", side_effect=card_or):
+        result = _call(gateway, args, [ROSTER], tool_name="microsoft_365__reply-mail-message")
+    assert json.loads(result)["status"] == "waiting_for_approval"
+    assert seen == [levels.NEW_PERSON]
+    assert session_call.await_count == 1  # only the lookup

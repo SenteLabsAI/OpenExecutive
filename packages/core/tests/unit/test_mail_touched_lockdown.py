@@ -697,11 +697,13 @@ def test_the_lockdown_follows_the_safety_level(
         assert lockdown.mail_lock_holds(session.turn_delegation) is holds  # type: ignore[attr-defined]
         assert (lockdown.outside_reach_refusal("run_executive_research") is not None) is holds
         assert (lockdown.outside_reach_refusal("schedule_followup") is not None) is holds
-        # Posts to everyone and roster changes stay shut at every level, and a
-        # contact the speaker didn't name still isn't added.
+        # Posts to everyone, roster changes and a contact the speaker didn't
+        # name follow the level too: held only while the lockdown holds.
         for tool in lockdown.MAIL_PRIVATE_WITHHELD_TOOLS:
-            assert lockdown.mail_turn_withholds(tool, {}), tool
-        assert lockdown.mail_turn_withholds("upsert_person", {"full_name": "Eve", "email": "eve@x.example"})
+            assert lockdown.mail_turn_withholds(tool, {}) is holds, tool
+        assert lockdown.mail_turn_withholds(
+            "upsert_person", {"full_name": "Eve", "email": "eve@x.example"}
+        ) is holds
         assert not lockdown.mail_turn_withholds("message_person", {})
         # This round reads mail: its reads aren't checked yet.
         if mode != "trust":
@@ -1064,6 +1066,24 @@ def test_posts_to_everyone_stay_held_whatever_the_lockdown_allows(
         assert lockdown.mail_lock_holds(session.turn_delegation)  # type: ignore[attr-defined]
         for tool in lockdown.MAIL_PRIVATE_WITHHELD_TOOLS:
             assert lockdown.mail_turn_withholds(tool, {}), tool
+    finally:
+        outside_content.end_turn(state)
+        current_session.reset(token)
+
+
+def test_hands_off_holds_no_post_or_roster_change_after_reading_mail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Approvals is the one gate: on Hands-off a mail read keeps nothing shut.
+    from openexecutive.orchestrator import content_trust, outside_content
+
+    monkeypatch.setattr(content_trust, "principal_only_withheld", lambda session: frozenset())
+    session, token, state = _pinned_turn("trust", mail_held=True)
+    try:
+        for tool in lockdown.MAIL_PRIVATE_WITHHELD_TOOLS:
+            assert not lockdown.mail_turn_withholds(tool, {}), tool
+            assert lockdown.outside_reach_refusal(tool) is None, tool
+        assert not lockdown.mail_turn_withholds("upsert_person", {"full_name": "Eve", "email": "eve@x.example"})
     finally:
         outside_content.end_turn(state)
         current_session.reset(token)

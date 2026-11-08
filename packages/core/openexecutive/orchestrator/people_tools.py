@@ -459,6 +459,18 @@ def turn_is_private_to_principal() -> bool:
     return getattr(current_session.get(), "private_to_principal", False) is True
 
 
+def private_turn_holds() -> bool:
+    """Whether a private turn (``turn_is_private_to_principal``) keeps a send
+    to the principal alone right now: not under Hands-off, nor for a step the
+    owner approved on a card (``orchestrator.levels.relaxed``). Below
+    Hands-off the dispatch guard already put such a step on a card."""
+    if not turn_is_private_to_principal():
+        return False
+    from openexecutive.orchestrator import levels
+
+    return not levels.relaxed()
+
+
 PRIVATE_TURN_REFUSAL = (
     "This conversation is private to the principal, so I can only send it to "
     "the principal. Tell the principal instead and let them decide who else "

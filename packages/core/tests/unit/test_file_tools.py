@@ -205,12 +205,42 @@ def test_a_job_result_is_saved_into_the_folder_under_the_name_asked_for(
     assert base64.b64decode(created[0]["base64_content"]) == b"half 2"
 
 
-def test_an_outsiders_folder_gets_nothing(company: Session, drive: list) -> None:
+def _cards(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
+    from openexecutive.orchestrator import levels
+
+    held: list[tuple[str, str]] = []
+
+    def card_or(blocked: str, tool: str, arguments: dict[str, Any], *, reason: str, mcp: bool = True) -> str:
+        held.append((tool, reason))
+        return json.dumps({"status": "waiting_for_approval", "blocked": json.loads(blocked)})
+
+    monkeypatch.setattr(levels, "card_or", card_or)
+    return held
+
+
+def test_an_outsiders_folder_is_an_approve_card_below_hands_off(
+    company: Session, drive: list, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    held = _cards(monkeypatch)
     drive[0][1]["value"] = "Mallory (mallory@outside.example)"
     conversation_files.keep(company.session_id, {"a.pdf": b"x"})
     out = _save({"file": "file:a.pdf", "folder": FOLDER})
-    assert out["status"] == "failed" and "outside the team" in out["detail"]
+    assert out["status"] == "waiting_for_approval" and "outside the team" in out["blocked"]["detail"]
+    assert held == [("save_file", "file_place")]
     assert not any(n.endswith("create_drive_file") for n, _ in drive[1:])
+
+
+def test_hands_off_saves_into_an_outsiders_folder(
+    company: Session, drive: list, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.orchestrator import levels
+
+    monkeypatch.setattr(levels, "relaxed", lambda: True)
+    drive[0][1]["value"] = "Mallory (mallory@outside.example)"
+    conversation_files.keep(company.session_id, {"a.pdf": b"x"})
+    out = _save({"file": "file:a.pdf", "folder": FOLDER})
+    assert out["status"] == "saved"
+    assert any(n.endswith("create_drive_file") for n, _ in drive[1:])
 
 
 def test_after_an_outside_read_it_saves_without_their_exact_words(
@@ -369,9 +399,11 @@ def test_a_team_only_folder_needs_no_card_and_a_lost_copy_isnt_saved(
     assert got["status"] == "failed" and "no longer kept" in got["detail"]
 
 
-def test_a_folder_open_to_anyone_with_the_link_gets_nothing(
+def test_a_folder_open_to_anyone_with_the_link_is_an_approve_card(
     company: Session, drive: list, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _cards(monkeypatch)
+
     async def call(gateway: Any, name: str, arguments: dict[str, Any]) -> str:
         drive.append((name, arguments))
         return _info("John (ceo@co.example)", perms=OUTSIDE_PERMS)
@@ -379,7 +411,7 @@ def test_a_folder_open_to_anyone_with_the_link_gets_nothing(
     monkeypatch.setattr(save, "_call", call)
     conversation_files.keep(company.session_id, {"a.pdf": b"x"})
     out = _save({"file": "file:a.pdf", "folder": FOLDER})
-    assert out["status"] == "failed" and "Everyone at partner.example" in out["detail"]
+    assert out["status"] == "waiting_for_approval" and "Everyone at partner.example" in out["blocked"]["detail"]
     assert not any(n.endswith("create_drive_file") for n, _ in drive[1:])
 
 

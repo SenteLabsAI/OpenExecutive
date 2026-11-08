@@ -814,6 +814,11 @@ async def handle_save_my_email_attachment(tool_input: dict[str, Any]) -> str:
             out["detail"] = (
                 "Saved and shared with them alone, as a viewer. Give them the link."
             )
+        elif saved.held:
+            out["detail"] = (
+                "Saved. Sharing it with them is on an Approve card, so the link "
+                "opens for them once they tap Approve. Tell them so in one line."
+            )
         else:
             out["detail"] = (
                 "Saved, but sharing it with them failed, so the link may not "

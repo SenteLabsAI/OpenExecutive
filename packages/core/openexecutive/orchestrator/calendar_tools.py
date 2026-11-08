@@ -347,7 +347,7 @@ def _resolve_attendees(
     from openexecutive.orchestrator.people_tools import (
         PRIVATE_TURN_REFUSAL,
         contacts_reachable_now,
-        turn_is_private_to_principal,
+        private_turn_holds,
     )
     from openexecutive.people.store import list_people
 
@@ -380,7 +380,7 @@ def _resolve_attendees(
             return {"error": f"person {person.full_name!r} (id={person_id}) has no email"}
         if getattr(person, "archived", False):
             return {"error": f"person {person.full_name!r} (id={person_id}) is archived"}
-        if turn_is_private_to_principal() and not person.is_principal:
+        if private_turn_holds() and not person.is_principal:
             return {"error": PRIVATE_TURN_REFUSAL}
         if outside_content.added_this_turn(person_id):
             return json.loads(outside_content.added_person_error(f"person_id {person_id}"))

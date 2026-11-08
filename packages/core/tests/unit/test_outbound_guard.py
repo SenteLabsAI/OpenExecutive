@@ -388,3 +388,51 @@ def test_discord_handler_suppresses_without_sending(monkeypatch: pytest.MonkeyPa
     assert json.loads(result)["status"] == "suppressed"
     send.assert_not_awaited()
     assert list_scheduled_actions(status="done", limit=100) == []
+
+
+def test_a_send_someone_asked_for_skips_the_anti_spam_limits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Approvals is the one gate on what a person asks: the limits only hold
+    the Executive's own outreach."""
+    from openexecutive.orchestrator.session import Session
+
+    class _S:
+        telegram_bot_token = "tg-test"
+
+    monkeypatch.setattr("openexecutive.config.get_settings", lambda: _S())
+    monkeypatch.setattr(
+        "openexecutive.people.store.find_person_by_telegram_chat_id", lambda _ref: object()
+    )
+    monkeypatch.setattr(
+        "openexecutive.orchestrator.outbound_guard.check_outbound_allowed",
+        lambda *_a, **_k: "duplicate suppressed",
+    )
+    send = AsyncMock(return_value="42")
+    token = schedule_tools.current_session.set(Session(session_id="web:asked"))
+    try:
+        with patch("openexecutive.integrations.telegram_bot.send_message", new=send):
+            result = asyncio.run(
+                schedule_tools.handle_send_telegram_message({"chat_id": 55, "text": "ping"})
+            )
+    finally:
+        schedule_tools.current_session.reset(token)
+    assert json.loads(result).get("status") != "suppressed"
+    send.assert_awaited()
+
+
+def test_own_outreach_is_a_tagged_send_or_a_run_nobody_is_in() -> None:
+    from openexecutive.attunement.outcomes import tag_proactive
+    from openexecutive.orchestrator.session import Session
+
+    assert schedule_tools._own_outreach()
+    token = schedule_tools.current_session.set(Session(session_id="web:asked"))
+    try:
+        assert not schedule_tools._own_outreach()
+        with tag_proactive("nudge"):
+            assert schedule_tools._own_outreach()
+    finally:
+        schedule_tools.current_session.reset(token)
+    token = schedule_tools.current_session.set(Session(session_id="sched:x", unattended=True))
+    try:
+        assert schedule_tools._own_outreach()
+    finally:
+        schedule_tools.current_session.reset(token)

@@ -54,8 +54,10 @@ UNATTENDED = "unattended"
 STRANGER = "stranger_mail"
 NEW_PERSON = "new_person"
 FILE_PLACE = "file_place"
+URL_FETCH = "url_fetch"
 REASONS: frozenset[str] = frozenset({
     OUTSIDE, OWN_MAIL, PRIVATE, SHARED, AI_APP, NOT_OWNER, UNATTENDED, STRANGER, NEW_PERSON, FILE_PLACE,
+    URL_FETCH,
 })
 
 # What the card says it waited for, in the owner's words.
@@ -70,6 +72,7 @@ _WHY: dict[str, str] = {
     STRANGER: "someone who isn't in People asked for it by email",
     NEW_PERSON: "it goes to someone who isn't in People",
     FILE_PLACE: "the folder it goes in is shared outside the company",
+    URL_FETCH: "it has a service fetch a web address",
 }
 
 # A step the owner approved on a card is being carried out
@@ -110,7 +113,7 @@ def relaxed() -> bool:
         return False
 
 
-def card_or(blocked: str, tool: str, arguments: dict[str, Any], *, reason: str) -> str:
+def card_or(blocked: str, tool: str, arguments: dict[str, Any], *, reason: str, mcp: bool = True) -> str:
     """A connected app's call a check stopped below Hands-off: on a turn
     someone is in, an Approve card for the owner; else the check's own
     error. A stranger's mail turn gets the card too: its owner decides."""
@@ -123,7 +126,7 @@ def card_or(blocked: str, tool: str, arguments: dict[str, Any], *, reason: str) 
         # failed instead of a fresh card.
         if session is None or getattr(session, "unattended", False) is True:
             return blocked
-        return hold(tool, arguments, mcp=True, reason=reason, session=session)
+        return hold(tool, arguments, mcp=mcp, reason=reason, session=session)
     except Exception:
         logger.warning("levels: couldn't put a stopped call on a card", exc_info=True)
         return blocked
