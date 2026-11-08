@@ -147,6 +147,22 @@ async def _honcho_snippet(person: Person) -> str:
         return ""
 
 
+def _local_snippet(person: Person) -> str:
+    """How a teammate works, from our own memory (``memory.person_recall``),
+    when Honcho has nothing: only for someone who shares their work style
+    with the team. "" otherwise. Never raises."""
+    try:
+        from openexecutive.memory import history
+        from openexecutive.memory.person_recall import work_style
+
+        if person.id is None or not history.can_share_work_style(person) or not history.shares_work_style(person.id):
+            return ""
+        return work_style(person.id)
+    except Exception:
+        logger.info("person insight: local snippet failed for person_id=%s", person.id)
+        return ""
+
+
 async def generate_person_insight(
     person: Person,
     signals: dict[str, Any],
@@ -161,7 +177,7 @@ async def generate_person_insight(
         from openexecutive.audit.usage import log_model_usage
         from openexecutive.providers import get_provider
 
-        honcho = (await _honcho_snippet(person)).strip()
+        honcho = (await _honcho_snippet(person)).strip() or _local_snippet(person)
         content = "TEAM MEMBER SIGNALS:\n" + _render_signals(signals)
         if honcho:
             content += f"\n\nRELATIONSHIP CONTEXT (from memory):\n{honcho[:600]}"

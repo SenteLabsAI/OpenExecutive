@@ -401,6 +401,7 @@ def test_no_reminder_for_chat_promises_other_days_or_the_switch_off(
     _note(roster.owner, "the deck goes to Sam", due=TODAY + timedelta(days=1))
     _note(roster.owner, "the venue is booked", kind="shared", due=TODAY)
     _note(roster.teammate, "the venue deposit goes in", due=TODAY)
+    h.set_person_settings(roster.teammate, by="test", reply_notes=False)
     assert asyncio.run(hr.remind_due(NOW)) == 0 and sends == []
 
 

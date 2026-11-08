@@ -101,11 +101,11 @@ def _recall(session: Session | None, query: str = "") -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def test_only_once_they_turned_reply_notes_on(roster: SimpleNamespace) -> None:
-    assert ht.recall_person(_web(roster.teammate)) is None
-    h.set_person_settings(roster.teammate, by="test", reply_notes=True)
+def test_a_teammate_keeps_notes_until_they_turn_it_off(roster: SimpleNamespace) -> None:
     person = ht.recall_person(_web(roster.teammate))
     assert person is not None and person.id == roster.teammate
+    h.set_person_settings(roster.teammate, by="test", reply_notes=False)
+    assert ht.recall_person(_web(roster.teammate)) is None
 
 
 def test_the_owner_keeps_notes_until_they_turn_it_off(roster: SimpleNamespace) -> None:

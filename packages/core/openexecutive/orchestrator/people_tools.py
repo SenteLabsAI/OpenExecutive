@@ -1447,7 +1447,9 @@ def _contact_note_answer(person_id: int, target_person_id: int | None) -> str | 
 
 
 async def handle_ask_about_person(input: dict[str, Any]) -> str:
-    """Query Honcho's per-person memory via the directional_chat wrapper.
+    """Query Honcho's per-person memory via the directional_chat wrapper,
+    falling back to our own stores (``memory.person_recall``) when it has
+    nothing: off, or nothing known yet.
 
     Lives here (vs. honcho_client) because it's the Anthropic tool
     *handler*: parameter coercion, error JSON shape, and clamping the
@@ -1513,6 +1515,11 @@ async def handle_ask_about_person(input: dict[str, Any]) -> str:
             target_person_id=None,
             reasoning_level=reasoning_level,
         )
+        if not answer:
+            # Peer memory off or empty: how they work, from our own stores.
+            from openexecutive.memory.person_recall import work_style
+
+            answer = work_style(person_id)
         if guard_contacts and answer and _names_a_contact((answer,)):
             return json.dumps(
                 {"person_id": person_id, "target_person_id": None,
@@ -1530,6 +1537,12 @@ async def handle_ask_about_person(input: dict[str, Any]) -> str:
         target_person_id=target_person_id,
         reasoning_level=reasoning_level,
     )
+    if not answer and target_person_id is None:
+        # Peer memory off or empty: their own notes and how they like
+        # replies, from our own stores.
+        from openexecutive.memory.person_recall import own_memory
+
+        answer = own_memory(person_id, question)
     # Empty answer is a normal outcome (Honcho disabled, no data, error
     # swallowed by the wrapper) — surface `found: false` rather than a
     # raw "" so the model knows it's an empty result, not a tool failure.

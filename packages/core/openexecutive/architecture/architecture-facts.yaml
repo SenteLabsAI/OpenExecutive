@@ -3085,6 +3085,17 @@ memory:
       history_* tables swap with client slots and the factory reset clears them.
 
 peer_memory:
+  when_off: |
+    Every Honcho-only use falls back to the company's own database, so
+    switching peer memory off loses no feature. ask_about_person reads
+    ``memory.person_recall`` (the asker's own Keep track notes and style
+    rules; for a teammate who shares their work style, role, departments
+    and style rules, never notes). append_department_note also writes
+    ``department_notes`` (``memory.department_notes``, newest 200 per
+    department), which a department-bound specialist's prefetch reads when
+    Honcho has nothing. The brief's person insight falls back to the shared
+    work style. Keep track of what happens is on by default for every team
+    member. The About you card reads Honcho only and hides when it is off.
   what: |
     External peer-keyed memory layer that gives the Executive durable,
     cross-channel recall at two scopes:
