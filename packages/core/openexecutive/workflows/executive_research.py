@@ -1717,8 +1717,9 @@ _DONE_HEADLINE_KEYS: dict[str, tuple[str, ...]] = {
 
 
 def _done_label(tool: str, tool_input: dict[str, Any], result: str) -> str:
-    """One plain line for a call the routing pass made: what it did, to whom,
-    and the start of what it said. A call held for approval says so."""
+    """One plain line for a call the routing pass made: what it did and to
+    whom, plus the headline of a card or suggestion, never a message's own
+    words. A call held for approval says so."""
     label = _DONE_LABELS.get(tool) or tool.replace("_", " ").strip().capitalize()
     if tool == "message_person":
         try:
