@@ -545,6 +545,8 @@ async def _send_reply(
     # training). The rest is the second yes.
     confirm = dict(body.edits or {})
     example = confirm.pop("example", None)
+    # An older page's training "allow" means nothing now.
+    confirm.pop("allow", None)
     try:
         await send_approved_reply(
             instance, caller=api_caller.caller(request), resolver=resolver, confirm=confirm,
