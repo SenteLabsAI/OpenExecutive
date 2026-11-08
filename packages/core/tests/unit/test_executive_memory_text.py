@@ -146,7 +146,9 @@ def test_empty_memory_text_is_honoured_not_replaced_by_the_prompt() -> None:
     record nothing for the person, not fall back to the framed prompt, and
     gives extraction nothing to quote from (should_extract skips it)."""
     seen = _drive("stream_chat", memory_text="")
-    assert seen["person"] == [""]
+    # Not mirrored to peer memory at all: with no words of theirs, only the
+    # reply would go, and it says nothing about them.
+    assert seen["person"] == []
     assert seen["extract"] == []
     assert seen["loops"] == [""]
 
