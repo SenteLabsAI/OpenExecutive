@@ -63,3 +63,20 @@ test("schedules show in the viewer's own time, with summer time", () => {
   assert.equal(describeCadenceLocal(null), "Only when you run it");
   assert.equal(describeCadenceLocal("odd"), "odd");
 });
+
+test("an impossible time falls back to the saved text instead of rolling over", () => {
+  assert.equal(describeCadenceLocal("daily@25:00", "America/New_York"), "Every day at 25:00 UTC");
+  assert.equal(describeCadenceLocal("weekly@mon@09:60", "America/New_York"), "Every Monday at 09:60 UTC");
+});
+
+test("a quarterly run names the local day", () => {
+  const now = new Date(Date.UTC(2026, 10, 8, 12));
+  assert.equal(
+    describeCadenceLocal("quarterly@01-02:00", "America/New_York", now),
+    "Quarterly on day 31 at 9:00 PM EST",
+  );
+  assert.equal(
+    describeCadenceLocal("quarterly@15-14:00", "America/New_York", now),
+    "Quarterly on day 15 at 9:00 AM EST",
+  );
+});

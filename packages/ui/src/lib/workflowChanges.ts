@@ -32,6 +32,15 @@ export function describeCadence(cadence: string | null | undefined): string {
 const DOW = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 const HHMM = /^(\d{1,2}):(\d{2})$/;
 
+/** [hour, minute] of a valid "HH:MM", else null (25:00 must not roll over). */
+function hhmm(s: string): [number, number] | null {
+  const m = HHMM.exec(s);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  return h <= 23 && min <= 59 ? [h, min] : null;
+}
+
 function localTime(d: Date, timeZone?: string): string {
   return d.toLocaleTimeString("en-US", {
     hour: "numeric",
@@ -61,27 +70,39 @@ export function describeCadenceLocal(
   const mo = now.getUTCMonth();
   const dd = now.getUTCDate();
   if (parts[0] === "daily" && parts.length === 2) {
-    const m = HHMM.exec(parts[1]);
-    if (m) {
-      const d = new Date(Date.UTC(y, mo, dd, Number(m[1]), Number(m[2])));
+    const t = hhmm(parts[1]);
+    if (t) {
+      const d = new Date(Date.UTC(y, mo, dd, t[0], t[1]));
       return `Every day at ${localTime(d, timeZone)}`;
     }
   }
   if (parts[0] === "weekly" && parts.length === 3) {
-    const m = HHMM.exec(parts[2]);
+    const t = hhmm(parts[2]);
     const dow = DOW.indexOf(parts[1].toLowerCase());
-    if (m && dow >= 0) {
+    if (t && dow >= 0) {
       const ahead = (dow - now.getUTCDay() + 7) % 7;
-      const d = new Date(Date.UTC(y, mo, dd + ahead, Number(m[1]), Number(m[2])));
+      const d = new Date(Date.UTC(y, mo, dd + ahead, t[0], t[1]));
       const day = d.toLocaleDateString("en-US", { weekday: "long", timeZone });
       return `${day}s at ${localTime(d, timeZone)}`;
     }
   }
   if (parts[0] === "quarterly" && parts.length === 2) {
-    const m = /^(\d{1,2})-(\d{1,2}):(\d{2})$/.exec(parts[1]);
-    if (m) {
-      const d = new Date(Date.UTC(y, mo, Number(m[1]), Number(m[2]), Number(m[3])));
-      return `Quarterly on day ${Number(m[1])} at ${localTime(d, timeZone)}`;
+    const m = /^(\d{1,2})-(\d{1,2}:\d{2})$/.exec(parts[1]);
+    const t = m && hhmm(m[2]);
+    const day = m ? Number(m[1]) : 0;
+    if (m && t && day >= 1 && day <= 31) {
+      // The next quarter month (Jan, Apr, Jul, Oct) that has that day, so
+      // the 31st never rolls into the month after.
+      for (let k = 0; k < 12; k++) {
+        const month = mo + k;
+        if (month % 3 !== 0) continue;
+        const d = new Date(Date.UTC(y, month, day, t[0], t[1]));
+        if (d.getUTCDate() !== day) continue;
+        // The local day can differ from the UTC one (the 1st at 02:00 UTC is
+        // the evening before in New York), so read it from the converted date.
+        const localDay = d.toLocaleDateString("en-US", { day: "numeric", timeZone });
+        return `Quarterly on day ${localDay} at ${localTime(d, timeZone)}`;
+      }
     }
   }
   return describeCadence(cadence);
