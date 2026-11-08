@@ -23,6 +23,8 @@ from openexecutive.workflows import persistence as wf_persistence
 from openexecutive.workflows.base import WorkflowEvent
 from openexecutive.workflows.department_check_in import DepartmentCheckInWorkflow
 
+pytestmark = pytest.mark.usefixtures("stored_department_levels")
+
 
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

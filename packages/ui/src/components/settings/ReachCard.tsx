@@ -3,23 +3,19 @@
 import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 
-import LeadRulesEditor from "@/components/settings/LeadRulesEditor";
 import ModePicker from "@/components/settings/ModePicker";
 import SettingsCard from "@/components/settings/SettingsCard";
 import Button from "@/components/ui/Button";
 import {
-  addMyLeadRule,
-  deleteMyLeadRule,
   getDelegation,
-  getMyLeadRules,
+  getOutsideContent,
   setReach,
   setTraining,
   type DelegationSettings,
-  type LeadRule,
+  type OutsideContentMode,
 } from "@/lib/api";
 import {
-  HANDLE_IT_MODES,
-  LEAD_LINE,
+  APPROVALS_SENDS,
   SENDS_ANCHOR,
   WRITES_ANCHOR,
   reachForSend,
@@ -32,8 +28,8 @@ import {
 // What it writes and sends as you, from your own mailbox: one setting on the
 // server (PUT /delegation/reach) shown as two pickers. WritesCard, on
 // Delegate → Act as me, is the steps that write and never send. SendsCard,
-// on Delegate → Handle it for me, is the steps that send on their own, with
-// In training (delegation/training.py) and Your rules. Handle it for me
+// on Delegate → Handle it for me, is one switch: what goes on its own is the
+// Approvals level's call (Settings → Your Executive). Handle it for me
 // builds on the inbox replies, so SendsCard opens only once WritesCard is at
 // Draft replies automatically, and moving WritesCard below that says Handle it for me
 // stops too. Moving either down says what stops before it saves.
@@ -275,12 +271,9 @@ export function WritesCard({
   );
 }
 
-// Delegate → Handle it for me: what it sends as you on its own. Off, In
-// training (only the people you ticked on a card go on their own) or On
-// (the step below decides). The steps show under On only: in training the
-// server lets nothing else go (handle_it.refusal), whatever the step.
-type SendMode = "off" | "training" | "on";
-
+// Delegate → Handle it for me: one switch. What goes on its own is the
+// Approvals level's (delegation/handle_it.py approvals_hold), shown here
+// with a link to change it.
 export function SendsCard({
   settings,
   onSettings,
@@ -289,72 +282,33 @@ export function SendsCard({
   onSettings: (next: DelegationSettings) => void;
 }) {
   const { busy, error, save } = useReachSave(onSettings);
-  const [confirming, setConfirming] = useState<SendStep | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [level, setLevel] = useState<OutsideContentMode | null>(null);
   useJumpTo(SENDS_ANCHOR);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    getOutsideContent(controller.signal)
+      .then((next) => setLevel(next.mode))
+      .catch(() => setLevel(null));
+    return () => controller.abort();
+  }, []);
 
   const connected = settings.gmail?.status === "connected";
   const writesInbox = writeOf(settings) === "inbox";
   const current = sendOf(settings);
-  const training = Boolean(settings.training?.replies || settings.training?.follow_ups);
-  const mode: SendMode = current === "off" ? "off" : training ? "training" : "on";
   const canSend = Boolean(settings.handle_it?.available);
-  const noSigning = canSend ? null : "Needs signed sign-ins on this server.";
-  // Where On starts from Off: the step it was last at, never Everything.
-  const lastStep = (settings.handle_it?.mode ?? "balanced") as SendStep;
+  const levelText = level ? APPROVALS_SENDS[level] : null;
 
-  const steps: Step<SendStep>[] = [
-    ...HANDLE_IT_MODES.map((m) => ({
-      value: m.mode as SendStep,
-      label: m.label,
-      line: `${m.replies} Follow-ups: ${m.followUps}`,
-    })),
-    ...(settings.handle_it?.lead_available
-      ? [{ value: "everything" as SendStep, label: "Everything", line: LEAD_LINE }]
-      : []),
-  ];
-  const order = steps.map((s) => s.value);
-
-  const pickStep = (to: SendStep) => {
+  const pick = (to: SendStep) => {
     if (to === current) return;
-    if (order.indexOf(to) < order.indexOf(current)) {
-      setConfirming(to);
-      return;
-    }
-    void save(() => setReach(reachForSend(to)));
-  };
-
-  const pickMode = (to: SendMode) => {
-    setConfirming(null);
     if (to === "off") {
-      setConfirming("off");
+      setConfirming(true);
       return;
     }
-    if (to === "training") {
-      // Into training first, so nothing goes on its own on the way.
-      void save(async () => {
-        const next = await setTraining({ replies: true, follow_ups: true });
-        return current === "off" ? setReach(reachForSend(lastStep)) : next;
-      });
-      return;
-    }
-    void save(async () => {
-      const next = await setTraining({ replies: false, follow_ups: false });
-      return current === "off" ? setReach(reachForSend(lastStep)) : next;
-    });
+    setConfirming(false);
+    void save(() => setReach(reachForSend("on")));
   };
-
-  const stops = (to: SendStep): string => {
-    if (to === "off") return "It stops sending replies and follow-ups on its own. Every reply waits for you.";
-    if (current === "everything") return "It goes back to sending only what this level allows.";
-    return "It sends less on its own: only what this level allows.";
-  };
-
-  const modeLine =
-    mode === "off"
-      ? "Every reply waits for you to send."
-      : mode === "training"
-        ? "Every reply and follow-up comes to you first. Tick “on its own next time” on a card and it answers that person on its own from then on."
-        : "It sends what the step below allows.";
 
   return (
     <div id={SENDS_ANCHOR} className="scroll-mt-24">
@@ -383,85 +337,47 @@ export function SendsCard({
           </div>
         ) : (
           <>
-            <ModePicker<SendMode>
+            <ModePicker<SendStep>
               labelledBy="sends-label"
-              value={mode}
+              value={current}
               disabled={busy}
               options={[
                 { value: "off", label: "Off" },
-                { value: "training", label: "In training", disabled: !canSend },
                 { value: "on", label: "On", disabled: !canSend },
               ]}
-              onPick={pickMode}
+              onPick={pick}
             />
-            <p className="mt-3 text-sm text-fg-muted leading-relaxed">{noSigning && mode === "off" ? noSigning : modeLine}</p>
+            <p className="mt-3 text-sm text-fg-muted leading-relaxed">
+              {current === "off"
+                ? canSend
+                  ? "Every reply waits for you to send."
+                  : "Needs signed sign-ins on this server."
+                : levelText
+                  ? `Approvals is on ${levelText.label}. ${levelText.line}`
+                  : "Approvals decides what goes on its own."}
+            </p>
+            {current === "on" && (
+              <Link href="/settings/executive" className="mt-1 inline-block text-sm font-semibold text-accent hover:underline">
+                Change Approvals
+              </Link>
+            )}
             {confirming && (
               <ConfirmDown
-                text={
-                  confirming === "off"
-                    ? `Turn Handle it for me off? ${stops("off")}`
-                    : `Move to ${steps.find((s) => s.value === confirming)?.label}? ${stops(confirming)}`
-                }
+                text="Turn Handle it for me off? It stops sending replies and follow-ups on its own. Every reply waits for you."
                 busy={busy}
                 onConfirm={() =>
-                  void save(() => setReach(reachForSend(confirming))).then((ok) => ok && setConfirming(null))
+                  void save(() => setReach(reachForSend("off"))).then((ok) => ok && setConfirming(false))
                 }
-                onCancel={() => setConfirming(null)}
+                onCancel={() => setConfirming(false)}
               />
             )}
-            {mode === "on" && (
-              <div className="mt-5 border-t border-line pt-4">
-                <h3 id="sends-steps-label" className="mb-3 text-[15px] font-semibold text-fg">
-                  How much it sends
-                </h3>
-                <StepList
-                  name="sends"
-                  labelledBy="sends-steps-label"
-                  steps={steps}
-                  current={current}
-                  busy={busy}
-                  onPick={pickStep}
-                />
-              </div>
-            )}
             <p className="mt-5 border-t border-line pt-4 text-sm text-fg-muted">
-              Money, contracts, legal, hiring, the press and passwords always wait for you, and it never writes to
-              anyone the email didn&apos;t go to.
+              It never writes to anyone the email didn&apos;t go to.
             </p>
-            {current === "everything" && mode === "on" && <YourRules />}
           </>
         )}
         {error && <p className="mt-3 text-sm text-red-500">{error}</p>}
       </SettingsCard>
-    </div>
-  );
-}
-
-// At Everything, your own rules: a reply matching one waits for you, on top
-// of your company's rules (GET/POST/DELETE /delegation/lead-rules).
-function YourRules() {
-  const [rules, setRules] = useState<LeadRule[] | null>(null);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    getMyLeadRules(controller.signal)
-      .then(setRules)
-      .catch(() => setRules(null));
-    return () => controller.abort();
-  }, []);
-
-  return (
-    <div className="mt-5 border-t border-line pt-4">
-      <h3 className="text-[15px] font-semibold text-fg">Your rules</h3>
-      <p className="mt-1 mb-3 text-sm text-fg-muted">
-        Replies matching one of these wait for you, on top of your company&apos;s rules.
-      </p>
-      <LeadRulesEditor
-        rules={rules ?? []}
-        emptyText="No rules of your own yet."
-        onAdd={async (kind, value) => setRules(await addMyLeadRule(kind, value))}
-        onDelete={async (id) => setRules(await deleteMyLeadRule(id))}
-      />
     </div>
   );
 }

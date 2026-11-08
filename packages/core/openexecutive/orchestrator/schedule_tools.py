@@ -194,6 +194,21 @@ def _record_send_to_activity(
         logger.exception("record_send_to_activity: outer guard caught failure")
 
 
+def _own_outreach() -> bool:
+    """Whether a send is the Executive's own outreach: a proactive pass
+    tagged it (``attunement.outcomes``), or no person is in the turn (an
+    unattended run, or no session at all). Errors count as its own."""
+    try:
+        from openexecutive.attunement.outcomes import current_tag
+
+        if current_tag() is not None:
+            return True
+        session = current_session.get()
+        return session is None or getattr(session, "unattended", False) is True
+    except Exception:
+        return True
+
+
 def _guard_outbound(*, tool: str, channel: str, channel_ref: str, text: str) -> str | None:
     """Run the outbound anti-spam guard before a direct send.
 
@@ -210,7 +225,11 @@ def _guard_outbound(*, tool: str, channel: str, channel_ref: str, text: str) -> 
     if outside_content.added_ref(channel_ref):
         # On the roster only since this turn (outside_content).
         return outside_content.added_person_error(f"{channel_ref!r}")
-    reason = check_outbound_allowed(channel, channel_ref, text)
+    # The duplicate and rate checks stop a runaway loop whoever started the
+    # turn (a stranger's mail could steer a burst of sends). Quiet hours are
+    # for the Executive's own outreach (a tagged proactive send, or a run
+    # nobody is in): what a person asks for in the turn isn't refused for them.
+    reason = check_outbound_allowed(channel, channel_ref, text, availability=_own_outreach())
     if reason is None:
         return _hold_outbound(tool=tool, channel=channel, channel_ref=channel_ref, text=text)
     from openexecutive.audit import log_event as audit_log
@@ -297,13 +316,29 @@ def _resolve_recipient_person_id(channel: str, channel_ref: str) -> int | None:
         return None
 
 
+def _off_roster_runs() -> bool:
+    """Whether a direct message to someone not in People goes ahead: under
+    Hands-off, or for a step the owner approved (``orchestrator.levels``)."""
+    from openexecutive.orchestrator import levels
+
+    return levels.relaxed()
+
+
+def _off_roster_card(blocked: str, tool: str, tool_input: dict[str, Any]) -> str:
+    """Below Hands-off, a direct message to someone not in People is an
+    Approve card for the owner; with nobody in the turn, the refusal."""
+    from openexecutive.orchestrator import levels
+
+    return levels.card_or(blocked, tool, dict(tool_input), reason=levels.NEW_PERSON, mcp=False)
+
+
 def _dm_recipient_on_roster(finder: Callable[..., Any], ref: str) -> bool:
     """Whether a raw DM tool may send to ``ref``: a team member always, a
     contact only when the principal asked on a verified surface (see
     ``people_tools.contacts_reachable_now``)."""
     from openexecutive.orchestrator.people_tools import (
         contacts_reachable_now,
-        turn_is_private_to_principal,
+        private_turn_holds,
     )
 
     person = finder(ref)
@@ -312,7 +347,7 @@ def _dm_recipient_on_roster(finder: Callable[..., Any], ref: str) -> bool:
     if person is None:
         return False
     # A turn about the principal's private mail reaches the principal only.
-    return not turn_is_private_to_principal() or getattr(person, "is_principal", False) is True
+    return not private_turn_holds() or getattr(person, "is_principal", False) is True
 
 
 def _record_outbound_context(
@@ -1002,10 +1037,12 @@ async def handle_send_telegram_message(tool_input: dict[str, Any]) -> str:
                 "send_telegram_message: refused chat_id=%s (not in People roster)",
                 chat_id,
             )
-            return json.dumps({"error": (
+            blocked = json.dumps({"error": (
                 f"chat_id {chat_id!r} is not in the People roster. Pass the person's "
                 "telegram_chat_id from lookup_person — NOT their person_id."
             )})
+            if not _off_roster_runs():
+                return _off_roster_card(blocked, "send_telegram_message", tool_input)
 
     # Anti-spam guard: suppress duplicates / rate-cap breaches / quiet-hours sends.
     suppressed = _guard_outbound(
@@ -1068,11 +1105,11 @@ async def handle_send_slack_dm(tool_input: dict[str, Any]) -> str:
     # A turn about the principal's private mail reaches the principal only.
     from openexecutive.orchestrator.people_tools import (
         PRIVATE_TURN_REFUSAL,
-        turn_is_private_to_principal,
+        private_turn_holds,
     )
     from openexecutive.people.store import find_person_by_slack_id
 
-    if turn_is_private_to_principal():
+    if private_turn_holds():
         recipient = find_person_by_slack_id(user_id)
         if recipient is None or not recipient.is_principal:
             return json.dumps({"error": PRIVATE_TURN_REFUSAL})
@@ -1086,11 +1123,13 @@ async def handle_send_slack_dm(tool_input: dict[str, Any]) -> str:
         logger.warning(
             "send_slack_dm: refused user_id=%s (not in People roster)", user_id
         )
-        return json.dumps({"error": (
+        blocked = json.dumps({"error": (
             f"user_id {user_id!r} is not in the People roster. Pass the person's "
             "slack_user_id from lookup_person (a Slack member id like U01ABCDEF) "
             "— NOT their person_id."
         )})
+        if not _off_roster_runs():
+            return _off_roster_card(blocked, "send_slack_dm", tool_input)
 
     settings = get_settings()
     if not settings.slack_bot_token:
@@ -1183,12 +1222,12 @@ def _recover_channel_id_from_person_id(value: str, channel: str) -> str | None:
         return None
     from openexecutive.orchestrator.people_tools import (
         contacts_reachable_now,
-        turn_is_private_to_principal,
+        private_turn_holds,
     )
 
     if person.kind != "team" and not contacts_reachable_now():
         return None
-    if turn_is_private_to_principal() and not person.is_principal:
+    if private_turn_holds() and not person.is_principal:
         return None
     if channel == "discord":
         # Discord user ids are positive numeric snowflakes; reject a malformed
@@ -1241,11 +1280,13 @@ async def handle_send_discord_dm(tool_input: dict[str, Any]) -> str:
                 "send_discord_dm: refused user_id=%s (not in People roster)",
                 discord_user_id,
             )
-            return json.dumps({"error": (
+            blocked = json.dumps({"error": (
                 f"discord_user_id {discord_user_id!r} is not in the People roster. "
                 "Pass the person's discord_user_id from lookup_person (a long Discord "
                 "snowflake) — NOT their person_id."
             )})
+            if not _off_roster_runs():
+                return _off_roster_card(blocked, "send_discord_dm", tool_input)
 
     # Anti-spam guard: suppress duplicates / rate-cap breaches / quiet-hours sends.
     suppressed = _guard_outbound(
@@ -1591,10 +1632,10 @@ async def message_person(tool_input: dict[str, Any], *, alert_fallback: bool = T
     from openexecutive.orchestrator.people_tools import (
         PRIVATE_TURN_REFUSAL,
         contacts_reachable_now,
-        turn_is_private_to_principal,
+        private_turn_holds,
     )
 
-    if turn_is_private_to_principal() and not person.is_principal:
+    if private_turn_holds() and not person.is_principal:
         return json.dumps({"error": PRIVATE_TURN_REFUSAL})
     from openexecutive.orchestrator import outside_content
 

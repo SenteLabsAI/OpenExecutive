@@ -885,13 +885,13 @@ def _roster_allow_set() -> RosterAllow:
     from openexecutive.orchestrator import outside_content
     from openexecutive.orchestrator.people_tools import (
         contacts_reachable_now,
-        turn_is_private_to_principal,
+        private_turn_holds,
     )
     from openexecutive.people.store import list_people
 
     settings = get_settings()
     everyone = list_people(include_contacts=contacts_reachable_now())
-    if turn_is_private_to_principal():
+    if private_turn_holds():
         # A turn about the principal's private mail reaches the principal only.
         everyone = [p for p in everyone if p.is_principal]
     # Nobody added (or given a new address) this turn until the next one: a
@@ -3928,7 +3928,7 @@ class MCPGateway:
             if not relaxed:
                 blocked = _check_url_fetch(tool_name, arguments)
                 if blocked is not None:
-                    return blocked
+                    return levels.card_or(blocked, tool_name, arguments, reason=levels.URL_FETCH)
                 blocked = _check_mailed_text(tool_name, arguments)
                 if blocked is not None:
                     return levels.card_or(blocked, tool_name, arguments, reason=levels.NEW_PERSON)
@@ -3950,7 +3950,7 @@ class MCPGateway:
                     return levels.card_or(blocked, tool_name, arguments, reason=levels.NEW_PERSON)
                 blocked = _check_attachment_urls(tool_name, arguments)
                 if blocked is not None:
-                    return blocked
+                    return levels.card_or(blocked, tool_name, arguments, reason=levels.URL_FETCH)
             # Only after the recipients pass: render any artifact the model
             # asked to attach, so a blocked send never renders anything.
             expanded = await _expand_artifact_attachments(tool_name, arguments)
@@ -3962,10 +3962,10 @@ class MCPGateway:
             if blocked is not None:
                 return levels.card_or(blocked, tool_name, arguments, reason=levels.NEW_PERSON)
             arguments = _pin_calendar_notifications(arguments)
-        if _is_drive_share_tool(tool_name):
+        if _is_drive_share_tool(tool_name) and not relaxed:
             blocked = _check_drive_share(tool_name, arguments)
             if blocked is not None:
-                return blocked
+                return levels.card_or(blocked, tool_name, arguments, reason=levels.NEW_PERSON)
         if normalized.startswith(_M365_PREFIX) and not isinstance(arguments, dict):
             # As for Google: every Outlook gate below reads a dict.
             return _refuse(
@@ -3980,22 +3980,25 @@ class MCPGateway:
             blocked = _check_m365_recipients(tool_name, arguments)
             if blocked is not None:
                 return levels.card_or(blocked, tool_name, arguments, reason=levels.NEW_PERSON)
-        if normalized in _M365_REPLY_BY_ID_TOOLS:
+        # Who an Outlook reply, RSVP, cancel or delete reaches follows the
+        # owner's level, as a Gmail send does: Hands-off skips the check, and
+        # below it someone not in People is an Approve card.
+        if normalized in _M365_REPLY_BY_ID_TOOLS and not relaxed:
             blocked = await _check_m365_referenced_message(
                 session, tool_name, normalized, arguments, self._discover
             )
             if blocked is not None:
-                return blocked
-        if normalized in _M365_EVENT_BY_ID_TOOLS:
+                return levels.card_or(blocked, tool_name, arguments, reason=levels.NEW_PERSON)
+        if normalized in _M365_EVENT_BY_ID_TOOLS and not relaxed:
             blocked = await _check_m365_referenced_event(
                 session, tool_name, normalized, arguments, self._discover
             )
             if blocked is not None:
-                return blocked
-        if normalized == _M365_EVENT_DELETE_TOOL:
+                return levels.card_or(blocked, tool_name, arguments, reason=levels.NEW_PERSON)
+        if normalized == _M365_EVENT_DELETE_TOOL and not relaxed:
             blocked = await _check_m365_event_delete(session, tool_name, arguments, self._discover)
             if blocked is not None:
-                return blocked
+                return levels.card_or(blocked, tool_name, arguments, reason=levels.NEW_PERSON)
         if normalized == _M365_DOWNLOAD_TOOL:
             blocked = _check_m365_download_target(tool_name, arguments)
             if blocked is not None:
@@ -4008,10 +4011,10 @@ class MCPGateway:
             blocked = _check_m365_drive_search(tool_name, arguments)
             if blocked is not None:
                 return blocked
-        if normalized in _M365_DRIVE_SHARE_TOOLS:
+        if normalized in _M365_DRIVE_SHARE_TOOLS and not relaxed:
             blocked = _check_m365_drive_share(tool_name, normalized, arguments)
             if blocked is not None:
-                return blocked
+                return levels.card_or(blocked, tool_name, arguments, reason=levels.NEW_PERSON)
         if normalized in _M365_DRIVE_WRITE_TOOLS and not relaxed:
             blocked = await _check_m365_drive_write(
                 session, tool_name, normalized, arguments, self._discover

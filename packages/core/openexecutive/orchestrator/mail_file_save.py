@@ -88,6 +88,9 @@ class Saved:
     name: str
     link: str
     shared: bool
+    # The share is on an Approve card (the gateway's roster check holds it
+    # below Hands-off): saved, not shared yet.
+    held: bool = False
 
 
 def clean_name(raw: str, index: int) -> str:
@@ -171,6 +174,14 @@ async def _call(gateway: Any, name: str, arguments: dict[str, Any]) -> str:
     return text if isinstance(text, str) else ""
 
 
+def _held(text: str) -> bool:
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(parsed, dict) and parsed.get("status") == "waiting_for_approval"
+
+
 def _failed(text: str) -> bool:
     head = text.lstrip()
     if not head:
@@ -180,7 +191,7 @@ def _failed(text: str) -> bool:
             parsed = json.loads(head)
         except ValueError:
             return False
-        return isinstance(parsed, dict) and "error" in parsed
+        return isinstance(parsed, dict) and ("error" in parsed or _held(head))
     return head.lower().startswith(("error", "tool error"))
 
 
@@ -314,9 +325,9 @@ async def _google(gateway: Any, data: bytes, name: str, mime: str, owner_id: int
         "send_notification": False,
     })
     ok = not _failed(shared)
-    if not ok:
+    if not ok and not _held(shared):
         logger.warning("save_my_email_attachment: sharing the Drive copy failed: %s", _why(shared)[:120])
-    return Saved(GOOGLE, file_id, name, link, ok)
+    return Saved(GOOGLE, file_id, name, link, ok, _held(shared))
 
 
 # --------------------------------------------------------------------------- #
@@ -416,6 +427,6 @@ async def _microsoft(gateway: Any, data: bytes, name: str, owner_id: int, owner_
         },
     })
     ok = not _failed(shared)
-    if not ok:
+    if not ok and not _held(shared):
         logger.warning("save_my_email_attachment: sharing the OneDrive copy failed: %s", _why(shared)[:120])
-    return Saved(MICROSOFT, file_id, str(parsed.get("name") or name), str(link), ok)
+    return Saved(MICROSOFT, file_id, str(parsed.get("name") or name), str(link), ok, _held(shared))

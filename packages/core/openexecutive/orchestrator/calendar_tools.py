@@ -1,7 +1,7 @@
 """Anthropic tool definitions + handlers for calendar booking (first-climb autonomy).
 
 Exposes two tools to the Executive:
-- `create_calendar_event` — propose (or auto-execute when promoted) a meeting
+- `create_calendar_event` — book a meeting, or propose it when Approvals holds it
 - `cancel_calendar_event` — cancel a previously booked event
 
 The handler enforces code-enforced caps regardless of trust-ledger mode, routes
@@ -61,15 +61,16 @@ CREATE_CALENDAR_EVENT_TOOL: dict[str, Any] = {
     "description": (
         "Schedule a FUTURE calendar meeting with one or more people from the "
         "roster (use create_instant_meeting for a call happening right now). "
-        "In propose-only mode (default) this creates a Proposal that the "
-        "approver must action before the event is actually created. A video-"
+        "It books when the principal asked for it, or under Hands-off; "
+        "otherwise it creates a Proposal that the approver must action before "
+        "the event is actually created. A video-"
         "meeting link (Google Meet or Microsoft Teams, per the configured "
         "calendar) is attached automatically unless you set "
         "add_video_link=false for an in-person meeting. "
         "Use `attendee_person_ids` — NOT raw email addresses — so the system can "
         "verify attendees are on the People roster. "
         "You may use this proactively (e.g. when a goal has stalled and a sync "
-        "would unblock it); proactive bookings still go through approval. "
+        "would unblock it); below Hands-off, proactive bookings go through approval. "
         "Put any agenda or talking points in `description` so attendees see them. "
         "You MUST supply `confidence` (0.0–1.0) reflecting how certain you are "
         "this meeting, at this time, with these people, is the right action."
@@ -347,7 +348,7 @@ def _resolve_attendees(
     from openexecutive.orchestrator.people_tools import (
         PRIVATE_TURN_REFUSAL,
         contacts_reachable_now,
-        turn_is_private_to_principal,
+        private_turn_holds,
     )
     from openexecutive.people.store import list_people
 
@@ -380,7 +381,7 @@ def _resolve_attendees(
             return {"error": f"person {person.full_name!r} (id={person_id}) has no email"}
         if getattr(person, "archived", False):
             return {"error": f"person {person.full_name!r} (id={person_id}) is archived"}
-        if turn_is_private_to_principal() and not person.is_principal:
+        if private_turn_holds() and not person.is_principal:
             return {"error": PRIVATE_TURN_REFUSAL}
         if outside_content.added_this_turn(person_id):
             return json.loads(outside_content.added_person_error(f"person_id {person_id}"))
@@ -648,26 +649,23 @@ _NOT_FROM_HERE = (
 )
 
 
-def _solo_meeting_gate(class_mode: str, session: Any) -> GateDecision:
+def _solo_meeting_gate(session: Any) -> GateDecision:
     """The meeting gate in solo mode. No department is consulted — the
     install's departments are only the principal's areas, not an
-    organisation with an operations team — so the ``meeting_scheduling``
-    class mode (the principal's own setting, PUT
-    /decisions/classes/meeting_scheduling) decides, and ``auto_execute``
-    books right away only when the principal started this turn on a surface
-    that verified it is them (the roster-write rule,
-    ``people_tools.is_principal_on_verified_surface``). Anything else — an
-    inbound email, a contact's message, an unattended run — is proposed to
-    the principal on the briefing, so text someone else wrote cannot put a
-    meeting on the principal's calendar — or to a teammate who holds the
-    Meetings approval range on People, when there is one."""
+    organisation with an operations team. Approvals decides
+    (``orchestrator.levels``): the principal asking on a surface that
+    verified it is them books it at every level, and so does anything
+    under Hands-off. Anything else — an inbound email, a contact's message,
+    an unattended run — is proposed to the principal on the briefing, so
+    text someone else wrote cannot put a meeting on the principal's
+    calendar — or to a teammate who holds the Meetings approval range on
+    People, when there is one."""
     from openexecutive.departments.authority import GateDecision
+    from openexecutive.orchestrator import levels
     from openexecutive.orchestrator.people_tools import is_principal_on_verified_surface
 
-    if class_mode == "auto_execute" and is_principal_on_verified_surface(session):
-        return GateDecision(
-            allowed=True, action="execute", reason="solo: meeting_scheduling is auto_execute"
-        )
+    if is_principal_on_verified_surface(session) or levels.relaxed():
+        return GateDecision(allowed=True, action="execute", reason="solo: Approvals lets it run")
     approver_id: int | None = None
     try:
         from openexecutive.people.models import AuthorityScope
@@ -685,23 +683,18 @@ def _solo_meeting_gate(class_mode: str, session: Any) -> GateDecision:
         allowed=False,
         action="propose",
         assignee_person_id=approver_id,
-        reason=(
-            "solo: meeting_scheduling proposes to its approver"
-            if class_mode != "auto_execute"
-            else "solo: auto_execute needs the principal on a verified surface — proposing"
-        ),
+        reason="solo: not the principal asking, below Hands-off — proposing",
     )
 
 
 async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
-    """Propose (or auto-execute when promoted) a calendar meeting."""
+    """Book a calendar meeting, or propose it when Approvals holds it."""
     from openexecutive.config import get_settings
-    from openexecutive.departments.authority import gate_action
+    from openexecutive.departments.authority import GateDecision, gate_action
     from openexecutive.memory.decision_ledger import (
         STATUS_FAILED,
         _idem_key,
         create_decision_instance,
-        get_class_mode,
         get_live_by_idem,
         mark_executed,
         mark_resolved,
@@ -815,12 +808,16 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
     # 10. Authority gate.
     session = current_session.get()
     session_id = getattr(session, "session_id", None) if session is not None else None
-    class_mode = get_class_mode("meeting_scheduling")
+    from openexecutive.orchestrator import levels
+    from openexecutive.orchestrator.people_tools import is_principal_on_verified_surface
 
     if effective_workspace_mode(session) == "solo":
         # Solo: the principal is the only approver and there is no operations
-        # department to consult — the class mode decides.
-        gate_decision = _solo_meeting_gate(class_mode, session)
+        # department to consult — Approvals decides.
+        gate_decision = _solo_meeting_gate(session)
+    elif is_principal_on_verified_surface(session) or levels.relaxed():
+        # The principal asking, or Hands-off: it books.
+        gate_decision = GateDecision(allowed=True, action="execute", reason="Approvals lets it run")
     else:
         gate_decision = gate_action(
             "operations",
@@ -888,10 +885,9 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
     # card is booked now: asking them again would only repeat the question.
     approved = _approved_by.get()
     already_approved = approved is not None and approved == approver_person_id
-    if (gate_decision.action == "execute" and class_mode == "auto_execute") or already_approved:
-        # Auto-execute path (Build 3 — only reachable after promotion). The
-        # booking happens now, so there is nothing to approve — deliberately
-        # NO briefing alert here.
+    if gate_decision.action == "execute" or already_approved:
+        # The booking happens now, so there is nothing to approve —
+        # deliberately NO briefing alert here.
         result = await _do_create_event(gateway, proposed_payload)
         if "error" in result:
             # Mark the ledger row failed so it doesn't pollute the

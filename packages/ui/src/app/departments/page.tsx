@@ -15,10 +15,11 @@ import {
 } from "@/lib/api";
 import { PageSpinner } from "@/components/ui/Spinner";
 
+// The Approvals level each department's work runs at.
 const AUTHORITY_LABELS: Record<string, string> = {
-  auto_execute: "Auto",
-  propose_only: "Propose",
-  escalate: "Escalate",
+  auto_execute: "Hands-off",
+  propose_only: "Balanced",
+  escalate: "Careful",
 };
 
 const AUTHORITY_DOT: Record<string, string> = {

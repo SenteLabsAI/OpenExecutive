@@ -33,12 +33,11 @@ Outlook Graph's event accept or decline (``sendResponse``). Dismiss
 reading; its card says to connect again under Read my calendar instead of
 offering Accept (``can_answer``).
 
-**On their own.** With Handle it for me on, or Take the lead as you, an
+**On their own.** With Handle it for me on, an
 invite is accepted with no tap when plain code finds nothing against it
-(``refusal``): the sender is someone they know (and, with Replies in
-training, one they ticked "Accept from them on its own next time" for),
-signed sign-ins or local login, nothing clashes, nothing sensitive in the
-title, their sign-in can answer, and the daily limit and once-a-day-per-thread
+(``refusal``): Approvals is not on Careful, the sender is on their team or
+in their contacts (anyone under Hands-off), signed sign-ins or local login, nothing clashes, nothing sensitive in the
+title below Hands-off (``handle_it.content_hold``), their sign-in can answer, and the daily limit and once-a-day-per-thread
 rule of Handle it for me (``handle_it.count_refusal``) allow it. It never
 declines on its own. Accepted ones are listed with the replies it sent
 (``handled``: ``GET /delegation/handled``, Today's ``sent_as_you``), the
@@ -116,8 +115,6 @@ class InviteCard:
     clash_checked: bool = True
     # False: their sign-in reads the calendar but can't answer invites.
     can_answer: bool = True
-    # In training: the "Accept from them on its own next time" tick.
-    can_allow: bool = False
     # Why it didn't accept on its own (Handle it for me on), in words.
     waited_because: str = ""
     connect_command: str = ""
@@ -310,10 +307,9 @@ def _last_status(key: str) -> str | None:
 
 def cards(person: Any, *, now: datetime | None = None) -> list[InviteCard]:
     """``person``'s invite cards still waiting, for ``GET /delegation/invites``."""
-    from openexecutive.delegation import handle_it, training
+    from openexecutive.delegation import handle_it
 
     at = now or _now()
-    trained = training.get(person.id).replies
     out: list[InviteCard] = []
     for card in open_cards(person.id):
         payload = _payload(card)
@@ -337,9 +333,6 @@ def cards(person: Any, *, now: datetime | None = None) -> list[InviteCard]:
             clashes=[str(c) for c in payload.get("clashes") or [] if isinstance(c, str)],
             clash_checked=payload.get("clash_checked") is not False,
             can_answer=can_answer,
-            can_allow=bool(
-                trained and can_answer and sender and training.allowed_inviter(person.id, sender) is None
-            ),
             waited_because=handle_it.REASONS.get(str(payload.get("handle_it_reason") or ""), ""),
             connect_command=str(payload.get("connect_command") or ""),
         ))
@@ -429,36 +422,28 @@ def _refusal(
     person_id: int, *, sender: str, relation: str, title: str, thread_id: str, clash: list[str] | None,
     can_answer: bool, now: datetime,
 ) -> str | None:
-    from openexecutive.delegation import handle_it, training
+    from openexecutive.delegation import handle_it
 
-    settings = handle_it.get(person_id)
-    if not settings.enabled:
+    if not handle_it.get(person_id).enabled:
+        return "off"
+    if handle_it.approvals_hold():
         return "level"
-    trained = handle_it.in_training(person_id, training.REPLIES)
-    lead = not trained and handle_it.leading(person_id)
-    if relation not in handle_it.KNOWN_RELATIONS:
-        return "level"
-    if trained:
-        if training.allowed_inviter(person_id, sender) is None:
-            return "invite_training"
-    elif relation not in ON_ITS_OWN_RELATIONS:
-        # Someone they have only written to (which a reply sent on its own
-        # can make anyone) gets a card, unless they allowed that sender.
-        return "level"
-    elif not lead and settings.level(handle_it.kind_for(relation)) != handle_it.LEVEL_HANDLE:
-        return "level"
+    # Below Hands-off, only someone on their team or a contact: someone they
+    # have only written to (which a reply sent on its own can make anyone)
+    # gets a card.
+    if relation not in ON_ITS_OWN_RELATIONS and not _hands_off():
+        return "stranger"
     if not handle_it.signing_ok():
         return "signing_off"
+    held = handle_it.content_hold(title)
+    if held:
+        return held
     if clash is None:
         return "calendar_unread"
     if clash:
         return "clash"
     if not can_answer:
         return "calendar_write"
-    if handle_it.sensitive(title):
-        return "sensitive"
-    if lead and handle_it._lead_rule(person_id, [title], [sender], None):
-        return "lead_rule"
     return handle_it.count_refusal(person_id, thread_id, now)
 
 
@@ -554,7 +539,7 @@ async def consider(
     handling_on = _handle_it_on(person.id)
     payload = _card_payload(
         person, message, thread, event, relation=known_as, clash=clash, can_answer=can_answer,
-        handle_it_reason=held if handling_on and held != "level" else None,
+        handle_it_reason=held if handling_on else None,
     )
     decision_id = create_card(
         f"{DECISION_CLASS}:{person.id}:{message.id}", payload, person_id=person.id, on_its_own=held is None,
@@ -572,6 +557,16 @@ async def consider(
     })
     if held is None and await accept_on_its_own(person, client, decision_id, now=now):
         result.handled += 1
+
+
+def _hands_off() -> bool:
+    """Whether Approvals is on Hands-off. Never raises: unreadable is no."""
+    try:
+        from openexecutive.orchestrator import outside_mode
+
+        return outside_mode.get_mode() == outside_mode.TRUST
+    except Exception:
+        return False
 
 
 def _handle_it_on(person_id: int) -> bool:
@@ -632,7 +627,7 @@ async def accept_on_its_own(person: Any, client: Any, decision_id: int, *, now: 
     """Accept the invite on card ``decision_id`` under Handle it for me,
     checking the rules again first. Anything that stops it hands the card
     back to the person, saying why. True when it accepted."""
-    from openexecutive.delegation import handle_it, training
+    from openexecutive.delegation import handle_it
     from openexecutive.delegation.gmail import CalendarWriteNotGranted, GmailError
     from openexecutive.delegation.inbox import _set_outcome
     from openexecutive.memory.decision_ledger import (
@@ -680,9 +675,6 @@ async def accept_on_its_own(person: Any, client: Any, decision_id: int, *, now: 
         handle_it.record_handled(person.id, str(payload.get("thread_id") or ""), decision_id, None, now=now)
     except Exception:
         logger.exception("delegation.invites: recording an invite accepted on its own failed")
-    allowance = training.allowed_inviter(person.id, sender)
-    if allowance is not None:
-        training.used(allowance)
     _set_outcome(person.id, str(payload.get("message_id") or ""), ACCEPTED, reason="handled")
     _audit("delegation_invite_handled", f"Accepted a meeting invite as person {person.id}, on its own", {
         "person_id": person.id, "decision_id": decision_id, "thread_id": payload.get("thread_id"),
@@ -691,14 +683,13 @@ async def accept_on_its_own(person: Any, client: Any, decision_id: int, *, now: 
 
 
 async def answer(
-    instance: Any, *, caller: Any, resolver: int | None, answer: Any, allow: bool = False,
+    instance: Any, *, caller: Any, resolver: int | None, answer: Any,
     mailbox: Any = None, now: datetime | None = None,
 ) -> str:
     """Answer ``instance``'s invite for its person, on their tap: ``accept``
-    or ``decline``. ``allow`` (accept, Replies in training) also lets that
-    sender's invites be accepted on their own from now on. Returns
-    ``accepted`` or ``declined``; raises ``AnswerRefused``."""
-    from openexecutive.delegation import calendar, training
+    or ``decline``. Returns ``accepted`` or ``declined``; raises
+    ``AnswerRefused``."""
+    from openexecutive.delegation import calendar
     from openexecutive.delegation.gmail import (
         BLOCKING_CODES,
         STATUS_MESSAGES,
@@ -721,7 +712,6 @@ async def answer(
         release_claim,
         update_open_payload,
     )
-    from openexecutive.orchestrator import take_the_lead
     from openexecutive.people.store import get_person
 
     at = now or _now()
@@ -747,15 +737,7 @@ async def answer(
         raise AnswerRefused(409, "calendar_off", "Read my calendar is off, so this invite can't be answered from here.")
     if not _live(payload, instance.created_at, at):
         raise AnswerRefused(409, "expired", "This meeting has started or the card is too old. Answer it in your calendar.")
-    sender = str(payload.get("from_email") or "")
     accept = answer == "accept"
-    if allow:
-        if not accept or not training.get(person.id).replies:
-            raise AnswerRefused(
-                422, "cant_allow", "Accepting on its own next time is for invites you accept while Replies is in training.",
-            )
-        if not training.room_for(person.id, training.inviter_key(person.id, sender)):
-            raise AnswerRefused(409, "learned_full", "It has learned as much as it can hold. Remove something first.")
     client = mailbox if mailbox is not None else gmail_for(email)
     status = await gmail_status(email, gmail=client)
     if status != "connected":
@@ -789,17 +771,8 @@ async def answer(
     finish_execution(instance.id, STATUS_APPROVED_UNCHANGED, final_payload={"answer": done})
     _set_outcome(person.id, str(payload.get("message_id") or ""), done, reason="tapped")
     _audit("delegation_invite_answered", f"Person {person.id} {done} a meeting invite", {
-        "person_id": person.id, "decision_id": instance.id, "answer": done, "allowed": allow,
+        "person_id": person.id, "decision_id": instance.id, "answer": done,
     })
-    if allow:
-        try:
-            found = training.allow_inviter(person.id, sender, str(payload.get("from_name") or ""), decision_id=instance.id)
-        except take_the_lead.RuleError:
-            logger.warning("delegation.invites: accepted, but the list filled up before allowing")
-        else:
-            _audit("delegation_reply_allowed", f"Person {person.id} allowed invites in training", {
-                "person_id": person.id, "decision_id": instance.id, "allowed_id": found.id, "invites": True,
-            })
     return done
 
 

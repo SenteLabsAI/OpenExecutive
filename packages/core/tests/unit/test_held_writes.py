@@ -216,6 +216,32 @@ async def test_new_target_is_held_not_run(
 
 
 @pytest.mark.asyncio
+async def test_under_hands_off_a_new_target_runs(
+    monkeypatch: pytest.MonkeyPatch, gateway: _FakeGateway, audit: list[dict[str, Any]]
+) -> None:
+    from openexecutive.orchestrator import outside_mode
+
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.TRUST)
+    provider = _ScriptedProvider(
+        [
+            _resp(_use(APPEND, {"spreadsheet_id": OTHER, "rows": [["x"]]}, "tu_1")),
+            _resp(_text("Filed it.")),
+        ]
+    )
+    _install(monkeypatch, provider)
+    out = []
+    async for item in act.run_action_step(
+        _step(max_tool_calls=1),
+        workflow_name="file_bills_wf", workflow_title="File bills", goal="File them.",
+        values={}, company_block="", prior_outputs={},
+        policy=_policy(approved={SHEET}),
+    ):
+        out.append(item)
+    assert not [p for k, p in out if k == "held"]
+    assert [c["arguments"]["spreadsheet_id"] for c in gateway.calls] == [OTHER]
+
+
+@pytest.mark.asyncio
 async def test_read_only_calls_and_no_policy_never_hold(
     monkeypatch: pytest.MonkeyPatch, gateway: _FakeGateway, audit: list[dict[str, Any]]
 ) -> None:

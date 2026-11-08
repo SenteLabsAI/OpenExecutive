@@ -11,11 +11,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from openexecutive.api.routes import may_do as route
-from openexecutive.delegation import handle_it, inbox, may_do, training
+from openexecutive.delegation import handle_it, inbox, may_do
 from openexecutive.delegation.settings import set_enabled
-from openexecutive.memory import decision_ledger as ledger
 from openexecutive.memory import episodic
-from openexecutive.orchestrator import take_the_lead as ttl
 from openexecutive.people import registry as people_registry
 from openexecutive.people import store as people_store
 
@@ -52,11 +50,16 @@ def ids() -> dict[str, int]:
     return {"principal": principal, "teammate": teammate}
 
 
-def _handling(pid: int, mode: str = "balanced") -> None:
+def _handling(pid: int) -> None:
     set_enabled(pid, True, updated_by="t")
     inbox.set_watch(pid, True, updated_by="t")
-    handle_it.set_(pid, enabled=True, mode=mode, updated_by="t")
-    training.set_(pid, {training.REPLIES: False, training.FOLLOW_UPS: False}, updated_by="t")
+    handle_it.set_(pid, enabled=True, updated_by="t")
+
+
+def _level(monkeypatch: pytest.MonkeyPatch, level: str) -> None:
+    from openexecutive.orchestrator import outside_mode
+
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: level)
 
 
 def _rows(section: may_do.Section) -> dict[str, may_do.Row]:
@@ -75,8 +78,8 @@ def test_with_everything_off_nothing_goes_out_as_you(ids: dict[str, int]) -> Non
     rows = _rows(section)
     assert section.goes == 0
     assert rows["chat_drafts"].outcome == "off"
-    assert rows["replies_known"].outcome == "off" and "Write drafts as me is off" in rows["replies_known"].why
-    assert "actions" not in rows and "sensitive" not in rows
+    assert rows["replies"].outcome == "off" and "Write drafts as me is off" in rows["replies"].why
+    assert "actions" not in rows
     assert section.notes == []
 
 
@@ -86,92 +89,46 @@ def test_drafts_and_the_inbox_without_handle_it_wait_for_a_tap(ids: dict[str, in
     inbox.set_watch(pid, True, updated_by="t")
     rows = _rows(_you(pid))
     assert rows["chat_drafts"].outcome == "drafts" and rows["chat_drafts"].then == "Drafts, sent on your tap"
-    assert rows["replies_known"].outcome == "waits" and "Handle it for me is off" in rows["replies_known"].why
+    assert rows["replies"].outcome == "waits" and "Handle it for me is off" in rows["replies"].why
     assert rows["follow_ups"].outcome == "waits"
     assert rows["actions"].outcome == "waits"
 
 
-def test_suggested_actions_on_go_out(ids: dict[str, int]) -> None:
-    pid = ids["principal"]
-    set_enabled(pid, True, updated_by="t")
-    training.set_(pid, {training.ACTIONS_ON: True}, updated_by="t")
-    row = _rows(_you(pid))["actions"]
-    assert row.outcome == "goes" and "Suggested actions are On" in row.why
-
-
-@pytest.mark.parametrize(("mode", "known", "strangers", "follow_ups", "links"), [
-    ("careful", "goes", "waits", "waits", "waits"),
-    ("balanced", "goes", "waits", "goes", "waits"),
-    ("bold", "goes", "goes", "goes", "goes"),
+@pytest.mark.parametrize(("level", "outcome", "setting"), [
+    ("ask", "waits", may_do.SETTING_APPROVALS),
+    ("outsiders", "goes", may_do.SETTING_HANDLE_IT),
+    ("trust", "goes", may_do.SETTING_HANDLE_IT),
 ])
-def test_each_level_matches_its_rules(
-    ids: dict[str, int], mode: str, known: str, strangers: str, follow_ups: str, links: str
+def test_approvals_decides_what_goes_as_you(
+    ids: dict[str, int], monkeypatch: pytest.MonkeyPatch, level: str, outcome: str, setting: str,
 ) -> None:
     pid = ids["principal"]
-    _handling(pid, mode)
-    rules = handle_it.RULES[mode]
-    # The rows follow the rules the refusals check, not a copy of them.
-    assert (strangers == "goes") is rules.strangers
-    assert (follow_ups == "goes") is bool(rules.follow_up_to)
-    assert (links == "goes") is (rules.details_confidence is not None)
+    _handling(pid)
+    _level(monkeypatch, level)
     section = _you(pid)
     rows = _rows(section)
-    assert rows["replies_known"].outcome == known
-    assert rows["replies_strangers"].outcome == strangers
-    assert rows["follow_ups"].outcome == follow_ups
-    assert rows["links"].outcome == links
-    assert rows["sensitive"].outcome == "always_waits"
-    assert may_do.LEVEL_NAMES[mode] in rows["replies_known"].why
+    for row_id in ("replies", "follow_ups", "invites"):
+        assert rows[row_id].outcome == outcome and rows[row_id].setting == setting
+    assert rows["actions"].outcome == outcome
+    assert "links" not in rows and "sensitive" not in rows and "rules" not in rows
     assert section.notes and "needs Draft replies" in section.notes[0]
-    assert "a day" in section.footer
+    if outcome == "goes":
+        assert "a day" in section.footer
 
 
-def test_everything_names_the_lead_and_what_it_rides_on(ids: dict[str, int]) -> None:
+def test_on_balanced_suggested_actions_skip_someone_new(ids: dict[str, int], monkeypatch: pytest.MonkeyPatch) -> None:
     pid = ids["principal"]
-    _handling(pid, "careful")
-    ttl.set_(ttl.person_scope(pid), enabled=True, updated_by="t")
-    ttl.add_rule(ttl.person_scope(pid), "domain", "acme.com", created_by="t")
-    section = _you(pid)
-    rows = _rows(section)
-    assert rows["replies_strangers"].outcome == "goes" and "Everything" in rows["replies_strangers"].why
-    assert rows["follow_ups"].outcome == "goes"
-    # At Everything a link still waits, whatever the level underneath allowed.
-    assert rows["links"].outcome == "waits" and rows["links"].what == "Replies with a link in them."
-    assert rows["rules"].items == ("Anyone at acme.com",)
-    assert "Everything" in section.notes[0] and "turns Everything off" in section.notes[0]
-
-
-def test_only_the_owner_sees_the_company_rules_by_name(ids: dict[str, int]) -> None:
-    # Take the lead as you is the owner's, but a row left on (say, by an
-    # earlier owner) must not hand the company's rules to anyone else.
-    pid = ids["teammate"]
-    _handling(pid, "careful")
-    ttl.set_(ttl.person_scope(pid), enabled=True, updated_by="t")
-    ttl.add_rule(ttl.person_scope(pid), "domain", "acme.com", created_by="t")
-    ttl.add_rule(ttl.SCOPE_COMPANY, "words", "acquisition", created_by="t")
-    row = _rows(_you(pid, principal=False))["rules"]
-    assert row.items == ("Anyone at acme.com",)
-    assert "acquisition" not in row.why and "1 rule" in row.why
-    assert _rows(_you(pid))["rules"].items == ("Anyone at acme.com", "Words: acquisition")
-
-
-def test_training_holds_replies_and_counts_what_it_allowed(ids: dict[str, int]) -> None:
-    pid = ids["principal"]
-    _handling(pid, "bold")
-    ttl.set_(ttl.person_scope(pid), enabled=True, updated_by="t")
-    training.set_(pid, {training.REPLIES: True}, updated_by="t")
-    training.allow_sender(pid, "dana@northpeak.example", "Dana Park", decision_id=None)
-    rows = _rows(_you(pid))
-    # In training Everything doesn't apply: only allowed senders go.
-    assert rows["replies_known"].outcome == "waits" and "1 sender you ticked" in rows["replies_known"].why
-    assert "links" not in rows
-    # Follow-ups aren't in training, so the lead still covers them.
-    assert rows["follow_ups"].outcome == "goes" and "Everything" in rows["follow_ups"].why
+    _handling(pid)
+    _level(monkeypatch, "outsiders")
+    assert "added in the last week wait" in _rows(_you(pid))["actions"].why
+    _level(monkeypatch, "trust")
+    assert _rows(_you(pid))["actions"].why == "Approvals is on Hands-off."
+    assert "from anyone" in _rows(_you(pid))["invites"].why
 
 
 def test_without_signed_sign_ins_nothing_is_sent_as_you(ids: dict[str, int]) -> None:
     pid = ids["principal"]
-    _handling(pid, "bold")
+    _handling(pid)
     section = may_do.as_you(pid, can_have_it=True, signing=False)
     assert section.goes == 0
     assert any("Signed sign-ins are off" in n for n in section.notes)
@@ -191,52 +148,29 @@ def test_the_executive_section_is_the_owners_alone() -> None:
     assert section.available is False and section.rows == []
 
 
-def test_take_the_lead_off_is_one_row() -> None:
-    rows = may_do.as_the_executive(is_principal=True).rows
-    assert [r.id for r in rows] == ["lead"] and rows[0].outcome == "off"
-
-
-def test_ask_first_switches_and_meetings(ids: dict[str, int]) -> None:
-    ttl.set_(ttl.SCOPE_EXECUTIVE, enabled=True, ask_first={"money": False}, updated_by="t")
-    ttl.add_rule(ttl.SCOPE_COMPANY, "words", "discount", created_by="t")
-    section = may_do.as_the_executive(is_principal=True)
-    rows = _rows(section)
-    assert rows["lead"].outcome == "goes"
-    assert rows["kind:money"].outcome == "goes"
-    assert rows["kind:contracts"].outcome == "waits"
-    # What it thinks of itself never books on its own: the meeting gates need
-    # someone on a verified surface in the turn.
-    assert rows["meetings"].outcome == "always_waits"
-    assert rows["meetings_chat"].outcome == "waits"
-    assert rows["rules"].items == ("Words: discount",)
-    assert "Department levels don't apply" in section.footer
-
-
-def test_training_waits_until_something_is_allowed() -> None:
-    ttl.set_(ttl.SCOPE_EXECUTIVE, enabled=True, training=True, ask_first={"money": False}, updated_by="t")
-    rows = _rows(may_do.as_the_executive(is_principal=True))
-    assert rows["lead"].outcome == "waits"
-    assert rows["kind:money"].outcome == "waits" and rows["kind:money"].then == "Waits unless allowed"
-
-
-def test_meetings_asked_for_in_chat_follow_the_switch_and_operations(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(("mode", "outcome"), [("ask", "waits"), ("outsiders", "waits"), ("trust", "goes")])
+def test_approvals_decides_what_it_does_on_its_own(
+    monkeypatch: pytest.MonkeyPatch, mode: str, outcome: str,
 ) -> None:
-    from openexecutive.departments.models import AuthorityLevel
+    from openexecutive.orchestrator import outside_mode
+
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: mode)
+    rows = {r.id: r for r in may_do.as_the_executive(is_principal=True).rows}
+    assert list(rows) == ["lead", "to_you", "meetings_chat"]
+    assert rows["lead"].outcome == outcome and rows["lead"].setting == may_do.SETTING_APPROVALS
+    assert rows["to_you"].outcome == "goes"
+
+
+def test_meetings_asked_for_in_chat_follow_approvals(monkeypatch: pytest.MonkeyPatch) -> None:
     from openexecutive.memory import workspace_settings
+    from openexecutive.orchestrator import outside_mode
 
-    ledger.set_class_mode("meeting_scheduling", "auto_execute")
-    # Team workspace: Operations must act on its own too.
+    # Team workspace below Hands-off: the owner's book, a teammate's wait.
     assert may_do._meetings_in_chat().outcome == "waits"
-
-    class _State:
-        class config:  # noqa: N801 — a stand-in for DepartmentConfig
-            authority_level = AuthorityLevel.AUTO_EXECUTE
-
-    monkeypatch.setattr("openexecutive.departments.registry.get_state", lambda slug: _State())
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.TRUST)
     assert may_do._meetings_in_chat().outcome == "goes"
-    # Solo: the switch alone decides.
-    monkeypatch.setattr("openexecutive.departments.registry.get_state", lambda slug: None)
+    # Solo: what you ask for books at every level.
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.ASK)
     workspace_settings.set_workspace_mode("solo")
     assert may_do._meetings_in_chat().outcome == "goes"
 
@@ -255,8 +189,9 @@ def _section(body: dict[str, Any], key: str) -> dict[str, Any]:
     return next(s for s in body["sections"] if s["key"] == key)
 
 
-def test_the_owner_sees_all_three(client: TestClient, ids: dict[str, int]) -> None:
-    _handling(ids["principal"], "bold")
+def test_the_owner_sees_all_three(client: TestClient, ids: dict[str, int], monkeypatch: pytest.MonkeyPatch) -> None:
+    _handling(ids["principal"])
+    _level(monkeypatch, "trust")
     body = client.get("/what-it-may-do", headers=OWNER).json()
     assert [s["key"] for s in body["sections"]] == ["as_you", "executive", "departments"]
     you = _section(body, "as_you")

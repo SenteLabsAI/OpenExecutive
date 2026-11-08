@@ -880,6 +880,19 @@ async def run_action_step(
     )
 
 
+def _hands_off() -> bool:
+    """Whether Approvals lets a run write to a new target on its own:
+    Hands-off (``levels.decide`` for unattended work). Never raises: an error
+    holds."""
+    try:
+        from openexecutive.orchestrator import levels, outside_mode
+
+        return levels.decide(levels.UNATTENDED, mode=outside_mode.get_mode()) == levels.RUN
+    except Exception:
+        logger.warning("action_step: couldn't read the level — holding new targets", exc_info=True)
+        return False
+
+
 # How much of an approved, carried-on call's result the step's own record
 # keeps, so the step's next run knows what it did.
 _MAX_CARRIED_RESULT_CHARS = 2_000
@@ -900,7 +913,7 @@ class _Holds:
     ) -> HeldCall | str | None:
         """None: run the call. A HeldCall: hold it (``_ALREADY_HELD`` for a
         repeat of one already held). A string: refuse it, with that reason."""
-        if policy is None:
+        if policy is None or _hands_off():
             return None
         targets, complete = resource_targets(arguments)
         if not complete:

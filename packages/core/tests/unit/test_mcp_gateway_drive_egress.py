@@ -305,3 +305,40 @@ def test_explicit_and_fallback_tool_names_are_gated() -> None:
     # Non-namespaced or unrelated tools are not gated.
     assert _is_drive_share_tool("fetch__get") is False
     assert _is_drive_share_tool("google_workspace__get_events") is False
+
+
+def test_hands_off_shares_with_anyone() -> None:
+    """Approvals is the one gate: under Hands-off a share to someone not in
+    People runs."""
+    from openexecutive.orchestrator import levels
+
+    gateway, session_call = _make_gateway()
+    with patch.object(levels, "relaxed", return_value=True):
+        result = _call(
+            gateway,
+            {"file_id": "abc", "email_address": "partner@other.example", "role": "reader", "type": "user"},
+            ["alice@example.com"],
+        )
+    assert session_call.await_count == 1
+    assert json.loads(result).get("id") == "perm123"
+
+
+def test_below_hands_off_a_share_to_someone_not_in_people_is_a_card() -> None:
+    from openexecutive.orchestrator import levels
+
+    gateway, session_call = _make_gateway()
+    seen: list[str] = []
+
+    def card_or(blocked: str, tool: str, arguments: dict[str, Any], *, reason: str) -> str:
+        seen.append(reason)
+        return '{"status": "waiting_for_approval"}'
+
+    with patch.object(levels, "card_or", side_effect=card_or):
+        result = _call(
+            gateway,
+            {"file_id": "abc", "email_address": "partner@other.example", "role": "reader", "type": "user"},
+            ["alice@example.com"],
+        )
+    assert session_call.await_count == 0
+    assert json.loads(result)["status"] == "waiting_for_approval"
+    assert seen == [levels.NEW_PERSON]

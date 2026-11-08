@@ -4,9 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 
 import Button from "@/components/ui/Button";
 import FeatureName from "@/components/FeatureName";
-import NextTimeTick from "@/components/NextTimeTick";
 import { answerInviteCard, dismissInviteCard, getInviteCards, type InviteCard } from "@/lib/api";
-import { answeredLine, clashLine, inviteNextTimeLabel } from "@/lib/inviteCards";
+import { answeredLine, clashLine } from "@/lib/inviteCards";
 import { relationLabel } from "@/lib/replyCards";
 import { formatRelativeTime } from "@/lib/relativeTime";
 
@@ -54,7 +53,6 @@ export function InviteCardItem({
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<"accept" | "decline" | null>(null);
-  const [nextTime, setNextTime] = useState(false);
   const created = formatRelativeTime(card.created_at);
   const relation = relationLabel(card.relation);
   const clash = clashLine(card);
@@ -63,7 +61,7 @@ export function InviteCardItem({
     setBusy(choice === "accept" ? "Accepting…" : "Declining…");
     setError(null);
     try {
-      await answerInviteCard(card.decision_id, choice, choice === "accept" && card.can_allow && nextTime);
+      await answerInviteCard(card.decision_id, choice);
       setDone(choice);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't answer that invite.");
@@ -118,9 +116,6 @@ export function InviteCardItem({
       {done ? (
         <>
           <p className="mt-3 text-sm text-emerald-700 dark:text-emerald-300">{answeredLine(done, card)}</p>
-          {done === "accept" && card.can_allow && nextTime && (
-            <p className="mt-1 text-sm text-fg-muted">From now on, their invites with no clash are accepted on their own.</p>
-          )}
           <div className="mt-4 flex flex-wrap items-center gap-2">
             <Button variant="secondary" onClick={() => onGone(card.decision_id)}>
               Close
@@ -129,16 +124,6 @@ export function InviteCardItem({
         </>
       ) : card.can_answer ? (
         <>
-          {card.can_allow && (
-            <NextTimeTick
-              className="mt-4"
-              checked={nextTime}
-              disabled={busy !== null}
-              onChange={setNextTime}
-              label={inviteNextTimeLabel(card)}
-              help="Only when nothing on your calendar clashes. You can undo this in Handle it for me."
-            />
-          )}
           <div className="mt-4 flex flex-wrap items-center gap-2">
             <Button variant="primary" onClick={() => void answer("accept")} disabled={busy !== null}>
               {busy === "Accepting…" ? busy : "Accept"}

@@ -1,43 +1,44 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { SENDS_HREF, WRITES_HREF, reachForSend, reachOf, sendOf, sentTodayLine, writeOf } from "../src/lib/reach.ts";
+import { APPROVALS_SENDS, SENDS_HREF, WRITES_HREF, reachForSend, reachOf, sendOf, sentTodayLine, writeOf } from "../src/lib/reach.ts";
 
 const settings = (over = {}) => ({
   enabled: true,
   inbox: { enabled: true },
-  handle_it: { enabled: true, mode: "balanced", available: true, sent_today: 0, lead: false },
-  training: { replies: false, follow_ups: false, drafts: false },
+  handle_it: { enabled: true, available: true, sent_today: 0 },
+  training: { drafts: false, learned: [] },
   ...over,
 });
 
 test("reachOf reads the dial step from the settings", () => {
   assert.equal(reachOf(settings({ enabled: false })), "off");
   assert.equal(reachOf(settings({ inbox: { enabled: false } })), "when_asked");
-  assert.equal(reachOf(settings({ handle_it: { enabled: false, mode: "balanced" } })), "inbox");
-  assert.equal(reachOf(settings()), "balanced");
-  assert.equal(reachOf(settings({ handle_it: { enabled: true, mode: "bold", lead: true } })), "everything");
+  assert.equal(reachOf(settings({ handle_it: { enabled: false } })), "inbox");
+  assert.equal(reachOf(settings()), "handle_it");
 });
 
-test("writeOf puts every sending step at Draft replies automatically", () => {
+test("writeOf puts Handle it for me at Draft replies automatically", () => {
   assert.equal(writeOf(settings({ enabled: false })), "off");
   assert.equal(writeOf(settings({ inbox: { enabled: false } })), "when_asked");
-  assert.equal(writeOf(settings({ handle_it: { enabled: false, mode: "balanced" } })), "inbox");
+  assert.equal(writeOf(settings({ handle_it: { enabled: false } })), "inbox");
   assert.equal(writeOf(settings()), "inbox");
-  assert.equal(writeOf(settings({ handle_it: { enabled: true, mode: "bold", lead: true } })), "inbox");
 });
 
-test("sendOf is off below the sending steps", () => {
+test("sendOf is on only with Handle it for me on", () => {
   assert.equal(sendOf(settings({ enabled: false })), "off");
   assert.equal(sendOf(settings({ inbox: { enabled: false } })), "off");
-  assert.equal(sendOf(settings({ handle_it: { enabled: false, mode: "balanced" } })), "off");
-  assert.equal(sendOf(settings()), "balanced");
-  assert.equal(sendOf(settings({ handle_it: { enabled: true, mode: "bold", lead: true } })), "everything");
+  assert.equal(sendOf(settings({ handle_it: { enabled: false } })), "off");
+  assert.equal(sendOf(settings()), "on");
 });
 
 test("turning Handle it for me off keeps the inbox replies", () => {
   assert.equal(reachForSend("off"), "inbox");
-  assert.equal(reachForSend("careful"), "careful");
-  assert.equal(reachForSend("everything"), "everything");
+  assert.equal(reachForSend("on"), "handle_it");
+});
+
+test("each Approvals level says what Handle it for me sends", () => {
+  assert.deepEqual(Object.keys(APPROVALS_SENDS), ["ask", "outsiders", "trust"]);
+  assert.match(APPROVALS_SENDS.ask.line, /Nothing goes on its own/);
 });
 
 test("each picker has its own link", () => {

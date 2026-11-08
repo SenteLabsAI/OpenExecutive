@@ -143,10 +143,8 @@ _DDL: tuple[str, ...] = (
     f"ON {INBOX_MESSAGES_TABLE}(person_id, thread_id)",
     f"CREATE INDEX IF NOT EXISTS idx_{INBOX_MESSAGES_TABLE}_created "
     f"ON {INBOX_MESSAGES_TABLE}(person_id, created_at)",
-    # Handle it for me, one row per person (absent: off). mode is careful |
-    # balanced | bold (delegation.handle_it.MODES; a 'training' row from
-    # before is moved by _move_training_off_the_dial). levels is the per-kind
-    # setting it replaced, kept for older rows (_add_handle_it_mode).
+    # Handle it for me, one row per person (absent: off). mode and levels are
+    # the dial it had before Approvals decided, no longer read.
     f"CREATE TABLE IF NOT EXISTS {HANDLE_IT_TABLE} ("
     "  person_id INTEGER PRIMARY KEY,"
     "  enabled INTEGER NOT NULL DEFAULT 0,"

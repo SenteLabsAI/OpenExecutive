@@ -15,11 +15,6 @@ export function inviterFirstName(card: { from_name: string; from_email: string }
   return card.from_name.trim().split(/\s+/)[0] || card.from_email;
 }
 
-/** The training tick's words, as on a reply card. */
-export function inviteNextTimeLabel(card: { from_name: string; from_email: string }): string {
-  return `Accept from ${inviterFirstName(card)} on its own next time`;
-}
-
 /** What the card says about your calendar at that time: a clash (times
  *  only), that it couldn't look, or nothing when it's free. */
 export function clashLine(card: InviteCardLike): string {

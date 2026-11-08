@@ -1,9 +1,11 @@
 """Authority gate for department-scoped proactive actions.
 
 The gate is consulted whenever a scheduled proactive action has a department
-slug — it reads the department's authority_level and decides whether the
-action should execute immediately, be proposed to an approver, or be
-escalated to an approver as urgent. Only `execute` runs the action;
+slug. The company's Approvals level (``orchestrator.outside_mode``: Careful,
+Balanced, Hands-off) decides whether the action should execute immediately,
+be proposed to an approver, or be escalated to an approver as urgent
+(``department_level``). A department's stored ``authority_level`` ("How it
+acts") no longer decides anything: Approvals is the one check. Only `execute` runs the action;
 `propose` and `escalate` both wait for a person to approve it. A
 `dept_cadence` fire is the exception: the check-in it runs sends nothing
 and gates each action it proposes.
@@ -86,13 +88,13 @@ def gate_action(
             reason=f"unknown department {department_slug!r}",
         )
 
-    level = state.config.authority_level
+    level = department_level(department_slug)
 
     if level == AuthorityLevel.AUTO_EXECUTE:
         return GateDecision(
             allowed=True,
             action="execute",
-            reason=f"department {department_slug!r} has authority_level=auto_execute",
+            reason=f"department {department_slug!r} runs at Hands-off",
         )
 
     if level == AuthorityLevel.PROPOSE_ONLY:
@@ -101,17 +103,37 @@ def gate_action(
             action="propose",
             required_scope=required_scope,
             now=now,
-            reason=f"department {department_slug!r} has authority_level=propose_only",
+            reason=f"department {department_slug!r} runs at Balanced",
         )
 
-    # ESCALATE: route to an approver as urgent; nothing executes until they approve.
+    # Careful: route to an approver as urgent; nothing executes until they approve.
     return _route_proposal(
         department_slug=department_slug,
         action="escalate",
         required_scope=required_scope,
         now=now,
-        reason=f"department {department_slug!r} has authority_level=escalate",
+        reason=f"department {department_slug!r} runs at Careful",
     )
+
+
+_BY_LEVEL: dict[str, AuthorityLevel] = {
+    "trust": AuthorityLevel.AUTO_EXECUTE,
+    "outsiders": AuthorityLevel.PROPOSE_ONLY,
+    "ask": AuthorityLevel.ESCALATE,
+}
+
+
+def department_level(department_slug: str) -> AuthorityLevel:
+    """How a department's work goes, from the company's Approvals level:
+    Hands-off runs it, Balanced proposes it, Careful escalates it. Never
+    raises: an unknown level or an error is Careful's."""
+    try:
+        from openexecutive.orchestrator import outside_mode
+
+        return _BY_LEVEL.get(outside_mode.get_mode(), AuthorityLevel.ESCALATE)
+    except Exception:
+        logger.warning("authority_gate: couldn't read the Approvals level — escalating", exc_info=True)
+        return AuthorityLevel.ESCALATE
 
 
 def _route_proposal(

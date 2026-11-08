@@ -132,8 +132,13 @@ def check_outbound_allowed(
     text: str,
     *,
     now: datetime | None = None,
+    availability: bool = True,
 ) -> str | None:
     """Return a refusal reason if this proactive DM should be suppressed, else None.
+
+    The duplicate and rate checks stop a runaway loop whoever started the
+    turn. ``availability`` False skips quiet hours / availability, for a send
+    a person asked for in the turn.
 
     `channel` is one of the scheduled-action channels (``telegram``,
     ``slack_dm``, ``discord_dm``, ``email``); `channel_ref` is the *final*
@@ -143,13 +148,13 @@ def check_outbound_allowed(
     returns ``None`` so the guard can never turn a working send into a crash.
     """
     try:
-        return _evaluate(channel, channel_ref, text, now or datetime.now(UTC))
+        return _evaluate(channel, channel_ref, text, now or datetime.now(UTC), availability=availability)
     except Exception:
         logger.exception("outbound_guard: unexpected failure; failing open")
         return None
 
 
-def _evaluate(channel: str, channel_ref: str, text: str, now: datetime) -> str | None:
+def _evaluate(channel: str, channel_ref: str, text: str, now: datetime, *, availability: bool = True) -> str | None:
     from openexecutive.config import get_settings
 
     settings = get_settings()
@@ -194,7 +199,7 @@ def _evaluate(channel: str, channel_ref: str, text: str, now: datetime) -> str |
         )
 
     # 3. Quiet hours / availability.
-    if settings.outbound_respect_quiet_hours:
+    if availability and settings.outbound_respect_quiet_hours:
         reason = _availability_reason(channel, channel_ref, now)
         if reason is not None:
             return reason

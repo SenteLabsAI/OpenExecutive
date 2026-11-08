@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { HANDLE_IT_MODES } from "../src/lib/reach.ts";
+import { APPROVALS_SENDS } from "../src/lib/reach.ts";
 import { FIRST, MAILS, OPTIONS, SCENES, SEND_OPTIONS, beats, sceneFor, sceneKey } from "../src/lib/whoSends.ts";
 
 test("every option has its own scene, named as its button", () => {
@@ -17,17 +17,17 @@ test("every option has its own scene, named as its button", () => {
   assert.deepEqual(keys.sort(), SCENES.map((s) => s.key).sort());
 });
 
-test("the sending levels use the names Handle it for me shows", () => {
-  const levels = SEND_OPTIONS.filter((o) => o.value !== "off" && o.value !== "everything");
-  assert.deepEqual(levels, HANDLE_IT_MODES.map((m) => ({ value: m.mode, label: m.label })));
+test("the levels use the names Approvals shows", () => {
+  const levels = SEND_OPTIONS.filter((o) => o.value !== "off").map((o) => o.label);
+  assert.deepEqual(levels, Object.values(APPROVALS_SENDS).map((l) => l.label));
 });
 
-test("each sending level sends more on its own, and contracts always wait", () => {
+test("Careful sends nothing, each level after sends more, and a new recipient always waits", () => {
   const counts = SEND_OPTIONS.map((o) => sceneFor(sceneKey("handle", o.value)).sends);
-  assert.equal(counts[0], 0);
-  for (let i = 1; i < counts.length; i++) assert.ok(counts[i] > counts[i - 1], `level ${i}`);
+  assert.deepEqual(counts.slice(0, 2), [0, 0]);
+  for (let i = 2; i < counts.length; i++) assert.ok(counts[i] > counts[i - 1], `level ${i}`);
   assert.ok(counts.at(-1) < MAILS.length);
-  assert.match(MAILS.at(-1).why, /always wait/);
+  assert.match(MAILS.at(-1).why, /always waits/);
 });
 
 test("story scenes have steps, and every scene plays at least two beats", () => {

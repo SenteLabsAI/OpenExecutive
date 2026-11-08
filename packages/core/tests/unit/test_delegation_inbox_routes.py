@@ -204,7 +204,7 @@ def test_local_login_sends_with_no_caller_header(
     assert mailbox.sent == ["d1"]
 
 
-def test_send_and_allow_through_decisions(
+def test_send_and_keep_the_example_through_decisions(
     client: TestClient, ids: dict[str, int], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from openexecutive.delegation import training
@@ -212,20 +212,13 @@ def test_send_and_allow_through_decisions(
     mailbox, card_id = _card(ids["principal"], monkeypatch)
     monkeypatch.setattr("openexecutive.delegation.gmail.gmail_for", lambda email: mailbox)
     monkeypatch.setenv("OE_LOCAL_LOGIN", "1")
-    # Not in training: refused, nothing sent.
-    resp = client.post(f"/decisions/{card_id}/approve", json={"edits": {"allow": True}}, headers=OWNER)
-    assert resp.status_code == 422 and resp.json()["detail"]["code"] == "cant_allow"
-    assert mailbox.sent == []
-    training.set_(ids["principal"], {training.REPLIES: True, training.DRAFTS: True}, updated_by="t")
-    assert client.get("/delegation/replies", headers=OWNER).json()["cards"][0]["can_allow"] is True
+    training.set_(ids["principal"], {training.DRAFTS: True}, updated_by="t")
+    assert client.get("/delegation/replies", headers=OWNER).json()["cards"][0]["learns_style"] is True
     mailbox.edit("d1")
     mailbox.drafts["d1"].message.text = "Dana, Friday is great."
-    resp = client.post(
-        f"/decisions/{card_id}/approve", json={"edits": {"allow": True, "example": True}}, headers=OWNER,
-    )
+    resp = client.post(f"/decisions/{card_id}/approve", json={"edits": {"example": True}}, headers=OWNER)
     assert resp.status_code == 200 and mailbox.sent == ["d1"]
     assert training.example_for(ids["principal"], "dana@northpeak.example") == "Dana, Friday is great."
-    assert training.allowed_sender(ids["principal"], "dana@northpeak.example") is not None
 
 
 def test_keeping_replies_in_the_mailbox_is_the_callers_own_choice_and_off_by_default(

@@ -541,16 +541,16 @@ async def _send_reply(
     (``delegation.reply_send``, which checks everything again first)."""
     from openexecutive.delegation.reply_send import SendRefused, send_approved_reply
 
-    # Send + allow, in training: ``edits.allow``; ``edits.example`` keeps an
-    # edited draft as how they write (Drafts in training). The rest is the
-    # second yes.
+    # ``edits.example`` keeps an edited draft as how they write (Drafts in
+    # training). The rest is the second yes.
     confirm = dict(body.edits or {})
-    allow = confirm.pop("allow", None)
     example = confirm.pop("example", None)
+    # An older page's training "allow" means nothing now.
+    confirm.pop("allow", None)
     try:
         await send_approved_reply(
             instance, caller=api_caller.caller(request), resolver=resolver, confirm=confirm,
-            allow=allow is True, example=example is True,
+            example=example is True,
         )
     except SendRefused as refused:
         raise HTTPException(
@@ -724,14 +724,13 @@ async def _carry_out_actions(
 ) -> DecisionInstance:
     """Do an action card's actions, exactly as stored, on its person's tap
     (``delegation.action_cards``, which checks the caller and each action
-    again first). ``edits.only`` picks which of them; ``edits.allow`` is
-    Approve + allow, with Suggested actions in training."""
+    again first). ``edits.only`` picks which of them."""
     from openexecutive.delegation.action_cards import ApproveRefused, approve
 
     try:
         await approve(
             instance, caller=api_caller.caller(request), resolver=resolver,
-            only=(body.edits or {}).get("only"), allow=(body.edits or {}).get("allow") is True,
+            only=(body.edits or {}).get("only"),
         )
     except ApproveRefused as refused:
         raise HTTPException(
@@ -770,7 +769,7 @@ async def _answer_invite(
     try:
         await answer(
             instance, caller=api_caller.caller(request), resolver=resolver,
-            answer=edits.get("answer", "accept"), allow=edits.get("allow") is True,
+            answer=edits.get("answer", "accept"),
         )
     except AnswerRefused as refused:
         raise HTTPException(

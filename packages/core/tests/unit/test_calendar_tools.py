@@ -1182,3 +1182,51 @@ def test_a_raw_booking_with_people_goes_through_the_card_tool() -> None:
     with patch("openexecutive.config.get_settings", return_value=_settings(calendar_booking_enabled=False)):
         assert asyncio.run(typed_booking_only(True, call_tool)(create)) == "ok"
     assert calls == [alone, delete, create, create]
+
+
+# ---------------------------------------------------------------------------
+# Approvals decides: no meeting setting of its own
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("workspace", ["solo", "team"])
+def test_the_owner_asking_books_it_with_no_meeting_setting(workspace: str) -> None:
+    from openexecutive.memory import workspace_settings
+
+    workspace_settings.set_workspace_mode(workspace)
+    pid = _add_person("Alice", "alice@example.com")
+    gw = _fake_gateway("evt-owner")
+    with patch(
+        "openexecutive.orchestrator.people_tools.is_principal_on_verified_surface", return_value=True,
+    ):
+        result = _call({
+            "title": "Sync", "start": _iso(FUTURE), "end": _iso(FUTURE_END),
+            "attendee_person_ids": [pid], "confidence": 0.9,
+        }, gateway=gw)
+    assert result["status"] == "created"
+    gw.call_tool.assert_awaited_once()
+
+
+@pytest.mark.parametrize("workspace", ["solo", "team"])
+def test_hands_off_books_what_someone_else_asked_for(
+    workspace: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.memory import workspace_settings
+    from openexecutive.orchestrator import levels
+
+    workspace_settings.set_workspace_mode(workspace)
+    _from_outside(monkeypatch)
+    pid = _add_person("Alice", "alice@example.com")
+    monkeypatch.setattr(levels, "relaxed", lambda: True)
+    gw = _fake_gateway("evt-hands-off")
+    result = _call({
+        "title": "Sync", "start": _iso(FUTURE), "end": _iso(FUTURE_END),
+        "attendee_person_ids": [pid], "confidence": 0.9,
+    }, gateway=gw)
+    assert result["status"] == "created"
+    monkeypatch.setattr(levels, "relaxed", lambda: False)
+    result = _call({
+        "title": "Other sync", "start": _iso(FUTURE), "end": _iso(FUTURE_END),
+        "attendee_person_ids": [pid], "confidence": 0.9,
+    })
+    assert result["status"] == "proposed"
