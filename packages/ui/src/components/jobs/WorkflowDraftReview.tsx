@@ -115,6 +115,7 @@ export default function WorkflowDraftReview({
         person: (id) => personName(people, id),
         specialist: specialistLabel,
         tool: (t) => toolLabel(t).label,
+        cadence: (c) => describeCadenceLocal(c),
       })
     : [];
 

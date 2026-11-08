@@ -16,7 +16,7 @@ import {
   getWorkflow,
   getWorkflowSample,
 } from "@/lib/api";
-import { describeCadence } from "@/lib/workflowChanges";
+import { describeCadenceLocal } from "@/lib/workflowChanges";
 import { Spinner } from "@/components/ui/Spinner";
 
 type FormState = Record<string, string>;
@@ -82,7 +82,6 @@ export default function JobDetailPage() {
   // A custom workflow that is switched off isn't runnable (so getWorkflow
   // 404s); it gets its review card instead, where turning it on approves it.
   const [pendingDef, setPendingDef] = useState<DynamicWorkflowDef | null>(null);
-  const [reloadKey, setReloadKey] = useState(0);
   // A saved custom workflow, for when it runs.
   const [customDef, setCustomDef] = useState<DynamicWorkflowDef | null>(null);
   // Only offer "Fill with an example" when the workflow has one.
@@ -167,9 +166,8 @@ export default function JobDetailPage() {
     };
     // prefillRaw is intentionally captured at first init only — re-running
     // when it changes would clobber user edits. See ref guard above.
-    // reloadKey re-runs the load once a pending workflow is turned on.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name, reloadKey]);
+  }, [name]);
 
   const handleLoadSample = useCallback(async () => {
     if (!name) return;
@@ -233,10 +231,9 @@ export default function JobDetailPage() {
     return (
       <PendingWorkflowReview
         definition={pendingDef}
-        onActivated={() => {
-          setPendingDef(null);
-          setReloadKey((k) => k + 1);
-        }}
+        // Back to the list, where the workflow now shows as on: this page
+        // would only repeat the steps the card just showed.
+        onActivated={() => router.push(`/jobs?turned_on=${encodeURIComponent(name)}`)}
       />
     );
   }
@@ -341,7 +338,7 @@ export default function JobDetailPage() {
                   <div>
                     <p className="text-[15px] font-semibold text-fg">
                       {customDef.cadence
-                        ? describeCadence(customDef.cadence)
+                        ? describeCadenceLocal(customDef.cadence)
                         : "Runs when you start it"}
                     </p>
                     <p className="text-sm text-fg-muted">

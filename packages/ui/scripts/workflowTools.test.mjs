@@ -16,6 +16,8 @@ test("tools are named by the app they work in", () => {
   assert.equal(toolApp("hubspot__create_contact").label, "Hubspot");
   assert.equal(toolApp("hubspot__create_email_campaign").label, "Hubspot");
   assert.equal(toolApp("datadog__list_events").label, "Datadog");
+  assert.equal(toolApp("slack__post_message").label, "Slack");
+  assert.equal(toolApp("hubspot__post_to_slack_channel").label, "Hubspot");
 });
 
 test("browser tools say what they do to a page", () => {
@@ -81,4 +83,18 @@ test("a quarterly run names the local day", () => {
     describeCadenceLocal("quarterly@15-14:00", "America/New_York", now),
     "Quarterly on day 15 at 9:00 AM EST",
   );
+});
+
+test("a schedule change can be said in local time", async () => {
+  const { describeChanges } = await import("../src/lib/workflowChanges.ts");
+  const before = { name: "w", title: "W", description: "", section: "S", estimated_minutes: 5, input_fields: [], steps: [], cadence: "weekly@mon@02:00", cadence_person_id: 1 };
+  const after = { ...before, cadence: "daily@02:00" };
+  const labels = { person: () => "Sam", specialist: (k) => k, tool: (t) => t };
+  const local = (c) => describeCadenceLocal(c, "America/New_York", new Date(Date.UTC(2026, 10, 8, 12)));
+  assert.deepEqual(describeChanges(before, after, { ...labels, cadence: local }), [
+    "Schedule: Every day at 9:00 PM EST, sent to Sam (was: Sundays at 9:00 PM EST)",
+  ]);
+  assert.deepEqual(describeChanges(before, after, labels), [
+    "Schedule: Every day at 02:00 UTC, sent to Sam (was: Every Monday at 02:00 UTC)",
+  ]);
 });

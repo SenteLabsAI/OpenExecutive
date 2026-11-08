@@ -113,6 +113,8 @@ export interface ChangeLabels {
   person: (id: number | null | undefined) => string;
   specialist: (key: string | undefined) => string;
   tool: (name: string) => string;
+  /** How to say a schedule; UTC text when not given. */
+  cadence?: (cadence: string | null | undefined) => string;
 }
 
 const ON_TIMEOUT: Record<string, string> = {
@@ -260,6 +262,7 @@ export function describeChanges(
   labels: ChangeLabels
 ): string[] {
   const out: string[] = [];
+  const when = labels.cadence ?? describeCadence;
 
   if (before.title !== after.title) out.push(`Renamed “${before.title}” to “${after.title}”`);
   if ((before.description ?? "").trim() !== (after.description ?? "").trim())
@@ -274,8 +277,8 @@ export function describeChanges(
   if (ca !== cb) {
     out.push(
       cb
-        ? `Schedule: ${describeCadence(cb)}, sent to ${labels.person(after.cadence_person_id)} (was: ${describeCadence(ca)})`
-        : `Schedule: only when you run it (was: ${describeCadence(ca)})`
+        ? `Schedule: ${when(cb)}, sent to ${labels.person(after.cadence_person_id)} (was: ${when(ca)})`
+        : `Schedule: only when you run it (was: ${when(ca)})`
     );
   } else if (cb && before.cadence_person_id !== after.cadence_person_id) {
     out.push(

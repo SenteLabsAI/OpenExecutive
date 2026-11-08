@@ -32,8 +32,9 @@ export function toolApp(name: string): ToolApp {
   const google = server === "google_workspace";
   const microsoft = /ms365|microsoft|outlook|office/.test(server);
   if (server === "oe" && tool.startsWith("browser_")) return { label: "Browser", kind: "browser" };
-  if (/slack/.test(server) || /slack/.test(tool)) return { label: "Slack", kind: "messages" };
-  if (/teams/.test(server) || /teams/.test(tool)) return { label: "Teams", kind: "messages" };
+  // Named by the server only: `hubspot__post_to_slack_channel` is HubSpot.
+  if (/slack/.test(server)) return { label: "Slack", kind: "messages" };
+  if (/teams/.test(server)) return { label: "Teams", kind: "messages" };
   // Mail and calendar words only name the app on servers that have them:
   // `hubspot__create_email_campaign` is HubSpot, not Email.
   const ownsMail = google || microsoft || server === "oe";
