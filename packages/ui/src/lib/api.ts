@@ -2792,6 +2792,14 @@ async function chatDraftError(res: Response, fallback: string): Promise<ReplySen
   return new ReplySendError(message, typeof detail.code === "string" ? detail.code : "error");
 }
 
+// Delete the draft from your Drafts (DELETE /delegation/drafts/{row}): only
+// the version its card last saw. Sends nothing.
+export async function deleteChatDraft(row: number): Promise<ChatDraftState> {
+  const res = await fetch(`${API_BASE}/delegation/drafts/${row}`, { method: "DELETE" });
+  if (!res.ok) throw await chatDraftError(res, "Couldn't delete the draft.");
+  return (await res.json()) as ChatDraftState;
+}
+
 // Your own words in the draft, here and in your Drafts. Sends nothing.
 export async function setChatDraftText(row: number, text: string): Promise<ChatDraftState> {
   const res = await fetch(`${API_BASE}/delegation/drafts/${row}/text`, {

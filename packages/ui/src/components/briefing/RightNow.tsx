@@ -1,11 +1,20 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
+import ChatDraftCard from "@/components/ChatDraftCard";
 import { ReplyCardItem, type useReplyCards } from "@/components/RepliesWaiting";
 import Button, { buttonClass } from "@/components/ui/Button";
-import { getMail, replyToMail, type MailView, type RightNowRow } from "@/lib/api";
-import { clockLabel, rowTarget, rowWhen, type PointTarget } from "@/lib/rightNow";
+import {
+  ReplySendError,
+  deleteChatDraft,
+  getMail,
+  replyToMail,
+  sendChatDraft,
+  type MailView,
+  type RightNowRow,
+} from "@/lib/api";
+import { clockLabel, draftRowId, rowTarget, rowWhen, type PointTarget } from "@/lib/rightNow";
 import { mailboxName, safeGmailLink } from "@/lib/replyCards";
 
 import { buildNarrativeSeed, type ContinueHandler } from "./shared";
@@ -16,7 +25,9 @@ import { buildNarrativeSeed, type ContinueHandler } from "./shared";
 // card in Needs you); drafts still in their own mailbox; chat messages asking them
 // something. Built from the records on every load, never written by a
 // model, so a row reads the same each time. An email row has View email and
-// Reply (GET /delegation/mail, POST /delegation/mail/reply), a chat row
+// Reply (GET /delegation/mail, POST /delegation/mail/reply), a draft row has
+// Send, See draft (the same card as under the chat, to change it first) and
+// Delete (/delegation/drafts/{row}), a chat row
 // opens the message in its app, and every row has a ✕ (POST
 // /today/right-now/dismiss) that keeps it gone until something newer lands
 // on it.
@@ -28,6 +39,8 @@ export interface RowActions {
   replies?: Replies;
   onContinue?: ContinueHandler;
   onDismiss?: (row: RightNowRow) => void;
+  // Drops a row that is done with (its draft sent or deleted) from the page.
+  onGone?: (row: RightNowRow) => void;
 }
 
 const KIND_ICON: Record<RightNowRow["kind"], string> = { mail: "✉", draft: "✎", chat: "💬" };
@@ -55,6 +68,7 @@ function ListRow({ row, actions }: { row: RightNowRow; actions?: RowActions }) {
   const onContinue = actions?.onContinue;
   const talk = onContinue ? () => onContinue(buildNarrativeSeed(label)) : undefined;
   const mailTarget = target?.kind === "mail" && actions?.replies ? target : null;
+  const draftId = draftRowId(row);
   return (
     <li className="border-t border-line py-2.5 first:border-t-0">
       <div className="flex items-start gap-3">
@@ -90,6 +104,8 @@ function ListRow({ row, actions }: { row: RightNowRow; actions?: RowActions }) {
           <Button size="sm" onClick={() => setOpen("view")}>View email</Button>
           <Button size="sm" onClick={() => setOpen("reply")}>Reply</Button>
         </div>
+      ) : draftId !== null ? (
+        <DraftActions row={row} draftId={draftId} onGone={actions?.onGone} />
       ) : target?.kind === "link" ? (
         <div className="ml-11 mt-2 flex flex-wrap gap-2">
           <Button size="sm" onClick={() => window.open(target.url, "_blank", "noopener,noreferrer")}>
@@ -98,6 +114,107 @@ function ListRow({ row, actions }: { row: RightNowRow; actions?: RowActions }) {
         </div>
       ) : null}
     </li>
+  );
+}
+
+// What a sent or deleted draft's row says before it goes.
+const GONE_AFTER_MS = 2500;
+const DRAFT_DONE: Record<string, string> = {
+  already_sent: "Already sent.",
+  draft_gone: "It isn't in your Drafts any more.",
+  you_replied: "You've already replied in this conversation.",
+};
+
+// A draft row's buttons: Send and Delete right here, or See draft to read and
+// change it first. Anything Send needs a second yes for, or a draft changed in
+// the mailbox, opens the draft so its card can say so.
+function DraftActions({
+  row,
+  draftId,
+  onGone,
+}: {
+  row: RightNowRow;
+  draftId: number;
+  onGone?: (row: RightNowRow) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState<"send" | "delete" | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const leaving = useRef(false);
+  const finish = useCallback(
+    (line?: string) => {
+      if (line) setDone(line);
+      if (leaving.current) return;
+      leaving.current = true;
+      window.setTimeout(() => onGone?.(row), GONE_AFTER_MS);
+    },
+    [onGone, row],
+  );
+
+  const run = async (what: "send" | "delete") => {
+    setBusy(what);
+    setError(null);
+    try {
+      if (what === "send") {
+        const result = await sendChatDraft(draftId);
+        if (result.status === "confirm") {
+          setOpen(true);
+          return;
+        }
+        finish("✓ Sent from your mailbox.");
+      } else {
+        const state = await deleteChatDraft(draftId);
+        if (state.status === "gone") finish("✓ Deleted from your Drafts.");
+        else if (state.status === "sent") finish("Already sent.");
+        else if (state.status === "replaced") finish("It isn't in your Drafts any more.");
+        else setOpen(true); // still there: the card says why
+      }
+    } catch (err) {
+      const code = err instanceof ReplySendError ? err.code : "";
+      if (DRAFT_DONE[code]) finish(DRAFT_DONE[code]);
+      else if (code === "draft_changed") setOpen(true);
+      else setError(err instanceof Error ? err.message : "That didn't work. Try again.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (done) {
+    return (
+      <p className="ml-11 mt-2 text-sm font-semibold text-emerald-700 dark:text-emerald-300" role="status">
+        {done}
+      </p>
+    );
+  }
+  if (open) {
+    return (
+      <div className="ml-11">
+        <ChatDraftCard
+          draft={{ row: draftId, to: [row.who], cc: [], subject: row.subject, preview: "" }}
+          canDelete
+          onFinished={finish}
+        />
+        <div className="mt-2">
+          <Button size="sm" variant="ghost" onClick={() => setOpen(false)}>Close</Button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="ml-11 mt-2">
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" variant="primary" disabled={busy !== null} onClick={() => void run("send")}>
+          {busy === "send" ? "Sending…" : "Send"}
+        </Button>
+        <Button size="sm" disabled={busy !== null} onClick={() => setOpen(true)}>See draft</Button>
+        <Button size="sm" disabled={busy !== null} onClick={() => void run("delete")}>
+          <span className="text-rose-500">{busy === "delete" ? "Deleting…" : "Delete"}</span>
+        </Button>
+      </div>
+      {error && <p className="mt-2 text-sm text-rose-500" role="alert">{error}</p>}
+    </div>
   );
 }
 
