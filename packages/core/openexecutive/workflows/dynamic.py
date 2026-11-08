@@ -42,6 +42,7 @@ the owner says yes or once what it waited for is ready (``waiting``,
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import string
 from collections.abc import AsyncIterator
@@ -843,6 +844,9 @@ class DynamicWorkflow(Workflow):
                         drop_held_calls(self.name, step.id, held, "the step stopped")
                     raise
                 if waiting is not None:
+                    if carried.strip() and not waiting.wrote:
+                        # It already did things before this rerun: keep that record.
+                        waiting = dataclasses.replace(waiting, wrote=True)
                     if held:
                         drop_held_calls(self.name, step.id, held, "the step is waiting")
                     wait = self._waiting_pause(step, index, waiting, outputs, policy)

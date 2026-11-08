@@ -63,6 +63,7 @@ class _Browser:
         self.connected = connected
         self.done: list[dict[str, Any]] = []
         self.approved: list[bool] = []
+        self.drop_after_click = False
 
     async def __call__(self, tool_input: dict[str, Any]) -> str:
         with extensions.workflow_step("browse"):
@@ -76,6 +77,8 @@ class _Browser:
                 return extensions.workflow_hold({**tool_input, "_at": "https://shop.example/cart"},
                                                 'Click "Buy now" on shop.example')
             self.done.append(tool_input)
+            if tool_input.get("do") == "click" and self.drop_after_click:
+                self.connected = False
             return json.dumps({"done": True, "page": "Order 1042 placed"})
 
 
@@ -201,6 +204,24 @@ def test_yes_runs_the_held_call_approved_and_the_step_carries_on(
     assert "Order 1042 placed" in turn and "Looked at the cart" in turn
     artifact = next(e for e in resumed if getattr(e, "type", "") == "artifact").content or ""
     assert "Order placed and logged." in artifact and "Looked at the cart" in artifact
+
+
+def test_a_wait_after_a_carried_on_step_keeps_what_it_already_did(
+    monkeypatch: pytest.MonkeyPatch, browser: _Browser, audit: list[dict[str, Any]]
+) -> None:
+    events, _ = _held(monkeypatch)
+    browser.drop_after_click = True
+    _install(monkeypatch, _ScriptedProvider([
+        _resp(_use(BROWSE, {"do": "look"}, "tu_1")),
+        _resp(_text("Ordered; logging waits for the browser.")),
+    ]))
+    resumed = _resume(events[-1].resume_state, "approve")
+    pause = resumed[-1]
+    assert isinstance(pause, WaitForHumanEvent) and pause.resume_state is not None
+    assert pause.resume_state.kind == "waiting"
+    # The approved click is on record, so a rerun carries on instead of buying again.
+    kept = pause.resume_state.outputs["order"][1]
+    assert "Order 1042 placed" in kept
 
 
 def test_no_skips_the_held_call_and_the_run_goes_on(
