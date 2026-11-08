@@ -210,31 +210,65 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
     ...(["upload", "drive", "onedrive", "notion"] as DocSource[]).filter((s) => usedSources.has(s)),
   ];
 
+  const empty = loaded && rows.length === 0;
+  const dropHandlers = {
+        onDragOver: (e: React.DragEvent) => {
+          e.preventDefault();
+          setDragOver(true);
+        },
+        onDragLeave: (e: React.DragEvent) => {
+          // Only when the pointer leaves the panel, not when it crosses a child.
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragOver(false);
+        },
+        onDrop: (e: React.DragEvent) => {
+          e.preventDefault();
+          setDragOver(false);
+          handleFiles(Array.from(e.dataTransfer.files));
+        },
+      };
+
   return (
-    <div className="space-y-6 max-w-4xl">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <p className="text-[15px] text-fg-muted max-w-xl">
-          Your own files, plus anything synced from a connected source.
-        </p>
-        <label
-          className={buttonClass(
-            "primary",
-            "md",
-            "self-start sm:self-auto flex-shrink-0 cursor-pointer focus-within:ring-2 focus-within:ring-accent/60"
+    <div
+      {...dropHandlers}
+      className={`space-y-4 max-w-5xl rounded-2xl transition-shadow ${
+        dragOver && !empty ? "ring-2 ring-accent ring-offset-8 ring-offset-surface" : ""
+      }`}
+    >
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+        <h2 className="text-lg font-semibold text-fg flex-1">
+          Documents
+          {rows.length > 0 && (
+            <span className="ml-2 font-medium text-fg-subtle tabular-nums">{rows.length}</span>
           )}
-        >
-          <Icon name="plus" size="w-5 h-5" />
-          Add documents
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            className="sr-only"
-            accept={ACCEPT}
-            onChange={(e) => handleFiles(Array.from(e.target.files ?? []))}
-          />
-        </label>
+        </h2>
+        <div className="flex flex-wrap items-center gap-3">
+          <label
+              className={buttonClass(
+                "primary",
+                "md",
+                "flex-shrink-0 cursor-pointer focus-within:ring-2 focus-within:ring-accent/60"
+              )}
+            >
+              <Icon name="plus" size="w-5 h-5" />
+              Add documents
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="sr-only"
+                accept={ACCEPT}
+                onChange={(e) => handleFiles(Array.from(e.target.files ?? []))}
+              />
+            </label>
+        </div>
       </div>
+
+      <SourcesLine
+        connected={connected}
+        anyKnown={sources.length > 0}
+        messages={syncMessage}
+        onSyncNow={handleSyncNow}
+      />
 
       {error && (
         <p className="text-sm text-red-500 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">
@@ -242,41 +276,24 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
         </p>
       )}
 
-      <SourcesStrip
-        connected={connected}
-        anyKnown={sources.length > 0}
-        messages={syncMessage}
-        onSyncNow={handleSyncNow}
-      />
+      {uploadProgress && <p className="text-[15px] text-accent animate-pulse">{uploadProgress}</p>}
 
-      <div
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDragOver(true);
-        }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={(e) => {
-          e.preventDefault();
-          setDragOver(false);
-          handleFiles(Array.from(e.dataTransfer.files));
-        }}
-        className={`rounded-2xl border-2 border-dashed transition-colors text-center ${
-          rows.length === 0 && loaded ? "p-10" : "px-4 py-5"
-        } ${dragOver ? "border-accent bg-accent/5" : "border-line-strong/70"}`}
-      >
-        {uploadProgress ? (
-          <p className="text-[15px] text-accent animate-pulse">{uploadProgress}</p>
-        ) : (
-          <p className="text-[15px] text-fg-muted">
-            {rows.length === 0 && loaded
-              ? "No documents yet. Drop files here to add your first ones."
-              : "Drop files here to add them"}
-            <span className="block text-sm text-fg-subtle mt-1">
-              PDF, Word, Excel, CSV, Markdown or text, up to 50 MB each
-            </span>
+      {empty && !uploadProgress && (
+        <div
+          className={`rounded-2xl border-2 border-dashed transition-colors text-center px-6 py-14 ${
+            dragOver ? "border-accent bg-accent/5" : "border-line-strong/70"
+          }`}
+        >
+          <span className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-surface-overlay text-fg-muted">
+            <Icon name="doc" size="w-6 h-6" />
+          </span>
+          <p className="text-[17px] font-semibold text-fg">Add your first documents</p>
+          <p className="text-sm text-fg-muted mt-1">
+            Drop files here, or press Add documents. PDF, Word, Excel, CSV, Markdown or text, up to 50 MB
+            each.
           </p>
-        )}
-      </div>
+        </div>
+      )}
 
       {rows.length > 0 && (
         <div className="space-y-3">
@@ -325,6 +342,11 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
               </li>
             )}
           </ul>
+
+          <p className={`text-sm text-center ${dragOver ? "text-accent" : "text-fg-subtle"}`}>
+            Drop files anywhere here to add them · PDF, Word, Excel, CSV, Markdown or text, up to 50 MB
+            each
+          </p>
         </div>
       )}
 
@@ -333,7 +355,9 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
   );
 }
 
-function SourcesStrip({
+// One line under the heading: each connected source with when it last
+// synced, or how to connect one.
+function SourcesLine({
   connected,
   anyKnown,
   messages,
@@ -342,71 +366,71 @@ function SourcesStrip({
   connected: SyncSourceStatus[];
   anyKnown: boolean;
   messages: Partial<Record<SyncedSourceId, string>>;
-  onSyncNow: (id: SyncedSourceId) => void;
+  onSyncNow?: (id: SyncedSourceId) => void;
 }) {
   if (!anyKnown) return null;
   if (connected.length === 0) {
     return (
-      <div className="flex flex-col sm:flex-row sm:items-center gap-3 rounded-2xl border border-line bg-surface-overlay/50 px-5 py-4">
-        <p className="flex-1 text-[15px] text-fg-muted">
-          Connect Google Drive, OneDrive or Notion to bring documents in automatically.
-        </p>
+      <p className="text-sm text-fg-muted">
+        Connect Google Drive, OneDrive or Notion to bring documents in automatically.{" "}
         {/* Sources are connected with environment settings; the guide says how. */}
-        <Link
-          href="/guide#knowledge"
-          className={buttonClass("secondary", "md", "self-start sm:self-auto")}
-        >
+        <Link href="/guide#knowledge" className="font-medium text-accent hover:underline">
           How to connect
         </Link>
-      </div>
+      </p>
     );
   }
   return (
-    <div className="grid gap-3 sm:grid-cols-2">
-      {connected.map((s) => {
-        const dot = s.syncing
-          ? "bg-accent animate-pulse"
-          : s.last_error
-            ? "bg-red-500"
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-sm text-fg-muted">
+        {connected.map((s) => {
+          const dot = s.syncing
+            ? "bg-accent animate-pulse"
+            : s.last_error
+              ? "bg-red-500"
+              : s.last_run
+                ? "bg-emerald-500"
+                : "bg-fg-subtle";
+          const when = s.syncing
+            ? "syncing…"
             : s.last_run
-              ? "bg-emerald-500"
-              : "bg-fg-subtle";
+              ? `synced ${formatRelativeTime(s.last_run)} · ${s.file_count} ${s.file_count === 1 ? "file" : "files"}`
+              : "not synced yet";
+          return (
+            <span
+              key={s.id}
+              className="inline-flex items-center gap-2"
+              title={`Syncs ${formatInterval(s.interval_minutes)}`}
+            >
+              <span className={`h-2 w-2 rounded-full flex-shrink-0 ${dot}`} aria-hidden />
+              <span>
+                <span className="text-fg">{s.label}</span> · {when}
+              </span>
+              {onSyncNow && !s.syncing && (
+                <button
+                  type="button"
+                  onClick={() => onSyncNow(s.id)}
+                  className="font-medium text-accent hover:underline"
+                >
+                  Sync now
+                </button>
+              )}
+            </span>
+          );
+        })}
+      </div>
+      {connected.map((s) => {
         const message = messages[s.id];
+        if (!s.last_error && !message) return null;
         return (
-          <div key={s.id} className="rounded-2xl border border-line bg-surface-elevated px-4 py-3.5">
-            <div className="flex items-center gap-2.5">
-              <span className={`h-2.5 w-2.5 rounded-full flex-shrink-0 ${dot}`} aria-hidden />
-              <span className="text-base font-semibold text-fg truncate">{s.label}</span>
-              <Button
-                size="sm"
-                className="ml-auto !h-10"
-                onClick={() => onSyncNow(s.id)}
-                disabled={s.syncing}
-              >
-                {s.syncing ? "Syncing…" : "Sync now"}
-              </Button>
-            </div>
-            <p className="text-sm text-fg-muted mt-1.5">
-              {s.syncing
-                ? "Checking for new and changed files…"
-                : s.last_run
-                  ? `Last synced ${formatRelativeTime(s.last_run)} · ${s.file_count} ${
-                      s.file_count === 1 ? "file" : "files"
-                    }`
-                  : "Not synced yet"}
-              <span className="text-fg-subtle"> · syncs {formatInterval(s.interval_minutes)}</span>
-            </p>
-            {(s.last_error || message) && (
-              <p className="text-sm text-red-500 mt-1.5">
-                {message ?? s.last_error}{" "}
-                {!message && (
-                  <Link href="/guide#knowledge" className="underline">
-                    How to fix
-                  </Link>
-                )}
-              </p>
+          <p key={s.id} className="text-sm text-red-500">
+            {s.label}: {message ?? s.last_error}{" "}
+            {!message && (
+              <Link href="/guide#knowledge" className="underline">
+                How to fix
+              </Link>
             )}
-          </div>
+          </p>
         );
       })}
     </div>
