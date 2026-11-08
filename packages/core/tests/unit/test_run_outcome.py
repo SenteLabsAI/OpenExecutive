@@ -77,6 +77,16 @@ def test_research_says_what_it_did() -> None:
     )
 
 
+def test_research_line_reads_runs_written_before_the_plain_write_up() -> None:
+    artifact = (
+        "# Executive research\n\n## Findings reviewed\n_3 finding(s) after dedup; x._\n\n"
+        "## Actions routed\n- ✓ `send_slack_dm` — sent\n- ✗ `message_person` — unknown tool — skipped\n"
+    )
+    assert run_outcome.outcome_line(_run("executive_research", artifact=artifact)) == (
+        "Looked at 3 updates. Sent 1 message."
+    )
+
+
 def test_quiet_research_says_nothing_needed_you() -> None:
     line = run_outcome.outcome_line(_run("executive_research", artifact=_research(1, [])))
     assert line == "Looked at 1 update. Nothing needed you."

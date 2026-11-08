@@ -472,3 +472,18 @@ def test_today_serves_the_card_to_the_principal(monkeypatch: pytest.MonkeyPatch)
     assert out is not None and out.needs_goal and out.findings[0].title == "Rival"
     monkeypatch.setattr("openexecutive.briefing.first_week.first_week_card", lambda now=None: None)
     assert today_route._first_week_card() is None
+
+
+def test_artifact_findings_read_back_from_runs_written_before() -> None:
+    from openexecutive.workflows.executive_research import parse_artifact_findings
+
+    artifact = (
+        "# Executive research\n\n## Findings reviewed\n_1 finding(s) after dedup._\n\n"
+        "- [high | medium] (cso) **Rival cut prices** — Rival cut its plan to $49.\n"
+    )
+    assert parse_artifact_findings(artifact) == [
+        {
+            "severity": "high", "confidence": "medium", "specialist": "cso",
+            "title": "Rival cut prices", "summary": "Rival cut its plan to $49.",
+        }
+    ]

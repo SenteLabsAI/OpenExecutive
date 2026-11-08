@@ -331,3 +331,39 @@ def _finding(title: str = "Competitor cut prices") -> er.ResearchFinding:
         confidence="high",
         relevant_urls=["https://example.com/news"],
     )
+
+
+@pytest.mark.asyncio
+async def test_text_beside_tool_calls_never_becomes_the_write_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """What the model writes next to its tool calls is its working notes
+    (its plan, budget, tool list). When the run ends without a closing
+    summary, the write-up has no narrative rather than those notes, and the
+    routed call carries a plain label for the document."""
+
+    async def _route(_inp: dict[str, Any]) -> str:
+        return json.dumps({"status": "created"})
+
+    from openexecutive.orchestrator import executive
+
+    monkeypatch.setitem(executive._ALL_SKILL_HANDLERS, "create_alert", _route)
+    monkeypatch.setattr("openexecutive.people.store.list_people", lambda: [])
+
+    plan = _Text("Routing plan: I have a 5-call budget and only message_person tools.")
+    iter1 = _Resp([plan, _ToolUse("create_alert", {"subject": "Stripe fees change"}, "a")], "tool_use")
+    iter2 = _Resp([_Text("Still planning."), _ToolUse("create_alert", {"subject": "x"}, "b")], "tool_use")
+    iter3 = _Resp([_Text("More notes."), _ToolUse("create_alert", {"subject": "y"}, "c")], "tool_use")
+    from openexecutive import providers
+
+    seq = _SequenceProvider([iter1, iter2, iter3, iter3, iter3, iter3])
+    monkeypatch.setattr(providers, "get_provider", lambda _model: seq)
+
+    narrative, tool_calls = await er._executive_synthesis_loop([_finding()])
+
+    assert narrative == ""
+    assert tool_calls[0]["done_label"] == "Flagged for you: Stripe fees change"
+    art = er._render_artifact(
+        deduped=[], per_specialist=[], tool_calls=tool_calls, narrative=narrative, note="",
+    )
+    assert "Routing plan" not in art and "budget" not in art

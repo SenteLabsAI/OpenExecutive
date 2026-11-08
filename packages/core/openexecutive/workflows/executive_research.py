@@ -284,12 +284,11 @@ def _build_synthesis_system(
         "against the budget.\n"
         "  - Cite relevant_urls in any outbound message.\n\n"
         "## SUMMARY\n\n"
-        "After your tool calls, emit a SHORT Markdown summary (<=150 "
-        "words). Format:\n\n"
-        "  **Acted on:** (bullets — one per tool call)\n"
-        "  **Quiet:** (one line — N findings reviewed, K ignored as "
-        "below the bar)\n\n"
-        "Skip headers with no content. Be terse."
+        "After your tool calls, end with a SHORT plain summary (<=120 "
+        "words) for the person who reads this research: what matters for "
+        "the company and who you told. Write it for them, in plain words. "
+        "Never mention tools, budgets, routing, plans, finding numbers or "
+        "ids, and don't list each call: the document lists what was done."
     )
 
 
@@ -655,7 +654,7 @@ class ExecutiveResearchWorkflow(Workflow):
                     deduped=[],
                     per_specialist=per_specialist,
                     tool_calls=[],
-                    narrative="No findings surfaced this run.",
+                    narrative="Nothing new came up this time.",
                     note=inputs.note,
                 ),
             )
@@ -946,13 +945,23 @@ async def _executive_synthesis_loop(
                     budget_remaining=budget_remaining,
                     free_tools=_NON_ROUTING_TOOLS,
                 )
+            uses = [b for b in response.content if getattr(b, "type", "") == "tool_use"]
+            for call, block in zip(iter_calls, uses, strict=False):
+                call["done_label"] = _done_label(
+                    call.get("tool", ""), getattr(block, "input", {}) or {},
+                    str(call.get("result_preview", "")),
+                )
             tool_calls.extend(iter_calls)
 
-            text = extract_artifact_from_response(response)
-            if text:
-                final_text = text
-
             stop_reason = getattr(response, "stop_reason", "")
+            # Only the closing summary is the write-up. Text the model writes
+            # next to its tool calls is it thinking out loud (its plan, the
+            # budget, which tools it has), never something to show anyone.
+            if stop_reason != "tool_use":
+                text = extract_artifact_from_response(response)
+                if text:
+                    final_text = text
+
             if stop_reason != "tool_use" or not iter_calls:
                 # Model emitted text-only summary — done.
                 break
@@ -1578,78 +1587,125 @@ def _render_artifact(
     narrative: str,
     note: str,
 ) -> str:
-    """Render the workflow artifact — short Markdown summary of what
-    was researched + what the Executive routed."""
+    """Render the workflow artifact: what was found and what was done, for
+    the person who opens it. Nothing about how the run works goes in it: no
+    run note or timestamp, tool names, budgets, failed or skipped calls,
+    watch slugs or which specialist found what. ``per_specialist`` and
+    ``note`` are kept in the run's audit and inputs instead."""
+    del per_specialist, note
     lines: list[str] = ["# Executive research"]
-    if note:
-        lines.append(f"\n_Note: {note}_\n")
 
-    if narrative:
+    if narrative.strip():
         lines.append("\n" + narrative.strip())
-    else:
-        lines.append(
-            "\n_(Executive synthesis returned no narrative.)_"
-        )
 
     if deduped:
-        lines.append("\n\n## Findings reviewed")
-        lines.append(
-            f"_{len(deduped)} finding(s) after dedup; the Executive's "
-            f"actions are listed above._\n"
-        )
+        lines.append(f"\n\n{_FINDINGS_HEADING}")
+        noun = "update" if len(deduped) == 1 else "updates"
+        lines.append(f"_{len(deduped)} {noun} reviewed._\n")
         for f in deduped[:25]:
             lines.append(
-                f"- [{f.severity_hint.value} | {f.confidence}] "
-                f"({f.source_specialist}) **{_inline(f.title)}** — "
-                f"{_inline(f.summary)}"
+                f"- **{_inline(f.title)}** — {_inline(f.summary)} "
+                f"_({f.severity_hint.value} priority, {_inline(f.confidence)} confidence)_"
             )
 
-    routed = [
+    done = [
         t for t in tool_calls
-        if t.get("tool") not in ("add_watchlist_entry", "propose_watch")
+        if t.get("ok")
+        and t.get("tool") not in _WATCH_TOOLS
+        and t.get("tool") not in _NON_ROUTING_TOOLS
     ]
-    if routed:
-        lines.append("\n## Actions routed")
-        for t in routed[:25]:
-            mark = "✓" if t.get("ok") else "✗"
-            lines.append(
-                f"- {mark} `{t.get('tool', '')}` — {t.get('result_preview', '')}"
+    if done:
+        lines.append(f"\n{_DONE_HEADING}")
+        for t in done[:25]:
+            label = t.get("done_label") or _done_label(
+                t.get("tool", ""), {}, str(t.get("result_preview", "")),
             )
+            lines.append(f"- {_inline(label)}")
 
-    watchlist_calls = [
-        t for t in tool_calls
-        if t.get("tool") in ("add_watchlist_entry", "propose_watch")
-    ]
+    watchlist_calls = [t for t in tool_calls if t.get("tool") in _WATCH_TOOLS]
     added = [
         t for t in watchlist_calls
         if t.get("outcome") == "added" or (t.get("tool") == "add_watchlist_entry" and t.get("ok"))
     ]
     suggested = [t for t in watchlist_calls if t.get("outcome") == "suggested"]
-    rejected = [t for t in watchlist_calls if t not in added and t not in suggested]
     if added:
         lines.append("\n## Now watching")
         for t in added[:25]:
-            lines.append(f"- ✓ {_inline(t.get('result_preview', ''))}")
+            lines.append(f"- {_inline(_watch_label(t))}")
     if suggested:
         lines.append("\n## Suggested for your approval (see /watchlist)")
         for t in suggested[:25]:
-            lines.append(f"- ? {_inline(t.get('result_preview', ''))}")
-    if rejected:
-        # Show refusals too (declined target, bad feed, policy) so a proposal
-        # that didn't take isn't silently dropped from the artifact.
-        lines.append("\n## Watch proposals not taken")
-        for t in rejected[:25]:
-            lines.append(f"- ✗ {_inline(t.get('result_preview', ''))}")
-
-    lines.append("\n## Per-specialist activity")
-    for s in per_specialist:
-        marker = "✓" if s.findings_emitted else "·"
-        err = f" — error: {s.error}" if s.error else ""
-        lines.append(
-            f"- {marker} `{s.specialist}` — {s.findings_emitted} finding(s){err}"
-        )
+            lines.append(f"- {_inline(_watch_label(t))}")
 
     return "\n".join(lines)
+
+
+_FINDINGS_HEADING = "## What I found"
+_DONE_HEADING = "## What I did"
+_WATCH_TOOLS = frozenset({"add_watchlist_entry", "propose_watch"})
+
+# What a routing call did, said to the person who reads the research.
+_DONE_LABELS: dict[str, str] = {
+    "create_alert": "Flagged for you",
+    "message_person": "Messaged someone",
+    "schedule_followup": "Set a follow-up",
+    "send_discord_dm": "Messaged someone",
+    "send_slack_dm": "Messaged someone",
+    "send_telegram_message": "Messaged someone",
+    "send_department_message": "Posted to a department",
+    "suggest_workflow": "Suggested a workflow",
+}
+
+
+def _done_label(tool: str, tool_input: dict[str, Any], result: str) -> str:
+    """One plain line for a call the routing pass made: what it did, to whom,
+    and the start of what it said. A call held for approval says so."""
+    label = _DONE_LABELS.get(tool) or tool.replace("_", " ").strip().capitalize()
+    if tool == "message_person":
+        try:
+            from openexecutive.people.store import get_person
+
+            person = get_person(int(tool_input.get("person_id")))  # type: ignore[arg-type]
+            if person is not None and (person.full_name or person.email):
+                label = f"Messaged {person.full_name or person.email}"
+        except Exception:
+            pass
+    elif tool == "send_department_message" and tool_input.get("department_slug"):
+        slug = str(tool_input.get("department_slug"))
+        team = slug.replace("_", " ").replace("-", " ").title()
+        try:
+            from openexecutive.departments import store as dept_store
+
+            dept = dept_store.get_department(slug)
+            if dept is not None and dept.config.title:
+                team = str(dept.config.title)
+        except Exception:
+            pass
+        label = f"Posted to {team}"
+    what = ""
+    for key in ("subject", "text", "intent", "reason", "summary", "message"):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value.strip():
+            what = " ".join(value.split())
+            break
+    if what:
+        what = what if len(what) <= 140 else what[:139] + "…"
+        label = f"{label}: {what}"
+    if "waiting_for_approval" in result:
+        label = f"Waiting for your OK: {label[0].lower()}{label[1:]}"
+    return label
+
+
+def _watch_label(call: dict[str, Any]) -> str:
+    """What a watch is on, in words: its label or target, not its slug."""
+    label = str(call.get("label") or "").strip()
+    if label:
+        return label
+    preview = str(call.get("result_preview", ""))
+    slug = str(call.get("slug") or "")
+    if slug and preview.startswith(f"{slug}: "):
+        preview = preview[len(slug) + 2:]
+    return preview
 
 
 def _inline(s: str) -> str:
@@ -1663,27 +1719,37 @@ def _inline(s: str) -> str:
     return out.strip()
 
 
-# One "Findings reviewed" line as `_render_artifact` writes it.
+# One finding line as `_render_artifact` writes it, and as it wrote it
+# before (with the specialist), so older runs still read back.
 _FINDING_LINE = re.compile(
+    r"^- \*\*(?P<title>.+?)\*\* — (?P<summary>.*) "
+    r"_\((?P<severity>\w+) priority, (?P<confidence>\w+) confidence\)_$"
+)
+_OLD_FINDING_LINE = re.compile(
     r"^- \[(?P<severity>\w+) \| (?P<confidence>\w+)\] \((?P<specialist>[^)]*)\) "
     r"\*\*(?P<title>.+?)\*\* — (?P<summary>.*)$"
 )
+_FINDINGS_HEADINGS = frozenset({_FINDINGS_HEADING, "## Findings reviewed"})
 
 
 def parse_artifact_findings(artifact: str) -> list[dict[str, str]]:
-    """The findings a stored run artifact lists under "Findings reviewed",
-    in the order written: ``severity``, ``confidence``, ``specialist``,
-    ``title`` and ``summary`` each. The run history keeps only the artifact,
-    so this reads back what `_render_artifact` wrote; anything else in the
-    artifact (the narrative, actions, watches) is skipped."""
+    """The findings a stored run artifact lists under its findings heading,
+    in the order written: ``severity``, ``confidence``, ``specialist`` (empty
+    on runs that no longer name it), ``title`` and ``summary`` each. The run
+    history keeps only the artifact, so this reads back what
+    `_render_artifact` wrote; anything else in the artifact is skipped."""
     findings: list[dict[str, str]] = []
     in_section = False
     for line in (artifact or "").splitlines():
         if line.startswith("## "):
-            in_section = line.strip() == "## Findings reviewed"
+            in_section = line.strip() in _FINDINGS_HEADINGS
             continue
-        if in_section and (match := _FINDING_LINE.match(line.strip())):
-            findings.append({k: v.strip() for k, v in match.groupdict().items()})
+        if not in_section:
+            continue
+        match = _FINDING_LINE.match(line.strip()) or _OLD_FINDING_LINE.match(line.strip())
+        if match:
+            found = {"specialist": "", **match.groupdict()}
+            findings.append({k: (v or "").strip() for k, v in found.items()})
     return findings
 
 

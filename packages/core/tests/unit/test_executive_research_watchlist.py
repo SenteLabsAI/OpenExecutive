@@ -408,29 +408,29 @@ async def test_watchlist_pass_multi_iteration(
     assert "stock-tsla" in [w.slug for w in monitoring_store.list_watchlist(db_path=db)]
 
 
-def test_render_artifact_splits_watchlist_and_shows_failures() -> None:
-    """add_watchlist_entry calls move out of 'Actions routed' into 'Now
-    watching', and failed adds (e.g. slug-dedup) are still shown (with ✗)."""
+def test_render_artifact_shows_watches_in_words_and_hides_the_mechanics() -> None:
+    """The write-up says what is watched by its label, not its slug, lists
+    what was done in plain words, and leaves out tool names, refused or
+    skipped calls and the per-specialist tally."""
     tool_calls = [
-        {"tool": "send_discord_dm", "result_preview": "{'status': 'sent'}", "ok": True},
-        {
-            "tool": "add_watchlist_entry",
-            "result_preview": "{'ok': true, 'slug': 'stock-tsla'}",
-            "ok": True,
-        },
-        {
-            "tool": "add_watchlist_entry",
-            "result_preview": "{'error': 'slug already exists'}",
-            "ok": False,
-        },
+        {"tool": "create_alert", "result_preview": "{'id': 7}", "ok": True,
+         "done_label": "Flagged for you: Supplier raising prices"},
+        {"tool": "message_person", "result_preview": "unknown tool — skipped", "ok": False},
+        {"tool": "lookup_person", "result_preview": "person_id=3", "ok": True},
+        {"tool": "propose_watch", "result_preview": "page-stripe: added", "ok": True,
+         "outcome": "added", "slug": "page-stripe", "label": "Stripe pricing page"},
+        {"tool": "propose_watch", "result_preview": "page-stripe-privacy: same source already watched",
+         "ok": False, "outcome": "rejected", "slug": "page-stripe-privacy"},
     ]
     art = er._render_artifact(
         deduped=[], per_specialist=[], tool_calls=tool_calls,
-        narrative="n", note="",
+        narrative="n", note="periodic research tick at 2026-11-08T03:21:14+00:00",
     )
-    assert "## Now watching" in art
-    assert "stock-tsla" in art
-    assert "slug already exists" in art  # failed add still surfaced
-    routed_section = art.split("## Now watching")[0]
-    assert "add_watchlist_entry" not in routed_section  # moved out of routed
-    assert "send_discord_dm" in routed_section  # DM stays under Actions routed
+    assert "## What I did\n- Flagged for you: Supplier raising prices" in art
+    assert "## Now watching\n- Stripe pricing page" in art
+    for hidden in (
+        "message_person", "unknown tool", "lookup_person", "create_alert",
+        "page-stripe", "already watched", "periodic research tick",
+        "Per-specialist", "`",
+    ):
+        assert hidden not in art

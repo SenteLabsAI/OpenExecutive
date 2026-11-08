@@ -99,9 +99,19 @@ def outcome_line(run: dict[str, Any]) -> str | None:
 
 def _research_line(artifact: str) -> str:
     """`executive_research._render_artifact`: findings, then what it did."""
-    found = re.search(r"_(\d+) finding\(s\) after dedup", artifact)
+    found = re.search(r"_(\d+) (?:updates? reviewed|finding\(s\) after dedup)", artifact)
     looked = int(found.group(1)) if found else 0
     messages = flagged = other = 0
+    for line in _section(artifact, "What I did"):
+        if not line.startswith("- "):
+            continue
+        if line.startswith(("- Messaged", "- Posted to")):
+            messages += 1
+        elif line.startswith("- Flagged for you"):
+            flagged += 1
+        else:
+            other += 1
+    # Runs written before the write-up named what it did in words.
     for line in _section(artifact, "Actions routed"):
         if not line.startswith("- ✓"):
             continue
