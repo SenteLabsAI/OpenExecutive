@@ -525,12 +525,14 @@ from openexecutive.orchestrator import people_tools as _people_tools_module  # n
 
 def _ask_call(
     input_dict: dict, answer: str = "synthesized answer", *, asker: object = "self", shared: bool = False,
+    local: str = "",
 ) -> dict:
     """Invoke handle_ask_about_person with directional_chat mocked.
 
     ``asker`` is the verified person asking: by default the person whose
     memory is asked about (their own), else an id or None. ``shared`` is
-    whether that person shares their work style with the team.
+    whether that person shares their work style with the team. ``local``
+    is what our own stores know (``memory.person_recall``).
 
     Returns the handler's JSON response merged with `_captured` so tests
     can assert both the wire shape and the values that flowed through
@@ -561,6 +563,8 @@ def _ask_call(
         patch.object(_people_tools_module, "_verified_asker_id", lambda: asker_id),
         patch.object(_people_tools_module, "_shares_work_style", lambda _pid: shared),
         patch.object(_people_tools_module, "_person_name", lambda _pid: "Alice"),
+        patch("openexecutive.memory.person_recall.own_memory", lambda _pid, _q: local and f"own:{local}"),
+        patch("openexecutive.memory.person_recall.work_style", lambda _pid: local and f"style:{local}"),
     ):
         result_str = asyncio.run(
             _people_tools_module.handle_ask_about_person(input_dict)
@@ -629,6 +633,23 @@ def test_ask_handler_reports_empty_answer_as_not_found() -> None:
     result = _ask_call({"person_id": 7, "question": "q"}, answer="")
     assert result["answer"] == ""
     assert result["found"] is False
+
+
+def test_ask_handler_falls_back_to_our_own_memory() -> None:
+    """Peer memory off or empty: the person's own notes answer, and a
+    teammate who shares gets how they work, never their notes."""
+    mine = _ask_call({"person_id": 7, "question": "what did I promise?"}, answer="", local="notes")
+    assert mine["answer"] == "own:notes" and mine["found"] is True
+    theirs = _ask_call({"person_id": 7, "question": "how?"}, answer="", local="x", asker=9, shared=True)
+    assert theirs["answer"] == "style:x" and theirs["found"] is True
+    # Nothing local either: still a plain not-found.
+    assert _ask_call({"person_id": 7, "question": "q"}, answer="")["found"] is False
+    # Not shared: nothing local is read for a teammate.
+    hidden = _ask_call({"person_id": 7, "question": "q"}, answer="", local="x", asker=9)
+    assert hidden["answer"] == "" and hidden["shared"] is False
+    # A question about their view of someone else isn't answered from notes.
+    view = _ask_call({"person_id": 7, "question": "q", "target_person_id": 8}, answer="", local="x")
+    assert view["found"] is False
 
 
 def test_ask_handler_rejects_missing_person_id() -> None:

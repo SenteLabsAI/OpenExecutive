@@ -2055,6 +2055,10 @@ def append_department_note(
 
     Silent on failure. Honcho is best-effort; the episodic SQL row is the
     system of record.
+
+    The note is also kept in the company's own database
+    (``memory.department_notes``), whether or not Honcho is on, so the
+    department's specialists still see it with Honcho off.
     """
     if not department_slug:
         _emit_peer_memory(
@@ -2063,6 +2067,9 @@ def append_department_note(
             outcome="no_department",
         )
         return
+    from openexecutive.memory import department_notes
+
+    department_notes.add(department_slug, kind, body, person_id=person_id)
     settings = get_settings()
     if not settings.honcho_enabled:
         _emit_peer_memory(

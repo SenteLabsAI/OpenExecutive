@@ -180,6 +180,9 @@ _BLANK_WIPE_TABLES = (
     "person_availability",
     "people",
     "department_goals",
+    # Each department's own notes (memory.department_notes): decisions,
+    # updates and check-ins of this company.
+    "department_notes",
     "departments",
     "departments_meta",
 )

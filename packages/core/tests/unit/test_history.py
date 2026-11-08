@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,9 +18,14 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path = tmp_path / "episodic.db"
     monkeypatch.setattr(episodic, "DB_PATH", path)
     episodic.initialize_db(path)
-    # Who the owner is comes from the roster cache, which an earlier test on
-    # this worker may have filled; the owner's notes are on by default.
+    # The roster comes from a cache an earlier test on this worker may have
+    # filled; keep it empty so only explicit switches count here.
     monkeypatch.setattr("openexecutive.people.registry.get_principal", lambda: None)
+    monkeypatch.setattr("openexecutive.people.registry.list_people", lambda *a, **k: [])
+    monkeypatch.setattr(
+        "openexecutive.people.registry.get_person",
+        lambda pid, **k: SimpleNamespace(id=pid, kind="team"),
+    )
     return path
 
 
@@ -35,8 +41,8 @@ def _add(person: int = 1, thread: str = "t1", when: datetime = NOW, summary: str
     )
 
 
-def test_settings_default_off_and_ninety_days() -> None:
-    assert h.person_settings(1) == h.PersonSettings(reply_notes=False, retention_days=None)
+def test_settings_default_on_and_ninety_days() -> None:
+    assert h.person_settings(1) == h.PersonSettings(reply_notes=True, retention_days=None)
     assert h.company_retention() == 90
     assert h.effective_retention(1) == 90
 
@@ -210,17 +216,22 @@ def test_reminders_are_claimed_once_a_day() -> None:
     assert not h.reminded(1, "2026-10-03")
 
 
-def test_the_owner_keeps_notes_until_they_turn_it_off(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_everyone_keeps_notes_until_they_turn_it_off(monkeypatch: pytest.MonkeyPatch) -> None:
     from types import SimpleNamespace
 
     from openexecutive.people import registry
 
-    monkeypatch.setattr(registry, "get_principal", lambda: SimpleNamespace(id=1))
+    roster = [SimpleNamespace(id=1, kind="team"), SimpleNamespace(id=2, kind="team"), SimpleNamespace(id=3, kind="contact")]
+    monkeypatch.setattr(registry, "list_people", lambda *a, **k: roster)
+    monkeypatch.setattr(registry, "get_person", lambda pid, **k: next((p for p in roster if p.id == pid), None))
+    assert h.person_settings(3).reply_notes is False
     assert h.person_settings(1).reply_notes is True
-    assert h.person_settings(2).reply_notes is False
-    assert h.people_keeping_notes() == [1]
+    assert h.person_settings(2).reply_notes is True
+    assert h.people_keeping_notes() == [1, 2]
     h.set_person_settings(1, by="t", reply_notes=False)
     assert h.person_settings(1).reply_notes is False
+    assert h.people_keeping_notes() == [2]
+    h.set_person_settings(2, by="t", reply_notes=False)
     assert h.people_keeping_notes() == []
     h.set_person_settings(2, by="t", reply_notes=True)
     assert h.people_keeping_notes() == [2]

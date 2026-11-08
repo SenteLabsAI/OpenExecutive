@@ -394,19 +394,26 @@ async def _prefetch_department_for_call(
     registry and queries the dept peer's Honcho representation. Returns
     "" when the specialist has no owning department (e.g. ``triage``)
     or when Honcho is disabled / fails — the wrapper's own degrade-on-
-    failure semantics already audit the outcome.
+    failure semantics already audit the outcome. When Honcho has nothing
+    (off, or empty), the department's own notes answer instead
+    (``memory.department_notes``).
     """
     from openexecutive.departments.registry import slug_for_specialist
+    from openexecutive.memory import department_notes
     from openexecutive.memory.honcho_client import prefetch_department
 
     slug = slug_for_specialist(call["specialist"])
     if slug is None:
         return ""
-    return await prefetch_department(
+    answer = await prefetch_department(
         query=call["query"],
         department_slug=slug,
         session_id=session_id,
     )
+    if answer:
+        return answer
+    # A sqlite read: off the event loop, like every parallel specialist call.
+    return await asyncio.to_thread(department_notes.for_prompt, slug, call["query"])
 
 
 async def route_parallel(

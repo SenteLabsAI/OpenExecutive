@@ -26,6 +26,12 @@ from openexecutive.people.models import Person
 
 
 @pytest.fixture(autouse=True)
+def _no_local_department_notes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep append_department_note's local copy out of the default DB."""
+    monkeypatch.setattr("openexecutive.memory.department_notes.add", lambda *a, **k: None)
+
+
+@pytest.fixture(autouse=True)
 def _reset_client_singleton() -> Generator[None, None, None]:
     honcho_client.reset_client_for_tests()
     yield

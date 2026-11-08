@@ -157,8 +157,9 @@ def test_the_channel_a_note_names() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_nothing_until_they_turn_it_on(roster: SimpleNamespace, model: dict[str, Any]) -> None:
+def test_on_until_they_turn_it_off(roster: SimpleNamespace, model: dict[str, Any]) -> None:
     model["notes"] = [_raw()]
+    h.set_person_settings(roster.teammate, by="test", reply_notes=False)
     assert _note(roster.teammate) == []
     assert model["turns"] == []
     h.set_person_settings(roster.teammate, by="test", reply_notes=True)
