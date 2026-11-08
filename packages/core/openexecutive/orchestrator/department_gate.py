@@ -167,6 +167,11 @@ def decide(
         # The principal is who it would wait for: there's nothing to approve.
         return Verdict(run=True, reason="it only messages the owner")
     slug, level = _department(person)
+    if person.id is None and level == AuthorityLevel.AUTO_EXECUTE:
+        # Someone on no People entry (an unmatched chat sender, a signed-in
+        # web caller on nobody's entry): Hands-off is the owner's trust in
+        # their own team, so their step still waits, as on Balanced.
+        level = AuthorityLevel.PROPOSE_ONLY
     scope: AuthorityScope | None = None
     if slug:
         gate = gate_action(slug, tool, required_scope=scope, now=now)

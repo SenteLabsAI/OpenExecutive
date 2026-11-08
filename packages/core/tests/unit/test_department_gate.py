@@ -214,6 +214,20 @@ def test_an_unreadable_level_escalates(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _company_level("marketing") is AuthorityLevel.ESCALATE
 
 
+def test_on_hands_off_someone_on_no_people_entry_still_waits(
+    team: dict[str, Person], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unmatched chat sender or a signed-in web caller on nobody's entry:
+    Hands-off is the owner's trust in their own team, not in them."""
+    from openexecutive.orchestrator import outside_mode
+
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.TRUST)
+    unmatched = gate.speaker(Session(origin_channel="slack", caller_person_id=None))
+    assert unmatched is not None and unmatched.id is None
+    verdict = gate.decide(unmatched, "send_slack_dm", _send(), mcp=False)
+    assert verdict.run is False and verdict.approver_person_id == team["owner"].id
+
+
 def test_escalate_always_waits_for_someone_else(team: dict[str, Person]) -> None:
     _level("marketing", AuthorityLevel.ESCALATE)
     people_store.set_authority_scope(team["sam"].id, [AuthorityScope.WILDCARD])  # type: ignore[arg-type]
