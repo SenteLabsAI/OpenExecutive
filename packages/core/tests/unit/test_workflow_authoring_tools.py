@@ -188,6 +188,23 @@ def test_chat_saves_tool_workflow_switched_off(scheduled: list[str]) -> None:
     assert scheduled == []
 
 
+def test_under_hands_off_a_tool_workflow_saves_switched_on(
+    scheduled: list[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.orchestrator import levels
+
+    # The owner's own chat turn on Hands-off.
+    monkeypatch.setattr(levels, "relaxed", lambda: True)
+    d = _with_cadence(_action_definition())
+    drafted = _draft(d)
+    assert "requires_review" not in drafted
+    assert "save it now" in drafted["note"]
+    out = _save(d, wat._canonical_token(d))
+    assert out["status"] != "saved_pending_review", out
+    stored = dynamic_store.get_definition("weekly_watch")
+    assert stored is not None and stored.is_active is True
+
+
 def test_chat_cannot_replace_an_approved_tool_workflow(scheduled: list[str]) -> None:
     """Replacing a switched-on tool workflow from chat (e.g. steered by an
     inbound email) would stage new tools under a familiar name. It waits on a

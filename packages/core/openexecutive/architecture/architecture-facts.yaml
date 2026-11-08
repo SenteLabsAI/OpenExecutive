@@ -7072,7 +7072,12 @@ workflows:
     rejected, so the saved workflow is exactly what the user saw). Both tool
     schemas are fixed, so the cached tool list stays stable. The step-by-step
     advanced editor drives the `/workflows/custom` CRUD endpoints directly.
-    A definition with action (tool) steps saved from chat is stored
+    Approvals decides (2026-11-08): on Hands-off (workflow_change.hands_off,
+    levels.relaxed) the draft's note says to save at once, it is saved
+    switched on, replacing a switched-on one needs no card unless it reads
+    or sends as its creator, and a run's write to a new target runs
+    (action_step._hands_off, levels.decide UNATTENDED). Below Hands-off, a
+    definition with action (tool) steps saved from chat is stored
     is_active=False (applied after the token check), its cadence is not
     scheduled, and
     save_workflow returns status `saved_pending_review` + the /jobs/{name}

@@ -38,15 +38,30 @@ MAX_CARD_CHARS = 1800
 
 def needs_card(existing: Any, defn: Any) -> bool:
     """Whether replacing ``existing`` with ``defn`` from chat waits for a tap:
-    a switched-on workflow with action steps, or one that reads or sends as
-    its creator (before or after)."""
+    one that reads or sends as its creator (before or after), whom chat
+    can't verify, at every level; below Hands-off also a switched-on
+    workflow with action steps."""
     from openexecutive.delegation.workflow_email import as_creator
     from openexecutive.workflows.dynamic_models import ActionStepSpec
 
     if existing is None:
         return False
     approved = existing.is_active and any(isinstance(s, ActionStepSpec) for s in existing.steps)
-    return bool(approved or as_creator(existing) or as_creator(defn))
+    if as_creator(existing) or as_creator(defn):
+        return True
+    return bool(approved) and not hands_off()
+
+
+def hands_off() -> bool:
+    """Whether Approvals is on Hands-off for the turn in progress
+    (``levels.relaxed``). Never raises: an error is False."""
+    try:
+        from openexecutive.orchestrator import levels
+
+        return levels.relaxed()
+    except Exception:
+        logger.warning("workflow_change: couldn't read the level", exc_info=True)
+        return False
 
 
 def _tools(step: Any) -> list[str]:
