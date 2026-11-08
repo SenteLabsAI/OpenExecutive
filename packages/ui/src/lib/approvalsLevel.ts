@@ -7,7 +7,11 @@ export type ApprovalsLevel = "ask" | "outsiders" | "trust";
 
 export const APPROVALS_LEVELS: { value: ApprovalsLevel; title: string; text: string }[] = [
   { value: "ask", title: "Careful", text: "I ask before I send, book, save or run anything." },
-  { value: "outsiders", title: "Balanced", text: "I go ahead with your team and People. I ask before anyone else." },
+  {
+    value: "outsiders",
+    title: "Balanced",
+    text: "I go ahead with your team and People. I ask before anyone else, or when something I read tries to give me orders.",
+  },
   { value: "trust", title: "Hands-off", text: "I just do it. I don't stop to ask." },
 ];
 

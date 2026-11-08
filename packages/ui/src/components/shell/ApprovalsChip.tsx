@@ -36,21 +36,36 @@ export default function ApprovalsChip({ onNavigate }: { onNavigate: () => void }
   const [error, setError] = useState<string | null>(null);
   const box = useRef<HTMLDivElement>(null);
 
-  // Loaded once; the Settings card announces its saves. A failed load hides
-  // the chip rather than keep a level that may no longer be right.
-  const load = (signal?: AbortSignal) => {
-    getOutsideContent(signal).then(setSetting, () => {
-      if (!signal?.aborted) setSetting(null);
-    });
+  // Bumped whenever a save sets the level, so a load that started before it
+  // can't put the older level back.
+  const saves = useRef(0);
+  const saved = (s: OutsideContentSetting) => {
+    saves.current += 1;
+    setSetting(s);
+  };
+
+  // Loaded once (a failed first load hides the chip), and again on each open
+  // (a failed refresh keeps what it shows). The Settings card announces its
+  // saves.
+  const load = (first: boolean, signal?: AbortSignal) => {
+    const at = saves.current;
+    getOutsideContent(signal).then(
+      (s) => {
+        if (saves.current === at) setSetting(s);
+      },
+      () => {
+        if (first && !signal?.aborted) setSetting(null);
+      },
+    );
     getTakeTheLead(signal).then(setLead, () => {
-      if (!signal?.aborted) setLead(null);
+      if (first && !signal?.aborted) setLead(null);
     });
   };
 
   useEffect(() => {
     const ctrl = new AbortController();
-    load(ctrl.signal);
-    const stop = onApprovalsChanged<OutsideContentSetting>(setSetting);
+    load(true, ctrl.signal);
+    const stop = onApprovalsChanged<OutsideContentSetting>(saved);
     return () => {
       ctrl.abort();
       stop();
@@ -83,9 +98,9 @@ export default function ApprovalsChip({ onNavigate }: { onNavigate: () => void }
     setBusy(true);
     setError(null);
     try {
-      const saved = await setOutsideContent(value);
-      setSetting(saved);
-      announceApprovals(saved);
+      const next = await setOutsideContent(value);
+      saved(next);
+      announceApprovals(next);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't save that. Try again.");
     } finally {
@@ -106,7 +121,7 @@ export default function ApprovalsChip({ onNavigate }: { onNavigate: () => void }
         aria-expanded={open}
         onClick={() => {
           // Opening looks again: it may have changed from email or a chat app.
-          if (!open) load();
+          if (!open) load(false);
           setOpen(!open);
         }}
         className="w-full flex items-center gap-2.5 rounded-xl border border-line bg-surface px-3 py-2 text-left hover:bg-surface-overlay transition-colors cursor-pointer"
