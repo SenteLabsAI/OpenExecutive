@@ -250,8 +250,20 @@ def test_on_careful_everything_waits(owner: Any, models: dict[str, Any], monkeyp
     assert inbox.card_payload(_only_card(owner))["handle_it_reason"] == "level"
 
 
-def test_a_stranger_gets_the_reply_above_careful(owner: Any, models: dict[str, Any]) -> None:
+def test_below_hands_off_a_stranger_gets_a_card(owner: Any, models: dict[str, Any]) -> None:
+    # Like a send to someone not in People anywhere (levels.NEW_PERSON).
     _on(owner)
+    stranger = _msg("m1", "t1", sender="sam@unknown.example", name="Sam")
+    mailbox, result = _scan_one(owner, stranger)
+    assert result.handled == 0 and mailbox.sent == []
+    assert inbox.card_payload(_only_card(owner))["handle_it_reason"] == "stranger"
+
+
+def test_a_stranger_gets_the_reply_on_hands_off(
+    owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _on(owner)
+    _hands_off(monkeypatch)
     stranger = _msg("m1", "t1", sender="sam@unknown.example", name="Sam")
     mailbox, result = _scan_one(owner, stranger)
     assert result.handled == 1 and mailbox.sent == ["d1"]
@@ -417,11 +429,27 @@ def test_steered_replies_stay_on_a_card(switched_on: Any, reply: dict[str, Any],
     assert _check(switched_on, reply=_reply(**reply)) == code
 
 
-def test_an_unauthenticated_sender_never_gets_one(owner: Any) -> None:
+def _hands_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import outside_mode
+
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.TRUST)
+
+
+def test_an_unauthenticated_sender_never_gets_one(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     _on(owner)
     message = _msg("m1", "t1", sender_authenticated=False)
-    # The watcher handles such a sender as a stranger: no.
+    # The watcher handles such a sender as a stranger: no, even on Hands-off.
+    assert _check(owner, message=message, relation="stranger") == "stranger"
+    _hands_off(monkeypatch)
     assert _check(owner, message=message, relation="stranger") == "sender_unverified"
+
+
+def test_below_hands_off_a_reply_to_a_stranger_waits(switched_on: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _check(switched_on, relation="stranger") == "stranger"
+    # Someone they have written to before counts as known.
+    assert _check(switched_on, relation="correspondent") is None
+    _hands_off(monkeypatch)
+    assert _check(switched_on, relation="stranger") is None
 
 
 @pytest.mark.parametrize(("verdict", "code"), [

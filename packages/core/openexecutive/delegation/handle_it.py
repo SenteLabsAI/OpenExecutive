@@ -111,11 +111,22 @@ REASONS: dict[str, str] = {
     "draft_changed": "You changed the draft in your mailbox, so it's yours to send.",
     "handle_it_off": "Handle it for me was off by the time it came to send.",
     # Meeting invites (delegation.invites).
-    "stranger": "Below Hands-off it accepts on its own only from your team and contacts.",
+    "stranger": "Below Hands-off it acts on its own only for people you know.",
     "clash": "It clashes with something already on your calendar.",
     "calendar_unread": "It couldn't check your calendar for clashes, so it asked instead.",
     "calendar_write": "Your calendar sign-in can't answer invites yet. Connect it again under Read my calendar.",
 }
+
+
+def hands_off(*, db_path: Path | None = None) -> bool:
+    """Whether Approvals is on Hands-off. Never raises: unreadable is no."""
+    try:
+        from openexecutive.orchestrator import outside_mode
+
+        return outside_mode.get_mode(db_path=db_path) == outside_mode.TRUST
+    except Exception:
+        logger.warning("delegation.handle_it: couldn't read Approvals — not Hands-off", exc_info=True)
+        return False
 
 
 def approvals_hold(*, db_path: Path | None = None) -> bool:
@@ -304,6 +315,10 @@ def _refusal(
         return "off"
     if approvals_hold(db_path=db_path):
         return "level"
+    # Below Hands-off, a reply to someone they don't know waits on a card, as
+    # an invite from one does (delegation.invites).
+    if kind_for(relation) != KIND_REPLY_KNOWN and not hands_off(db_path=db_path):
+        return "stranger"
     if not signing_ok():
         return "signing_off"
     if getattr(message, "sender_authenticated", False) is not True:
