@@ -5,8 +5,9 @@ inbox" (``delegation_handle_it``, one row per person, absent means off). It
 has no dial of its own: Approvals decides (``orchestrator.outside_mode``,
 ``approvals_hold``). On Careful every reply waits on a card, since any
 outside read waits there; on Balanced and Hands-off a reply goes on its own
-unless one of the checks below holds it. On Balanced the last look
-(``injection_check``) holds anything it flags.
+unless one of the checks below holds it; below Hands-off that includes a
+reply to someone they don't know (``stranger``). On every level the last
+look (``injection_check``) holds anything it flags.
 
 Every other email waits on a card for the person to tap Send, as it did
 before. Only the person turns it on, from a session the API knows is theirs
@@ -146,11 +147,6 @@ def approvals_hold(*, db_path: Path | None = None) -> bool:
 class HandleIt:
     person_id: int
     enabled: bool = False
-
-    def sends(self, *, db_path: Path | None = None) -> bool:
-        """Whether a reply, follow-up or invite may go on its own: the
-        switch is on and Approvals doesn't hold it."""
-        return self.enabled and not approvals_hold(db_path=db_path)
 
 
 # --------------------------------------------------------------------------- #

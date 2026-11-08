@@ -11735,7 +11735,8 @@ delegation:
     gate): the company's Approvals level (outside_mode: ask Careful,
     outsiders Balanced, trust Hands-off) decides what goes.
     handle_it.approvals_hold() is True on Careful (and when unreadable);
-    HandleIt.sends() = enabled and not approvals_hold(). Set only by PUT
+    Below Hands-off a reply to someone they don't know is refused
+    (stranger, like invites and levels.NEW_PERSON). Set only by PUT
     /delegation/handle-it {enabled} from a caller
     delegation.verified.caller_refusal accepts (the rule Send uses: 403
     not_yours, 409 caller_signing_required on shared secret alone);

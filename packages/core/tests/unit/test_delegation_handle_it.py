@@ -76,14 +76,14 @@ def _only_card(owner: Any) -> Any:
 
 def test_off_by_default() -> None:
     stored = handle_it.get(7)
-    assert stored.enabled is False and stored.sends() is False
+    assert stored.enabled is False
 
 
 def test_the_switch_and_approvals_decide(monkeypatch: pytest.MonkeyPatch) -> None:
     after = handle_it.set_(7, enabled=True, updated_by="t")
-    assert after.enabled is True and after.sends() is True
+    assert after.enabled is True and handle_it.approvals_hold() is False
     _careful(monkeypatch)
-    assert after.sends() is False  # Careful holds it
+    assert handle_it.approvals_hold() is True  # Careful holds it
 
 
 def test_a_table_from_before_keeps_the_switch(tmp_path: Path) -> None:
