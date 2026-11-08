@@ -158,7 +158,7 @@ export default function AppSidebar({
       </nav>
 
       <div className="px-3 pb-2 pt-2 border-t border-line flex-shrink-0">
-        <ApprovalsChip pathname={pathname} onNavigate={onClose} />
+        <ApprovalsChip onNavigate={onClose} />
         <NavRow
           href={SETTINGS_NAV_ITEM.href}
           onClick={onClose}

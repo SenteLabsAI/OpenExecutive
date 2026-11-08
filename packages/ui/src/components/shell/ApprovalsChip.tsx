@@ -12,8 +12,9 @@ import {
   type TakeTheLead,
 } from "@/lib/api";
 import {
-  APPROVALS_CHANGED_EVENT,
+  announceApprovals,
   APPROVALS_LEVELS,
+  onApprovalsChanged,
   approvalsTitle,
   trainingNote,
   type ApprovalsLevel,
@@ -27,7 +28,7 @@ const DOT: Record<ApprovalsLevel, string> = {
 
 // Sidebar: the Approvals level, one tap from any page. Owner only (the same
 // can_change the Settings card reads); hidden when it can't load.
-export default function ApprovalsChip({ pathname, onNavigate }: { pathname: string; onNavigate: () => void }) {
+export default function ApprovalsChip({ onNavigate }: { onNavigate: () => void }) {
   const [setting, setSetting] = useState<OutsideContentSetting | null>(null);
   const [lead, setLead] = useState<TakeTheLead | null>(null);
   const [open, setOpen] = useState(false);
@@ -35,19 +36,26 @@ export default function ApprovalsChip({ pathname, onNavigate }: { pathname: stri
   const [error, setError] = useState<string | null>(null);
   const box = useRef<HTMLDivElement>(null);
 
+  // Loaded once; the Settings card announces its saves. A failed load hides
+  // the chip rather than keep a level that may no longer be right.
+  const load = (signal?: AbortSignal) => {
+    getOutsideContent(signal).then(setSetting, () => {
+      if (!signal?.aborted) setSetting(null);
+    });
+    getTakeTheLead(signal).then(setLead, () => {
+      if (!signal?.aborted) setLead(null);
+    });
+  };
+
   useEffect(() => {
     const ctrl = new AbortController();
-    const load = () => {
-      getOutsideContent(ctrl.signal).then(setSetting, () => {});
-      getTakeTheLead(ctrl.signal).then(setLead, () => {});
-    };
-    load();
-    window.addEventListener(APPROVALS_CHANGED_EVENT, load);
+    load(ctrl.signal);
+    const stop = onApprovalsChanged<OutsideContentSetting>(setSetting);
     return () => {
       ctrl.abort();
-      window.removeEventListener(APPROVALS_CHANGED_EVENT, load);
+      stop();
     };
-  }, [pathname]);
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -75,8 +83,9 @@ export default function ApprovalsChip({ pathname, onNavigate }: { pathname: stri
     setBusy(true);
     setError(null);
     try {
-      setSetting(await setOutsideContent(value));
-      window.dispatchEvent(new Event(APPROVALS_CHANGED_EVENT));
+      const saved = await setOutsideContent(value);
+      setSetting(saved);
+      announceApprovals(saved);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't save that. Try again.");
     } finally {
@@ -95,7 +104,11 @@ export default function ApprovalsChip({ pathname, onNavigate }: { pathname: stri
         type="button"
         aria-haspopup="dialog"
         aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => {
+          // Opening looks again: it may have changed from email or a chat app.
+          if (!open) load();
+          setOpen(!open);
+        }}
         className="w-full flex items-center gap-2.5 rounded-xl border border-line bg-surface px-3 py-2 text-left hover:bg-surface-overlay transition-colors cursor-pointer"
       >
         <span aria-hidden="true" className={`h-2 w-2 flex-shrink-0 rounded-full ${DOT[level] ?? DOT.ask}`} />

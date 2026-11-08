@@ -11,8 +11,20 @@ export const APPROVALS_LEVELS: { value: ApprovalsLevel; title: string; text: str
   { value: "trust", title: "Hands-off", text: "I just do it. I don't stop to ask." },
 ];
 
-// Sent on window when either picker saves, so the other shows the new level.
+// Sent on window when either picker saves, carrying the saved setting, so
+// the other shows the new level without loading it again.
 export const APPROVALS_CHANGED_EVENT = "oe:approvals-changed";
+
+export function announceApprovals<T>(saved: T): void {
+  window.dispatchEvent(new CustomEvent<T>(APPROVALS_CHANGED_EVENT, { detail: saved }));
+}
+
+// Calls `fn` with each saved setting; returns the unsubscribe.
+export function onApprovalsChanged<T>(fn: (saved: T) => void): () => void {
+  const listener = (e: Event) => fn((e as CustomEvent<T>).detail);
+  window.addEventListener(APPROVALS_CHANGED_EVENT, listener);
+  return () => window.removeEventListener(APPROVALS_CHANGED_EVENT, listener);
+}
 
 export function approvalsTitle(level: string): string {
   return APPROVALS_LEVELS.find((l) => l.value === level)?.title ?? "Careful";
