@@ -368,7 +368,7 @@ function GettingBetter({
   const lastRun = replay.last_run_at ? formatRunAt(replay.last_run_at).absolute : null;
   const numbers: { value: string; label: string; tone: StatTone }[] = [
     { value: String(stats.lessons), label: stats.lessons === 1 ? "lesson in use" : "lessons in use", tone: "accent" },
-    { value: String(stats.helped), label: stats.helped === 1 ? "chat it helped" : "chats they helped", tone: "default" },
+    { value: String(stats.uses), label: stats.uses === 1 ? "time used in a chat" : "times used in chats", tone: "default" },
     {
       value: String(stats.nowRight),
       label: stats.nowRight === 1 ? "thing I now get right" : "things I now get right",
@@ -554,7 +554,11 @@ function LessonRow({
   onExpand: () => void;
 }) {
   const reached = lesson.shown;
-  const went = reached === 0 ? "not used yet" : `used in ${reached} ${reached === 1 ? "chat" : "chats"}`;
+  // "not helping yet" is what "Select the N not helping" picks by.
+  const went =
+    reached === 0
+      ? "not used yet"
+      : `used in ${reached} ${reached === 1 ? "chat" : "chats"}${lesson.miss_after > lesson.fine_after ? " · not helping yet" : ""}`;
   return (
     <Row
       first={first}

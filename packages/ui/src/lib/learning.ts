@@ -5,8 +5,9 @@
 export interface LearningStats {
   /** Lessons still in use. */
   lessons: number;
-  /** Chats a live lesson reached that went fine. */
-  helped: number;
+  /** How many times a live lesson was used in a chat (a chat two lessons
+   * reached counts twice, so it isn't called a count of chats). */
+  uses: number;
   /** Misses the nightly recheck says it now gets right. */
   nowRight: number;
 }
@@ -15,13 +16,13 @@ export interface LearningStats {
  * counted: what fell short feeds the lessons and the nightly recheck, and
  * isn't shown. */
 export function learningStats(
-  lessons: { retired_at: string | null; fine_after: number }[],
+  lessons: { retired_at: string | null; shown: number }[],
   misses: { replay_state: string }[],
 ): LearningStats {
   const live = lessons.filter((l) => l.retired_at === null);
   return {
     lessons: live.length,
-    helped: live.reduce((n, l) => n + l.fine_after, 0),
+    uses: live.reduce((n, l) => n + l.shown, 0),
     nowRight: nowRight(misses).length,
   };
 }

@@ -2,15 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DeferredForget, learningStats, nowRight, toggleAll, unhelpfulLessonIds } from "../src/lib/learning.ts";
 
-test("the card counts only what went right: live lessons, chats they helped, misses now right", () => {
+test("the card counts only what went right: live lessons, times used, misses now right", () => {
   const lessons = [
-    { retired_at: null, fine_after: 3 },
-    { retired_at: null, fine_after: 2 },
-    { retired_at: "2026-10-20T00:00:00Z", fine_after: 9 },
+    { retired_at: null, shown: 3 },
+    { retired_at: null, shown: 2 },
+    { retired_at: "2026-10-20T00:00:00Z", shown: 9 },
   ];
   const misses = [{ replay_state: "closed" }, { replay_state: "open" }, { replay_state: "evidence" }];
-  assert.deepEqual(learningStats(lessons, misses), { lessons: 2, helped: 5, nowRight: 1 });
-  assert.deepEqual(learningStats([], []), { lessons: 0, helped: 0, nowRight: 0 });
+  assert.deepEqual(learningStats(lessons, misses), { lessons: 2, uses: 5, nowRight: 1 });
+  assert.deepEqual(learningStats([], []), { lessons: 0, uses: 0, nowRight: 0 });
 });
 
 test("Now gets right lists only the misses the nightly recheck passed", () => {
