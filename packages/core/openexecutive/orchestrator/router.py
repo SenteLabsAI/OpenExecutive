@@ -410,7 +410,10 @@ async def _prefetch_department_for_call(
         department_slug=slug,
         session_id=session_id,
     )
-    return answer or department_notes.for_prompt(slug, call["query"])
+    if answer:
+        return answer
+    # A sqlite read: off the event loop, like every parallel specialist call.
+    return await asyncio.to_thread(department_notes.for_prompt, slug, call["query"])
 
 
 async def route_parallel(

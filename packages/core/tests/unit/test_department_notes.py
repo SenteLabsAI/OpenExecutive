@@ -96,3 +96,16 @@ def test_factory_reset_and_blank_slot_clear_the_table() -> None:
     assert f'"{dn.TABLE}"' in inspect.getsource(reset_all_state)
     # Before departments, like the department's other rows.
     assert _BLANK_WIPE_TABLES.index(dn.TABLE) < _BLANK_WIPE_TABLES.index("departments")
+
+
+def test_a_turn_private_to_the_principal_keeps_nothing() -> None:
+    from types import SimpleNamespace
+
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    token = current_session.set(SimpleNamespace(private_to_principal=True))  # type: ignore[arg-type]
+    try:
+        assert dn.add("growth", "decision", "From a contact's mail.", now=NOW) is None
+    finally:
+        current_session.reset(token)
+    assert dn.for_prompt("growth", "mail") == ""

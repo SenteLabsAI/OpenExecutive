@@ -11,7 +11,8 @@ memory is off or has nothing.
 Notes are company work, not anyone's private words: anyone whose question
 reaches the department's specialist may see them. Each department keeps its
 newest ``KEEP`` notes, none older than ``MAX_AGE_DAYS``. A factory reset and
-a switch into a blank client slot clear the table. Nothing here raises.
+a switch into a blank client slot clear the table. A turn private to the
+principal keeps nothing here. Nothing here raises.
 """
 
 from __future__ import annotations
@@ -65,6 +66,18 @@ def _connect(db_path: Path | None) -> sqlite3.Connection:
     return conn
 
 
+def _private_turn() -> bool:
+    """Whether this turn is about something private to the principal (mail
+    from one of their contacts, mail they forwarded): nothing from it goes
+    into notes anyone else's question can reach. Fails closed."""
+    try:
+        from openexecutive.orchestrator.schedule_tools import current_session
+
+        return getattr(current_session.get(), "private_to_principal", False) is True
+    except Exception:
+        return True
+
+
 def add(
     department_slug: str | None,
     kind: str,
@@ -77,7 +90,7 @@ def add(
     """Keep one note for ``department_slug``. Returns its id, or None when
     there is nothing to keep or the write failed."""
     text = (body or "").strip()
-    if not department_slug or not text:
+    if not department_slug or not text or _private_turn():
         return None
     when = (now or datetime.now(UTC)).isoformat()
     try:
