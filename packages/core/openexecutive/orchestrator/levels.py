@@ -162,7 +162,11 @@ def decide(reason: str, *, mode: str | None = None) -> str:
     try:
         # Hands-off is the owner's trust in their own Executive: it gives no
         # one else the owner's powers, and no stranger's mail its say-so.
-        if reason in (STRANGER, NOT_OWNER, SHARED, AI_APP):
+        if reason in (STRANGER, NOT_OWNER, SHARED):
+            return CARD
+        if reason == AI_APP and not _owners_ai_app():
+            # The owner's own AI app, signed in as them and allowed to act,
+            # follows their level like the web app; any other is a card.
             return CARD
         current = mode if mode is not None else turn_level()
         if current == outside_mode.TRUST:
@@ -171,6 +175,13 @@ def decide(reason: str, *, mode: str | None = None) -> str:
     except Exception:
         logger.warning("levels: couldn't decide — putting it on a card", exc_info=True)
         return CARD
+
+
+def _owners_ai_app() -> bool:
+    from openexecutive.orchestrator import outside_mode
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    return outside_mode.owners_ai_app(current_session.get())
 
 
 _OWNER_SEND_TOOLS = frozenset({"google_workspace__send_gmail_message"})
