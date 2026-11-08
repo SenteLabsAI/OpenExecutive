@@ -36,6 +36,10 @@ export function useScrollFade(ref: RefObject<HTMLElement | null>): {
     for (const child of Array.from(el.children)) observer.observe(child);
     return () => observer.disconnect();
   }, [ref, measure]);
+  // Tabs added, removed or relabelled (another hub, a count that grew)
+  // change what overflows without resizing the row: measure after each
+  // render too. It only sets state when an edge flips.
+  useEffect(measure);
   const mask = fadeMask(edges.start, edges.end);
   return { style: mask ? { maskImage: mask, WebkitMaskImage: mask } : undefined, onScroll: measure };
 }
