@@ -1530,15 +1530,21 @@ def card_line(item: WatchlistItem) -> str:
     """One plain line for ``item`` on the card: the line the model wrote for
     it, else what it watches in words (``describe.watching_line``)."""
     from openexecutive.monitoring.describe import watching_line
+    from openexecutive.monitoring.validation import registrable_domain
 
     config = item.config_json if isinstance(item.config_json, dict) else {}
     written = " ".join(str(config.get(CARD_LINE_KEY) or "").split())
     if written and len(written) <= MAX_CARD_LINE:
-        return written
+        # The model's words name no source on their own: the site it
+        # watches stays beside them, so an approval is of the real target.
+        host = registrable_domain(item.target)
+        return f"{written} ({host})" if host and host not in written.casefold() else written
     label = next(
         (str(config[k]) for k in ("vendor_label", "feed_label", "display_name", "label") if config.get(k)), "",
     )
-    return watching_line(item.signal_type, item.target, label)
+    # One line, whatever the label holds: a newline in it can't forge a bullet.
+    line = " ".join(watching_line(item.signal_type, item.target, label).split())
+    return line if len(line) <= MAX_CARD_LINE * 2 else line[: MAX_CARD_LINE * 2 - 1].rstrip() + "…"
 
 
 def nudge_body(pending: list[WatchlistItem]) -> str:

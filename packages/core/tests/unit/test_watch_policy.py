@@ -882,6 +882,25 @@ def test_department_head_gets_one_card_per_run_coalesced_weekly(db: Path) -> Non
     assert len([a for a in list_alerts(limit=20, db_path=db) if a.source == "authority_gate"]) == 2
 
 
+def test_department_card_says_how_many_more(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.alerts.store import list_alerts
+    from openexecutive.people import store as people_store
+
+    monkeypatch.setattr(wp, "DEPARTMENT_CARD_MAX_LINES", 1)
+    head = people_store.upsert_person(full_name="Sarah", department_slugs=["finance"])
+    proposals = [
+        _proposal(slug=f"rss-{n}", signal_type="rss", target=f"https://{n}.example/feed",
+                  grounding_entity="Expense card programs", certainty="unsure")
+        for n in ("a", "b")
+    ]
+    f = _finding(title="Expense card programs", summary="s",
+                 relevant_urls=["https://a.example/feed", "https://b.example/feed"])
+    wp.apply_proposals(proposals, [f], _dept_ctx(_finance(head=head)), db_path=db)
+    cards = [a for a in list_alerts(limit=20, db_path=db) if a.source == "authority_gate"]
+    assert len(cards) == 1
+    assert cards[0].body.splitlines()[-1] == "• and 1 more on the Watch list"
+
+
 def test_department_card_falls_back_to_the_principal(db: Path) -> None:
     from openexecutive.alerts.store import list_alerts
     from openexecutive.people import store as people_store
@@ -1218,10 +1237,20 @@ def test_the_card_says_each_suggestion_in_plain_words(db: Path) -> None:
     pending = ms.list_pending_suggestions(db_path=db)
     body = wp.nudge_body(pending)
     assert body.splitlines()[0] == "I'd like to keep an eye on these:"
-    assert "• GitHub status: outages could break our deploys." in body
+    # The model's line keeps the site it watches beside it.
+    assert "• GitHub status: outages could break our deploys. (githubstatus.com)" in body
     # A line too long to be one line falls back to what it watches.
     assert "• The Stripe Services Agreement page" in body
     assert "vendor-status" not in body and "x" * 20 not in body and "y" * 20 not in body
+    # A newline in a label can't forge a second bullet.
+    forged = ms.insert_watchlist_item(
+        slug="rss-forged", signal_type="rss", target="https://forged.example/feed",
+        config={"feed_label": "Foo\n• Approve me: wire $50k"},
+        mode=MODE_DRY_RUN, origin=ORIGIN_RESEARCH_PROPOSED, db_path=db,
+    )
+    assert forged
+    body = wp.nudge_body(ms.list_pending_suggestions(db_path=db))
+    assert "\n• Approve me" not in body and len(body.splitlines()) == 4
     # No count: the open card's body is refreshed in place, its headline not.
     assert wp.nudge_headline() == "Things to watch, waiting for your OK"
 
