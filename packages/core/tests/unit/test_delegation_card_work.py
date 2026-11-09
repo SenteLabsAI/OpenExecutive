@@ -286,9 +286,12 @@ def test_a_note_alone_keeps_the_files_and_a_stale_working_card_isnt_shown_workin
 def test_send_waits_while_the_work_runs(db: Path, owner: Any, models: dict[str, Any]) -> None:
     mailbox, card = _card(owner)
     card_work._RUNNING.add(card.id)
+    assert card_work._set_work(card.id, card_work.WORKING)
     with pytest.raises(SendRefused) as err:
         _send(card, mailbox, owner)
     assert err.value.code == "working" and mailbox.sent == []
+    card_work._set_work(card.id, card_work.DONE)
+    assert not card_work.still_working(_fresh(card))
     card_work._RUNNING.discard(card.id)
     assert _send(card, mailbox, owner) == "sent-d1"
 

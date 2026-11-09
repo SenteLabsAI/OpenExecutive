@@ -171,6 +171,14 @@ def running(card_id: int) -> bool:
     return card_id in _RUNNING
 
 
+def still_working(card: Any) -> bool:
+    """Whether the work on ``card`` is running and hasn't handed back yet
+    (the turn may go on a moment after it has)."""
+    from openexecutive.delegation.inbox import card_payload
+
+    return running(getattr(card, "id", 0)) and card_payload(card).get(WORK_KEY) == WORKING
+
+
 def started_at(card_id: int) -> datetime | None:
     """When the work on ``card_id`` began in this process, if it is running."""
     return _STARTED.get(card_id) if card_id in _RUNNING else None

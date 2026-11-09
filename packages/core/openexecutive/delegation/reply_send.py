@@ -148,7 +148,7 @@ async def send_approved_reply(
     from openexecutive.audit import rows_for_person
     from openexecutive.delegation import card_work
 
-    if card_work.running(getattr(instance, "id", 0)):
+    if card_work.still_working(instance):
         raise SendRefused(409, "working", "I'm still doing what the email asks. The reply will be ready shortly.")
     owner = getattr(instance, "approver_person_id", None)
     with rows_for_person(owner if isinstance(owner, int) else None):
