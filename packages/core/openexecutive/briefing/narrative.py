@@ -509,7 +509,9 @@ def render_briefing_context(
     With ``since`` (the standalone briefs) proposals are split into NEW SINCE
     LAST BRIEF vs STILL OPEN FROM BEFORE, each named, and ``handled`` (autonomous
     alert-review moves in the window) renders as its own block. With both
-    unset the output is byte-identical to the legacy /today header context.
+    unset the output is the legacy /today header context, except that
+    headlines are quoted (one line, no addresses: they come from mail and
+    chat).
 
     ``mode="solo"`` renders goals at risk by area and drops the people
     block — the Executive coordinates nobody but the principal there, so
