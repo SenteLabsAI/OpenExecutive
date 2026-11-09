@@ -1584,13 +1584,16 @@ def decline_suggestion(
         record_outcome_for(item, OUTCOME_DECLINED, db_path=db_path)
     except Exception:
         logger.exception("watch_policy: decline record failed slug=%s", item.slug)
-    audit_log(
-        EVENT_SUGGESTION_DECLINED,
-        f"Declined watching {item.slug} ({reason}) — removed",
-        actor=actor,
-        details={"slug": item.slug, "watchlist_id": item.id, "target": item.target,
-                 "signal_type": item.signal_type, "reason": reason, "result": "removed"},
-    )
+    try:
+        audit_log(
+            EVENT_SUGGESTION_DECLINED,
+            f"Declined watching {item.slug} ({reason}) — removed",
+            actor=actor,
+            details={"slug": item.slug, "watchlist_id": item.id, "target": item.target,
+                     "signal_type": item.signal_type, "reason": reason, "result": "removed"},
+        )
+    except Exception:
+        logger.exception("watch_policy: decline audit failed slug=%s", item.slug)
     return True
 
 
@@ -1622,15 +1625,18 @@ def decline_card_suggestions(alert: Any, *, db_path: Path | None = None) -> int:
     pending suggestion on it is declined (that source only), so the Watch
     list stops asking. Other cards: nothing. Never raises."""
     try:
-        items = suggestions_on_card(alert, db_path=db_path)
-        if not items:
-            return 0
-        return sum(
-            decline_suggestion(i, DECLINE_REASON_WRONG_SOURCE, actor="executive", db_path=db_path) for i in items
-        )
+        items = suggestions_on_card(alert, db_path=db_path) or []
     except Exception:
-        logger.exception("watch_policy: declining the card's suggestions failed")
+        logger.exception("watch_policy: reading the card's suggestions failed")
         return 0
+    declined = 0
+    for i in items:
+        # One failure never leaves the rest of the card asking.
+        try:
+            declined += decline_suggestion(i, DECLINE_REASON_WRONG_SOURCE, actor="executive", db_path=db_path)
+        except Exception:
+            logger.exception("watch_policy: declining %s failed", i.slug)
+    return declined
 
 
 def _nudge_if_piled_up(now: datetime, db_path: Path | None) -> int:
