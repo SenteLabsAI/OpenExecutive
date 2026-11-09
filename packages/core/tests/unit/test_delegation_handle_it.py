@@ -130,15 +130,29 @@ def test_someone_who_never_turned_it_on_starts_in_training(tmp_path: Path) -> No
     conn.execute("INSERT INTO delegation_handle_it VALUES (1, 1, '{}', '', 't')")  # had turned it on
     conn.execute("INSERT INTO delegation_handle_it VALUES (4, 0, '{}', '', 't')")  # never did
     conn.commit()
+    conn.close()
+    # Person 6 had the inbox watcher on and never touched Handle it for me.
+    # Everything above is a file from before the upgrade, so the marker that
+    # says it ran is taken away again.
+    inbox.set_watch(6, True, updated_by="t", db_path=db)
+    conn = sqlite3.connect(str(db))
+    conn.execute("DELETE FROM delegation_upgrades")
+    conn.execute("DELETE FROM delegation_training")
+    conn.commit()
     ensure_schema(conn)
     conn.close()
     assert not training.get(1, db_path=db).training
     assert training.get(4, db_path=db).training
+    assert training.get(6, db_path=db).training
+    # Turning it off sticks, and someone who sets Act as me up after the
+    # upgrade gets the new default: Approvals decides.
     training.set_(4, {"training": False}, updated_by="t", db_path=db)
+    inbox.set_watch(9, True, updated_by="t", db_path=db)
     conn = sqlite3.connect(str(db))
     ensure_schema(conn)
     conn.close()
     assert not training.get(4, db_path=db).training
+    assert not training.get(9, db_path=db).training
 
 
 # ── sending on its own ────────────────────────────────────────────────────────
