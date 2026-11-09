@@ -44,6 +44,8 @@ logger = logging.getLogger(__name__)
 
 # Card payload keys.
 WORK_KEY = "work"  # "working" while the turn runs, "done" once it delivered
+# Whether the work rewrote the reply; a note alone means the ask is theirs.
+REWROTE_KEY = "work_rewrote"
 FILES_KEY = "files"  # [{"name", "mime", "size"}], what the reply carries
 WORKING = "working"
 DONE = "done"
@@ -339,7 +341,7 @@ async def apply(
     text = one_line(note, MAX_NOTE_CHARS)
     if not text:
         raise SendRefused(422, "no_note", "Say in one line what you did, in note.")
-    changed: dict[str, Any] = {**payload, WORK_KEY: DONE}
+    changed: dict[str, Any] = {**payload, WORK_KEY: DONE, REWROTE_KEY: bool((body or "").strip())}
     conversation = payload.get("conversation")
     turns = list(conversation) if isinstance(conversation, list) else []
     turns.append({"kind": "note", "text": text, "at": datetime.now(UTC).isoformat()})
@@ -440,6 +442,11 @@ async def _after(person: Any, card_id: int, *, gmail: Any) -> None:
             # What the work made from their data goes on its own only to
             # people they know; for anyone else it waits for them to look.
             _hand_back(card, "work_stranger")
+            return
+        if payload.get(WORK_KEY) == DONE and payload.get(REWROTE_KEY) is False:
+            # Only a note: what the email asks is theirs to do, so the
+            # holding reply waits with it rather than going on its own.
+            _hand_back(card, "work_theirs")
             return
         held = handle_it.content_hold(
             str(payload.get("subject") or ""), str(payload.get("they_wrote") or ""),

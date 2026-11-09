@@ -347,6 +347,21 @@ def _with_gate(real: Any) -> Any:
     return read
 
 
+def test_a_note_alone_waits_for_the_person(
+    db: Path, owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.delegation import handle_it
+
+    mailbox, card = _card(owner)
+    _apply(card, owner, mailbox, note="Signing the form is yours to do.")
+    held: list[str | None] = []
+    monkeypatch.setattr(inbox, "_hand_back", lambda c, reason: held.append(reason))
+    monkeypatch.setattr(ledger, "get_decision_instance", _with_gate(ledger.get_decision_instance))
+    monkeypatch.setattr(handle_it, "content_hold", lambda *a, **k: None)
+    asyncio.run(card_work.finished(owner, card.id, gmail=mailbox))
+    assert held == ["work_theirs"]
+
+
 def test_an_unfinished_turn_hands_back_a_reply_that_would_go_on_its_own(
     db: Path, owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
