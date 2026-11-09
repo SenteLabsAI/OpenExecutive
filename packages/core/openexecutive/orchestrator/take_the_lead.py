@@ -1742,7 +1742,10 @@ def _hit(name: str, tool_input: dict[str, Any], *, mcp: bool) -> tuple[Hit | Non
             return None, None
         # A Goes rule lets go what it covers (goes_kinds) where Balanced
         # would hold it; the rest still waits, a delete or share always.
-        goes = goes_rules(rules, text, recipients)
+        # Only who it actually reaches counts for a person or company rule,
+        # never an address written in the body.
+        targets = sorted({a.lower() for a in addresses})
+        goes = goes_rules(rules, text, targets)
         if goes:
             released = goes_kinds(goes)
             rest = Lead(scope=SCOPE_EXECUTIVE, ask_first={k: k not in released for k in KINDS})

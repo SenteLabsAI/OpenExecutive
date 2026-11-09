@@ -1425,3 +1425,11 @@ def test_a_goes_person_rule_reads_only_the_main_address(monkeypatch: pytest.Monk
     rules = [_go("person", "Sam Lee")]
     assert ttl.rule_goes(rules, "", ["sam@co.example"]) is not None
     assert ttl.rule_goes(rules, "", ["s@far.example"]) is None
+
+
+def test_an_address_in_the_body_doesnt_satisfy_a_goes_rule(owner: Any, balanced: None) -> None:
+    """A person or company Goes rule counts only who it actually reaches."""
+    _go("person", "alice@acme.example")
+    hit, allowed = ttl._hit("post_to_channel", {"channel": "#all", "text": "Signed the contract, cc alice@acme.example"},
+                            mcp=False)
+    assert allowed is None
