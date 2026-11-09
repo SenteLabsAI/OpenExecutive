@@ -24,6 +24,7 @@ from openexecutive.orchestrator.chat_search_tools import CHAT_SEARCH_TOOLS
 from openexecutive.orchestrator.delegation_tools import DELEGATION_TOOLS
 from openexecutive.orchestrator.history_tools import HISTORY_TOOLS
 from openexecutive.orchestrator.mcp_gateway import MCP_TOOLS
+from openexecutive.orchestrator.reply_card_tools import REPLY_CARD_TOOLS
 from openexecutive.orchestrator.router import SPECIALIST_TOOLS
 from openexecutive.orchestrator.schedule_tools import PRIVATE_TURN_MCP_TOOLS, current_session
 from openexecutive.orchestrator.session import Session
@@ -150,6 +151,7 @@ def test_every_tool_is_classified_once() -> None:
         t["name"]
         for t in [
             *ex._ALL_SKILL_TOOLS, *SPECIALIST_TOOLS, *MCP_TOOLS, *DELEGATION_TOOLS, *HISTORY_TOOLS, *CHAT_SEARCH_TOOLS,
+            *REPLY_CARD_TOOLS,
             step_script.CHAT_TOOL_DEFINITION, step_script.LIST_SAVED_TOOLS_DEFINITION,
         ]
     }

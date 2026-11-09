@@ -71,6 +71,11 @@ class ReplyCard:
     # When it was last brought up to date with newer mail ("" never): Send
     # passes it back, so a version the card never showed asks again.
     caught_up_at: str = ""
+    # The Executive is doing what the email asks right now
+    # (delegation.card_work); the card shows it working.
+    working: bool = False
+    # The files the reply carries, by name (delegation.card_work).
+    files: list[str] = field(default_factory=list)
 
 
 def _strings(value: Any) -> list[str]:
@@ -79,7 +84,7 @@ def _strings(value: Any) -> list[str]:
 
 def cards(person: Any) -> list[ReplyCard]:
     """``person``'s open reply cards, newest first."""
-    from openexecutive.delegation import training
+    from openexecutive.delegation import card_work, training
     from openexecutive.delegation.answers import CAUGHT_UP_KEY, conversation, questions_for
     from openexecutive.delegation.card_drafts import QUESTIONS_SETTLED
     from openexecutive.delegation.gmail import credential_provider, mailbox_link
@@ -132,6 +137,11 @@ def cards(person: Any) -> list[ReplyCard]:
             gist=str(payload.get("gist") or ""),
             conversation=conversation(payload),
             caught_up_at=str(payload.get(CAUGHT_UP_KEY) or ""),
+            working=payload.get(card_work.WORK_KEY) == card_work.WORKING,
+            files=[
+                str(f.get("name") or "") for f in payload.get(card_work.FILES_KEY) or []
+                if isinstance(f, dict) and f.get("name")
+            ],
         ))
     return out
 

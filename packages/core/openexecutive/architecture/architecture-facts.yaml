@@ -11523,6 +11523,32 @@ delegation:
     answered_questions keeps {index: answer}. Send in the UI waits until
     every question with choices is answered, unless the words were changed
     by hand (questions_settled); the server doesn't add a send rule.
+  inbox_card_work: |
+    delegation.card_work (2026-11-09, Rufus: "if it can do it, then it does
+    it"; no gate of its own). When the inbox ghostwriter's reply left an ask
+    open (open_questions), the watcher starts one Executive chat turn on the
+    email as the card's person, in the background (start; once per card at a
+    time, payload work = working). The Session is unattended with
+    caller_person_id = the person, DelegationOverride(inbox_work=True) with
+    their own mailbox (the only override pin_turn_delegation offers on an
+    unattended turn) and reply_card_work = the card id. The prompt carries
+    only ids and headers; the email and its files are read with
+    read_my_email / read_my_email_attachment as someone else's words. Every
+    step goes through Approvals like any unattended turn (Careful: each one
+    is an Approve card). update_reply_card (orchestrator.reply_card_tools,
+    offered only on that turn, allowed after a mail read) writes back: the
+    reply rewritten (signature + AI line added in code), files (artifacts
+    rendered, mail:/file: handles; <= 10, 20 MB) stored in
+    delegation_card_files and attached at Send (card_drafts._spec), a
+    one-line note into the card's conversation and gist. Note only = the ask
+    is the person's to do. A mailbox-kept reply is replaced by a new draft
+    with the files. An auto_execute card waits for the work, then goes once
+    handle_it.content_hold passes on the new words, else waits on its card.
+    The card's "Tell me what to change" box sends work (needs_tools from the
+    rewrite model, answers.NeedsWork) to the same turn with the person's
+    words as the ask. Why: an email that asked for a spreadsheet made from its
+    attached bills got a card that only asked "Do you want to do it?", and
+    the box answered "I can't open the attachment", though chat could.
   inbox_watcher: |
     delegation.inbox — the second switch, "Draft replies to my inbox"
     (delegation_inbox_watch: person_id, enabled, watch_since, last_poll_at,

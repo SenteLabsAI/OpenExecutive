@@ -2208,6 +2208,11 @@ export interface ReplyCard {
   // When the reply was last brought up to date with newer mail; Send passes
   // it back, so a version you never saw asks again.
   caught_up_at?: string;
+  // The Executive is doing what the email asks right now; the card polls
+  // until it is done.
+  working?: boolean;
+  // The files your reply carries, by name: attached when it is sent.
+  files?: string[];
 }
 
 // One thing a reply leaves you to decide (GET /delegation/replies).

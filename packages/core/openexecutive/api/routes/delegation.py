@@ -423,6 +423,10 @@ class ReplyCardOut(BaseModel):
     # When it was last brought up to date with newer mail; Send passes it
     # back as edits.seen_caught_up_at.
     caught_up_at: str = ""
+    # The Executive is doing what the email asks right now: poll until false.
+    working: bool = False
+    # The files the reply carries, by name; attached when it is sent.
+    files: list[str] = Field(default_factory=list)
 
 
 class RepliesOut(BaseModel):
@@ -1343,10 +1347,18 @@ async def change_delegation_reply(request: Request, decision_id: int, body: Repl
     instance = get_decision_instance(decision_id)
     if instance is None or instance.decision_class != DECISION_CLASS or instance.approver_person_id != person_id:
         raise _refuse(404, "not_found", "That reply isn't waiting for you any more.")
+    changed: list[str] = []
     try:
         _, changed = await answers.change(
             instance, caller=api_caller.caller(request), resolver=person_id, text=body.text,
         )
+    except answers.NeedsWork:
+        # Work for the Executive's tools (reading her files, making a
+        # spreadsheet): it does it on the card, as when the email came in.
+        from openexecutive.delegation import card_work
+
+        if not card_work.start(person, decision_id, ask=body.text):
+            raise _refuse(409, "busy", "I'm already working on this one.") from None
     except SendRefused as refused:
         raise HTTPException(
             status_code=refused.status, detail={"code": refused.code, "message": refused.message, **refused.extra},

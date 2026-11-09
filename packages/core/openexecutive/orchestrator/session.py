@@ -251,9 +251,14 @@ class Session:
     # pinned to that turn's viewer, so what it drafts is theirs. An
     # ``artifact_records.Viewer``; None derives it from this session.
     documents_viewer: Any = None
-    # Evals and tests only (``delegation.settings.DelegationOverride``): run
-    # as if the speaker had Act as me, against a fake mailbox.
+    # Run as if the speaker had Act as me, against the mailbox it carries
+    # (``delegation.settings.DelegationOverride``): an eval's or test's fake
+    # one, or the person's own for the inbox's work turn
+    # (``delegation.card_work``).
     delegation_override: Any = None
+    # The inbox's work turn (``delegation.card_work``): the reply card whose
+    # email it is doing, which ``update_reply_card`` writes back to.
+    reply_card_work: int | None = None
     # A replay of a graded turn (``memory.replay``): the chat loop runs as it
     # would for the recorded surface and speaker, reads for real, and every
     # tool that sends, posts, books, schedules, runs or changes stored state

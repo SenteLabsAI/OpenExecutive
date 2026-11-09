@@ -60,6 +60,16 @@ def _no_ai_disclosure(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_inbox_work(monkeypatch: pytest.MonkeyPatch):
+    """The inbox's work turn on a reply card (delegation.card_work) runs a
+    whole Executive turn: never in a test that only makes cards.
+    test_delegation_card_work.py starts it with its own Executive."""
+    from openexecutive.delegation import card_work
+
+    monkeypatch.setattr(card_work, "start", lambda *_a, **_k: False)
+
+
+@pytest.fixture(autouse=True)
 def _outside_content_asks(monkeypatch: pytest.MonkeyPatch):
     """Hold every outside read, as "Ask every time" does
     (orchestrator.outside_mode), whatever the test database stores, so the

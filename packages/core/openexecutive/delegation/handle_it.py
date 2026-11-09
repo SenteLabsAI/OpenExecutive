@@ -50,8 +50,10 @@ with the reason recorded.
 - after all of these pass, the last look (``injection_check``) finds the
   email trying to steer an assistant, or can't tell.
 
-Never sent on its own: anything with an attachment (the watcher's drafts
-have none) or a new recipient.
+Never sent on its own: a reply to a new recipient. A reply the Executive
+rewrote after doing what the email asked (``delegation.card_work``), files
+and all, is checked again here once that work is on its card, with its new
+words (``content_hold``), and goes on its own only when they pass.
 
 **Meeting invites.** It also accepts a meeting invite on its own
 (``delegation.invites``, never a decline) from someone the person knows,

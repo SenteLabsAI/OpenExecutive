@@ -105,7 +105,16 @@ def is_card_only(payload: dict[str, Any]) -> bool:
     return payload.get(CARD_ONLY) is True and not payload.get("draft_id")
 
 
-def _spec(payload: dict[str, Any]) -> Any:
+def spec_for(payload: dict[str, Any], files: list[tuple[str, str, bytes]]) -> Any:
+    """The draft ``payload`` describes, carrying ``files``."""
+    from dataclasses import replace
+
+    return replace(_spec(payload), attachments=list(files))
+
+
+def _spec(payload: dict[str, Any], decision_id: int | None = None) -> Any:
+    """The draft a card-only reply makes at Send, with the files the
+    Executive left on card ``decision_id`` (``delegation.card_work``)."""
     from openexecutive.delegation.gmail import DraftSpec
 
     stored = payload.get(DRAFT_SPEC)
@@ -129,7 +138,14 @@ def _spec(payload: dict[str, Any]) -> Any:
         references=text("references"),
         from_name=text("from_name") or "",
         from_addr=text("from_addr"),
+        attachments=_card_files(decision_id) if decision_id is not None else [],
     )
+
+
+def _card_files(decision_id: int) -> list[tuple[str, str, bytes]]:
+    from openexecutive.delegation.card_work import files_for
+
+    return files_for(decision_id)
 
 
 async def make_draft(instance: Any, person_id: int, client: Any) -> dict[str, Any]:
@@ -152,7 +168,7 @@ async def make_draft(instance: Any, person_id: int, client: Any) -> dict[str, An
         if current is None or not is_card_only(payload):
             # Made meanwhile (another tap) or no longer waiting.
             raise SendRefused(409, "already_handled", "This reply was already sent or dismissed.")
-        spec = _spec(payload)
+        spec = _spec(payload, instance.id)
         if not spec.to or not spec.body.strip():
             raise SendRefused(409, "no_recipients", "This reply isn't addressed to anyone, so it wasn't sent.")
         try:
