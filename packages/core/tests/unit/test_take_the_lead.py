@@ -1399,3 +1399,29 @@ def test_a_person_goes_rule_needs_one_person_by_that_name(monkeypatch: pytest.Mo
     monkeypatch.setattr(store, "list_people", lambda **_: sams()[:1])
     assert ttl.rule_goes(rules, "", ["sam@co.example"]) is not None
     assert ttl.rule_goes(rules, "Sam Lee", []) is None  # a name in the text isn't a recipient
+
+
+def test_an_amount_goes_rule_fails_closed_on_an_amount_it_cant_read() -> None:
+    rules = [_go("amount", "500")]
+    assert ttl.rule_goes(rules, "I can do $100 now, and ₹9,000,000 next quarter", []) is None
+    assert ttl.rule_goes(rules, "I can do $100 now and a 40% discount", []) is None
+    assert ttl.rule_goes(rules, "I can do $100 now", []) is not None
+
+
+def test_a_goes_company_rule_is_that_domain_only() -> None:
+    rules = [_go("domain", "co.example")]
+    assert ttl.rule_goes(rules, "", ["x@eu.co.example"]) is None
+    waits = [ttl.add_rule(ttl.SCOPE_COMPANY, "domain", "co.example", created_by="t")]
+    assert ttl.rule_waits(waits, "", ["x@eu.co.example"]) is not None
+
+
+def test_a_goes_person_rule_reads_only_the_main_address(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    import openexecutive.people.store as store
+
+    sam = SimpleNamespace(full_name="Sam Lee", email="sam@co.example", email_aliases=["s@far.example"])
+    monkeypatch.setattr(store, "list_people", lambda **_: [sam])
+    rules = [_go("person", "Sam Lee")]
+    assert ttl.rule_goes(rules, "", ["sam@co.example"]) is not None
+    assert ttl.rule_goes(rules, "", ["s@far.example"]) is None

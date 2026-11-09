@@ -193,12 +193,16 @@ _MULTIPLIERS: dict[str, int] = {
 _MULT = r"(thousand|million|billion|mn|bn|k|m|b)\b"
 _CURRENCY_CODES = r"usd|eur|gbp|chf|jpy|cad|aud|inr|cny"
 _AMOUNT_VALUE_RE = re.compile(
-    rf"(?:[$€£¥]\s?)(\d[\d,]*(?:\.\d+)?)\s?(?:{_MULT})?"
+    rf"(?:[$€£¥₹]\s?)(\d[\d,]*(?:\.\d+)?)\s?(?:{_MULT})?"
     rf"|\b(\d[\d,]*(?:\.\d+)?)\s?(?:{_MULT})?\s?(?:{_CURRENCY_CODES}|dollars|euros|pounds)\b"
     rf"|\b(?:{_CURRENCY_CODES})\s?(\d[\d,]*(?:\.\d+)?)\s?(?:{_MULT})?",
     re.IGNORECASE,
 )
 _DOMAIN_RE = re.compile(r"^[a-z0-9.-]+\.[a-z]{2,}$")
+# Anything that reads as an amount, parsed or not: a Goes amount rule needs
+# every one of these parsed by ``amounts``, and no percentages.
+_AMOUNT_SIGN_RE = re.compile(r"[$€£¥₹]\s*\d")
+_PERCENT_RE = re.compile(r"\d\s*%|\bper\s?cent\b", re.IGNORECASE)
 
 
 def person_scope(person_id: int) -> str:
@@ -733,18 +737,18 @@ def goes_rules(
             continue
         value = rule.value
         if rule.kind == RULE_PERSON:
-            theirs = {value} if "@" in value else _person_addresses(value)
+            theirs = {value} if "@" in value else _person_address(value)
             if recipients and set(recipients) <= theirs:
                 out.append(rule)
         elif rule.kind == RULE_DOMAIN:
-            if recipients and all(r.endswith("@" + value) or r.endswith("." + value) for r in recipients):
+            if recipients and all(r.endswith("@" + value) for r in recipients):
                 out.append(rule)
         elif rule.kind == RULE_WORDS:
             if value.strip() and re.search(rf"(?<!\w){re.escape(value.strip().lower())}(?!\w)", lowered):
                 out.append(rule)
         elif rule.kind == RULE_AMOUNT:
             limit = _number(value) or 0
-            if mine and all(a < limit for a in [*found, *mine]):
+            if mine and all(a < limit for a in [*found, *mine]) and _all_parsed(text, found) and _all_parsed(own, mine):
                 out.append(rule)
     return out
 
@@ -768,17 +772,23 @@ def goes_kinds(rules: list[Rule]) -> frozenset[str]:
     return out
 
 
-def _person_addresses(name: str) -> set[str]:
-    """Every address on file for the one People entry named ``name`` (case
-    ignored), or empty when none or several are. Never raises."""
+def _all_parsed(text: str, found: list[float]) -> bool:
+    """Whether ``amounts`` read every amount in ``text``: no percentage, and
+    no currency sign before a number it couldn't parse. Fails closed."""
+    return not _PERCENT_RE.search(text) and len(_AMOUNT_SIGN_RE.findall(text)) <= len(found)
+
+
+def _person_address(name: str) -> set[str]:
+    """The primary address of the one People entry named ``name`` (case
+    ignored), or empty when none or several are. Aliases don't count, since
+    a Goes rule lets things go. Never raises."""
     try:
         from openexecutive.people.store import list_people
 
         wanted = name.strip().lower()
         named = [p for p in list_people(include_contacts=True) if (p.full_name or "").strip().lower() == wanted]
-        if len(named) != 1:
-            return set()
-        return {a.strip().lower() for a in [named[0].email, *named[0].email_aliases] if a and a.strip()}
+        address = (named[0].email or "").strip().lower() if len(named) == 1 else ""
+        return {address} if address else set()
     except Exception:
         return set()
 
