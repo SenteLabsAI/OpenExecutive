@@ -1538,7 +1538,7 @@ def card_line(item: WatchlistItem) -> str:
         # The model's words name no source on their own: the site it
         # watches stays beside them, so an approval is of the real target.
         host = registrable_domain(item.target)
-        named = bool(host) and re.search(rf"(?<![\w.-]){re.escape(host)}(?![\w-])", written.casefold())
+        named = bool(host) and re.search(rf"(?<![\w.-]){re.escape(host)}(?![\w-]|\.\w)", written.casefold())
         return f"{written} ({host})" if host and not named else written
     label = next(
         (str(config[k]) for k in ("vendor_label", "feed_label", "display_name", "label") if config.get(k)), "",

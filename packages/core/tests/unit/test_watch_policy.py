@@ -1248,6 +1248,11 @@ def test_the_card_says_each_suggestion_in_plain_words(db: Path) -> None:
     )
     assert wp.card_line(item) == "Data.com: vendor news (a.com)"
     assert wp.card_line(item.model_copy(update={"config_json": {wp.CARD_LINE_KEY: "A.com news"}})) == "A.com news"
+    # Nor one that only starts another ("a.com.evil.io").
+    spoof = item.model_copy(update={"config_json": {wp.CARD_LINE_KEY: "a.com.evil.io: outages"}})
+    assert wp.card_line(spoof) == "a.com.evil.io: outages (a.com)"
+    # A sentence-final period still counts as named.
+    assert wp.card_line(item.model_copy(update={"config_json": {wp.CARD_LINE_KEY: "News on a.com."}})) == "News on a.com."
     # A newline in a label can't forge a second bullet.
     forged = ms.insert_watchlist_item(
         slug="rss-forged", signal_type="rss", target="https://forged.example/feed",
