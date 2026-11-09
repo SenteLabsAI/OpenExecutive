@@ -245,3 +245,90 @@ def test_a_brief_keeps_only_links_into_the_app(monkeypatch) -> None:
     )
     monkeypatch.setattr(card_refs, "_base", lambda: "")
     assert card_refs.keep_app_links("[Read it](https://app.example.com/x)") == "Read it"
+
+
+def test_a_brief_strips_every_other_kind_of_link(monkeypatch) -> None:
+    from openexecutive.alerts import card_refs
+
+    monkeypatch.setattr(card_refs, "_base", lambda: "https://app.example.com")
+    text = (
+        "[Read it](//evil.example/x) [Approve](javascript:alert(1)) "
+        "[Open](mailto:a@evil.example) [Go](<https://evil.example/a b>) "
+        "<https://evil.example/z> [Home](https://app.example.com.evil.example/) "
+        "[Review](https://app.example.com/?card=4) <https://app.example.com/>"
+    )
+    assert card_refs.keep_app_links(text) == (
+        "Read it Approve Open Go (link removed) Home "
+        "[Review](https://app.example.com/?card=4) <https://app.example.com/>"
+    )
+
+
+def test_a_rewritten_older_item_is_news_for_the_digest() -> None:
+    from openexecutive.workflows.end_of_day_digest import _has_news
+
+    since = datetime.now(UTC) - timedelta(hours=24)
+    rewritten = _proposal(
+        4, hours_ago=70, review_verdict="changed", review_note="now due Friday",
+        last_reviewed_at=(datetime.now(UTC) - timedelta(hours=3)).isoformat(),
+    )
+    quiet = dict(
+        since=since, activity=[], handled=[], conversation=[], live_lines=[],
+        owner_notes="", found=[],
+    )
+    assert _has_news(today_data={"proposals": [rewritten]}, **quiet) is True
+    assert _has_news(today_data={"proposals": []}, **{**quiet, "owner_notes": "x"}) is True
+    assert _has_news(today_data={}, **{**quiet, "conversation": ["- [09:00] the reader: hi"]}) is True
+
+
+def test_only_the_scheduled_delivery_is_ever_quiet() -> None:
+    from openexecutive.workflows.end_of_day_digest import _quiet
+
+    assert _quiet(delivery=True, force_full=False, suppressed=False, news=False) is True
+    assert _quiet(delivery=True, force_full=False, suppressed=True, news=True) is True
+    assert _quiet(delivery=True, force_full=False, suppressed=False, news=True) is False
+    assert _quiet(delivery=True, force_full=True, suppressed=True, news=False) is False
+    assert _quiet(delivery=False, force_full=False, suppressed=True, news=False) is False
+
+
+def _research_run(run_id: str, hours_ago: float, findings: list[tuple[str, str]]) -> dict:
+    lines = ["# Executive research", "", "## Findings reviewed"]
+    lines += [f"- [{sev} | high] (cso) **{title}** — about {title}." for sev, title in findings]
+    return {
+        "run_id": run_id, "workflow_name": "executive_research",
+        "updated_at": (datetime.now(UTC) - timedelta(hours=hours_ago)).isoformat(),
+        "artifact": "\n".join(lines),
+    }
+
+
+def test_research_found_lists_the_window_s_findings_most_important_first(monkeypatch) -> None:
+    from openexecutive.alerts import card_refs
+    from openexecutive.workflows import end_of_day_digest
+    from openexecutive.workflows import persistence as wf_persistence
+
+    monkeypatch.setattr(card_refs, "_base", lambda: "https://app.example.com")
+    monkeypatch.delenv("OE_TENANT_ID", raising=False)
+    runs = [
+        _research_run("new", 2, [("low", "Port fees"), ("high", "Supplier closing"),
+                                 ("medium", "Rival pricing"), ("medium", "Freight up")]),
+        _research_run("old", 50, [("high", "Old news")]),
+    ]
+    monkeypatch.setattr(wf_persistence, "list_runs", lambda *a, **k: runs)
+    lines = end_of_day_digest._research_found(datetime.now(UTC) - timedelta(hours=24))
+    assert lines[0].startswith("- Supplier closing — ")
+    assert [line.split(" — ")[0] for line in lines[:3]] == [
+        "- Supplier closing", "- Rival pricing", "- Freight up",
+    ]
+    assert len(lines) == end_of_day_digest._FOUND_LIMIT + 1
+    assert lines[-1] == "- The full write-up — link: https://app.example.com/artifacts/run%3Anew"
+    assert not any("Old news" in line for line in lines)
+
+
+def test_research_found_is_empty_when_the_runs_cant_be_read(monkeypatch) -> None:
+    from openexecutive.workflows import end_of_day_digest
+    from openexecutive.workflows import persistence as wf_persistence
+
+    def boom(*_a, **_k):
+        raise RuntimeError("db gone")
+
+    monkeypatch.setattr(wf_persistence, "list_runs", boom)
+    assert end_of_day_digest._research_found(datetime.now(UTC)) == []

@@ -99,7 +99,12 @@ def home_url() -> str:
     return f"{base}/" if base else ""
 
 
-_MD_LINK = re.compile(r"\[([^\]\n]*)\]\(([^)\s]*)\)")
+# Any Markdown link, whatever its address (scheme-relative, javascript:,
+# mailto:), and an <address> autolink.
+_ANY_MD_LINK = re.compile(
+    r"\[([^\]\n]*)\]\(\s*<?((?:[^()\s<>]|\([^()\s]*\))*)>?[^)\n]*\)"
+)
+_AUTOLINK = re.compile(r"<([a-z][a-z0-9+.-]*:[^>\s]*|//[^>\s]*)>", re.IGNORECASE)
 
 
 def keep_app_links(text: str) -> str:
@@ -108,12 +113,16 @@ def keep_app_links(text: str) -> str:
     write-ups), so a link anywhere else came from quoted mail or chat."""
     base = _base()
 
-    def keep(m: re.Match[str]) -> str:
-        url = m.group(2)
-        ok = bool(base) and (url == base or url.startswith(base + "/") or url.startswith(base + "?"))
-        return m.group(0) if ok else m.group(1)
+    def ours(url: str) -> bool:
+        return bool(base) and (
+            url == base or url.startswith(base + "/") or url.startswith(base + "?")
+        )
 
-    return _MD_LINK.sub(keep, text or "")
+    def keep(m: re.Match[str]) -> str:
+        return m.group(0) if ours(m.group(2)) else m.group(1)
+
+    text = _ANY_MD_LINK.sub(keep, text or "")
+    return _AUTOLINK.sub(lambda m: m.group(0) if ours(m.group(1)) else "(link removed)", text)
 
 
 def write_up_url(artifact_id: str) -> str:

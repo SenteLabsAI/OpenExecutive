@@ -479,6 +479,13 @@ def _has_news(
     return bool(new_items or rewritten_since(carried, since))
 
 
+def _quiet(*, delivery: bool, force_full: bool, suppressed: bool, news: bool) -> bool:
+    """Whether to send no digest: only on the scheduler's delivery to the
+    principal (a chat or manual run always writes one), never with
+    ``force_full``, and only when nothing changed or nothing is new."""
+    return delivery and not force_full and (suppressed or not news)
+
+
 class EndOfDayDigestWorkflow(Workflow):
     name = "end_of_day_digest"
     title = "End-of-Day Digest"
@@ -626,12 +633,14 @@ class EndOfDayDigestWorkflow(Workflow):
         # Nothing new today: no digest at all on the delivery to the
         # principal. A message that can only say older items are still open
         # is not worth sending; they stay on Home and in the morning brief.
-        quiet = bool(PRINCIPAL_DELIVERY.get()) and not inputs.force_full and (
-            suppressed or not _has_news(
+        quiet = _quiet(
+            delivery=bool(PRINCIPAL_DELIVERY.get()), force_full=inputs.force_full,
+            suppressed=suppressed,
+            news=_has_news(
                 today_data=today_data, since=since, activity=activity, handled=handled,
                 conversation=conversation, live_lines=live_lines,
                 owner_notes=owner_notes.text, found=found,
-            )
+            ),
         )
         yield WorkflowEvent(
             type="result",
