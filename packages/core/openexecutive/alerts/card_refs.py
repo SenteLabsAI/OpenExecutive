@@ -34,10 +34,11 @@ LinkFormat = Literal["markdown", "slack", "plain"]
 
 # "card 220", "Card #220", "the card 220", "alert no. 220", "cards 220 and 221",
 # "alert_id=220". The word must come right before the number, so "/cards/220"
-# (a link) and "card ending 4242" are left alone.
+# (a link) and "card ending 4242" are left alone, and so is a link's own
+# "?card=220" (``card_url``, which the briefs now write themselves).
 _MENTION = re.compile(
     r"(?P<the>\b(?:the|that)\s+)?"
-    r"(?P<word>\b(?:card|alert)(?P<plural>s)?(?:\s*_?id)?)"
+    r"(?P<word>(?<![?&/])\b(?:card|alert)(?P<plural>s)?(?:\s*_?id)?)"
     r"(?:\s*[=:]\s*|\s*#\s*|\s+no\.\s*|\s+number\s+|\s+)"
     r"(?P<ids>#?\d{1,9}(?:(?:\s*,\s*|\s+and\s+|\s+or\s+|\s*&\s*)#?\d{1,9})*)\b"
     # "an alert 30 minutes before", "card 2 of 5": a count, not a card.
@@ -96,6 +97,62 @@ def home_url() -> str:
     """Home's address, or "" when the app has no web address set."""
     base = _base()
     return f"{base}/" if base else ""
+
+
+# Every form of link a brief could carry, matched in one pass so an address
+# inside a link is not matched again on its own: an inline Markdown link
+# (any address: scheme-relative, javascript:, mailto:), an <address>
+# autolink, a reference definition ("[1]: address") and a bare address,
+# which chat apps and mail clients link on their own.
+_ANY_LINK = re.compile(
+    r"(?P<md>\[(?P<md_text>[^\]\n]*)\]\(\s*<?(?P<md_url>(?:[^()\s<>]|\([^()\s]*\))*)>?[^)\n]*\))"
+    r"|(?P<auto><(?P<auto_url>[a-z][a-z0-9+.-]*:[^>\s]*|//[^>\s]*)>)"
+    r"|(?P<ref>^[ \t]*\[[^\]\n]+\]:[ \t]*<?(?P<ref_url>\S+?)>?(?:[ \t].*)?$)"
+    r"|(?P<bare>(?:https?://|www\.)[^\s<>()\[\]]+)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def keep_app_links(text: str) -> str:
+    """A brief with every link that doesn't point into this app taken out:
+    an inline link becomes its text, any other form "(link removed)". A brief
+    links only to the app's own pages (cards, write-ups), so a link anywhere
+    else came from quoted mail or chat."""
+    base = _base()
+
+    def ours(url: str) -> bool:
+        return bool(base) and (
+            url == base or url.startswith(base + "/") or url.startswith(base + "?")
+        )
+
+    def keep(m: re.Match[str]) -> str:
+        if m.group("md") is not None:
+            if not ours(m.group("md_url")):
+                return m.group("md_text")
+            # An app link keeps its address; its text is cleaned too, so an
+            # address shown as the text doesn't ride along.
+            text = m.group("md_text")
+            return f"[{_ANY_LINK.sub(keep, text)}]" + m.group(0)[len(text) + 2:]
+        if m.group("auto") is not None:
+            url = m.group("auto_url")
+        elif m.group("ref") is not None:
+            url = m.group("ref_url")
+        else:
+            url = m.group("bare").rstrip(".,;:!?'\"")
+        return m.group(0) if ours(url) else "(link removed)"
+
+    return _ANY_LINK.sub(keep, text or "")
+
+
+def write_up_url(artifact_id: str) -> str:
+    """The address of a run's write-up (``run_outcome.write_up_id``), or ""
+    when the app has no web address set."""
+    from urllib.parse import quote
+
+    base = _base()
+    if not base or not artifact_id:
+        return ""
+    return f"{base}/artifacts/{quote(artifact_id, safe='')}"
 
 
 def _label(headline: str) -> str:
