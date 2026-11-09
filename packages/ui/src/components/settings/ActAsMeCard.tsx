@@ -955,7 +955,6 @@ export function VoiceSection({
   );
 }
 
-// One sentence of the style, marked when a described style adds it.
 // A section inside another card: the same title, line and body as
 // SettingsCard, under a divider.
 function CardSection({
@@ -983,6 +982,7 @@ function CardSection({
   );
 }
 
+// One sentence of the style, marked when a described style adds it.
 function StyleLine({ text, isNew = false }: { text: string; isNew?: boolean }) {
   return (
     <li className="flex items-baseline gap-2.5 text-[15px] leading-relaxed text-fg">
