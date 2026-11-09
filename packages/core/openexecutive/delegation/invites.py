@@ -444,7 +444,7 @@ def _refusal(
         return "stranger"
     if not handle_it.signing_ok():
         return "signing_off"
-    held = handle_it.content_hold(title)
+    held = handle_it.content_hold(title, recipients=(sender,))
     if held:
         return held
     if clash is None:

@@ -34,9 +34,12 @@ with the reason recorded.
   isn't one of the kinds that need a reply;
 - the reply goes to anyone the email didn't already go to;
 - the reply is longer than ``MAX_BODY_CHARS``;
+- one of the owner's Waits rules (Delegate → Approvals → Your rules,
+  ``take_the_lead.rule_waits``) matches, on every level;
 - below Hands-off, the email or the reply touches money, contracts,
   credentials and the like (``SENSITIVE``), or the reply carries a link or
-  an amount (``content_hold``);
+  an amount (``content_hold``), unless a Goes rule
+  (``take_the_lead.rule_goes``) covers it. A link still waits;
 - the draft carries a flag other than ``ALLOWED_FLAGS`` (they asked whether
   it's an AI, recipients were trimmed, the draft names the Executive
   (``names_the_executive``), ...). The Executive merely being on the email
@@ -157,6 +160,7 @@ REASONS: dict[str, str] = {
     "sensitive": "Below Hands-off, mail about money, contracts, passwords and the like waits for you.",
     "link": "Below Hands-off, a reply with a link waits for you.",
     "amount": "Below Hands-off, a reply with an amount waits for you.",
+    "rule": "One of your rules says this waits for you.",
     "clash": "It clashes with something already on your calendar.",
     "calendar_unread": "It couldn't check your calendar for clashes, so it asked instead.",
     "calendar_write": "Your calendar sign-in can't answer invites yet. Connect it again under Read my calendar.",
@@ -174,18 +178,35 @@ def hands_off(*, db_path: Path | None = None) -> bool:
         return False
 
 
-def content_hold(*texts: str, link_texts: tuple[str, ...] = (), db_path: Path | None = None) -> str | None:
-    """Below Hands-off, why what it would send on its own touches money,
-    contracts, credentials and the like (``sensitive``), or carries a link
-    (``link``) or an amount (``amount``); None when it doesn't or on
-    Hands-off. ``texts`` are read for topics and amounts, ``link_texts``
-    (what it would send) for links."""
+def content_hold(
+    *texts: str, link_texts: tuple[str, ...] = (), recipients: tuple[str, ...] = (), db_path: Path | None = None,
+) -> str | None:
+    """Why what it would send on its own must wait, or None: a Waits rule
+    (``rule``) on every level; then, below Hands-off, money, contracts,
+    credentials and the like (``sensitive``), a link (``link``) or an amount
+    (``amount``), unless a Goes rule covers it (a link still waits).
+    ``texts`` are read for rules, topics and amounts, ``link_texts`` (what
+    it would send) for links, ``recipients`` for person and domain rules.
+    Unreadable rules hold."""
+    from openexecutive.orchestrator import take_the_lead
+
+    going = [r.strip().lower() for r in recipients if r and r.strip()]
+    joined = "\n".join(t or "" for t in texts)
+    try:
+        rules = take_the_lead.list_rules([take_the_lead.SCOPE_COMPANY], db_path=db_path)
+    except Exception:
+        logger.warning("delegation.handle_it: couldn't read the rules — holding", exc_info=True)
+        return "rule"
+    if take_the_lead.rule_waits(rules, joined, going) is not None:
+        return "rule"
     if hands_off(db_path=db_path):
+        return None
+    if any(_LINK_RE.search(t or "") for t in link_texts):
+        return "link"
+    if take_the_lead.rule_goes(rules, joined, going) is not None:
         return None
     if any(_SENSITIVE_RE.search(t or "") for t in texts):
         return "sensitive"
-    if any(_LINK_RE.search(t or "") for t in link_texts):
-        return "link"
     if any(_AMOUNT_RE.search(t or "") for t in texts):
         return "amount"
     return None
@@ -402,7 +423,7 @@ def _refusal(
         return "flagged"
     held = content_hold(
         getattr(message, "subject", "") or "", getattr(message, "text", "") or "", reply.subject or "",
-        reply.body or "", link_texts=(reply.body or "",), db_path=db_path,
+        reply.body or "", link_texts=(reply.body or "",), recipients=(*reply.to, *reply.cc), db_path=db_path,
     )
     if held:
         return held
@@ -477,7 +498,7 @@ def _follow_up_refusal(
         return "flagged"
     held = content_hold(
         getattr(sent, "subject", "") or "", reply.subject or "", reply.body or "",
-        link_texts=(reply.body or "",), db_path=db_path,
+        link_texts=(reply.body or "",), recipients=(*reply.to, *reply.cc), db_path=db_path,
     )
     if held:
         return held

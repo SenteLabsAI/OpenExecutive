@@ -7,7 +7,7 @@ every acting call they make goes through ``_gated``. A message only to the
 principal skips it: they are who it would wait for (``_only_to_principal``).
 Everything else, in order:
 
-- the owner's added rules (``list_rules``, a person, domain, words or an
+- the owner's Waits rules (``list_rules``, a person, domain, words or an
   amount) hold at every level;
 - Careful holds everything;
 - **In training** (``Lead.training``, ``PUT /take-the-lead``) sits above the
@@ -18,6 +18,7 @@ Everything else, in order:
   same person or thing, ``allow``), and from then on it runs on its own,
   except on Careful;
 - Hands-off runs everything else;
+- a Goes rule (``rule_goes``) lets it go where Balanced would hold it;
 - Balanced holds the six ``KINDS`` (money, contracts, people decisions,
   deleting or sharing, someone new, big sends; ``check``) and runs the
   rest.
@@ -123,6 +124,13 @@ RULE_WORDS = "words"
 RULE_AMOUNT = "amount"
 RULE_KINDS: tuple[str, ...] = (RULE_PERSON, RULE_DOMAIN, RULE_WORDS, RULE_AMOUNT)
 RULE_VALUE_MAX = 200
+# What a rule does: "wait" always holds the action for the owner, on every
+# level; "go" lets it go on its own where the level would hold it. A Waits
+# rule wins over a Goes rule, Careful holds everything, and In training is
+# the last check: while it's on, a Goes rule lets nothing out on its own.
+EFFECT_WAIT = "wait"
+EFFECT_GO = "go"
+RULE_EFFECTS: tuple[str, ...] = (EFFECT_WAIT, EFFECT_GO)
 RULES_MAX = 50
 
 # The acting skill tools. Everything else an unattended pass may call reads,
@@ -240,8 +248,16 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         f"CREATE TABLE IF NOT EXISTS {RULES_TABLE} ("  # noqa: S608
         "id INTEGER PRIMARY KEY AUTOINCREMENT, scope TEXT NOT NULL, kind TEXT NOT NULL, "
-        "value TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL)"
+        "value TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL, "
+        "effect TEXT NOT NULL DEFAULT 'wait')"
     )
+    rule_columns = {r[1] for r in conn.execute(f"PRAGMA table_info({RULES_TABLE})")}  # noqa: S608
+    if "effect" not in rule_columns:
+        try:
+            conn.execute(f"ALTER TABLE {RULES_TABLE} ADD COLUMN effect TEXT NOT NULL DEFAULT 'wait'")  # noqa: S608
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
     conn.execute(
         f"CREATE TABLE IF NOT EXISTS {LOG_TABLE} ("  # noqa: S608
         "id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, scope TEXT NOT NULL, "
@@ -365,6 +381,7 @@ class Rule:
     kind: str
     value: str
     created_at: str
+    effect: str = EFFECT_WAIT
 
 
 class RuleError(ValueError):
@@ -403,7 +420,7 @@ def list_rules(scopes: list[str], *, db_path: Path | None = None) -> list[Rule]:
         try:
             marks = ",".join("?" * len(scopes))
             rows = conn.execute(
-                f"SELECT id, scope, kind, value, created_at FROM {RULES_TABLE} "  # noqa: S608
+                f"SELECT id, scope, kind, value, created_at, effect FROM {RULES_TABLE} "  # noqa: S608
                 f"WHERE scope IN ({marks}) ORDER BY id",
                 tuple(scopes),
             ).fetchall()
@@ -412,11 +429,16 @@ def list_rules(scopes: list[str], *, db_path: Path | None = None) -> list[Rule]:
     except Exception:
         logger.warning("take_the_lead: couldn't read the rules", exc_info=True)
         raise
-    return [Rule(id=r["id"], scope=r["scope"], kind=r["kind"], value=r["value"], created_at=r["created_at"])
+    return [Rule(id=r["id"], scope=r["scope"], kind=r["kind"], value=r["value"], created_at=r["created_at"],
+                 effect=EFFECT_GO if r["effect"] == EFFECT_GO else EFFECT_WAIT)
             for r in rows]
 
 
-def add_rule(scope: str, kind: str, value: str, *, created_by: str, db_path: Path | None = None) -> Rule:
+def add_rule(
+    scope: str, kind: str, value: str, *, created_by: str, effect: str = EFFECT_WAIT, db_path: Path | None = None,
+) -> Rule:
+    if effect not in RULE_EFFECTS:
+        raise RuleError("Pick whether it waits for you or goes on its own.")
     text = clean_rule(kind, value)
     conn = _connect(db_path)
     try:
@@ -427,14 +449,15 @@ def add_rule(scope: str, kind: str, value: str, *, created_by: str, db_path: Pat
             raise RuleError(f"There are already {RULES_MAX} rules here.")
         now = datetime.now(UTC).isoformat()
         cur = conn.execute(
-            f"INSERT INTO {RULES_TABLE} (scope, kind, value, created_by, created_at) VALUES (?, ?, ?, ?, ?)",  # noqa: S608
-            (scope, kind, text, created_by, now),
+            f"INSERT INTO {RULES_TABLE} (scope, kind, value, created_by, created_at, effect) "  # noqa: S608
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (scope, kind, text, created_by, now, effect),
         )
         conn.commit()
         rule_id = int(cur.lastrowid or 0)
     finally:
         conn.close()
-    return Rule(id=rule_id, scope=scope, kind=kind, value=text, created_at=now)
+    return Rule(id=rule_id, scope=scope, kind=kind, value=text, created_at=now, effect=effect)
 
 
 def delete_rule(rule_id: int, scope: str, *, db_path: Path | None = None) -> bool:
@@ -652,8 +675,11 @@ def _mail_only_to_principal(tool: str, tool_input: dict[str, Any]) -> bool:
 
 
 def _rule_hit(rules: list[Rule], text: str, recipients: list[str]) -> Hit | None:
+    """The first Waits rule that ``text`` / ``recipients`` match."""
     lowered = text.lower()
     for rule in rules:
+        if rule.effect != EFFECT_WAIT:
+            continue
         value = rule.value
         if rule.kind == RULE_PERSON:
             if "@" in value and value in recipients:
@@ -671,6 +697,73 @@ def _rule_hit(rules: list[Rule], text: str, recipients: list[str]) -> Hit | None
             if any(a >= limit for a in amounts(text)):
                 return Hit("rule", f"your rule about amounts of {value} or more", rule.id)
     return None
+
+
+def rule_waits(rules: list[Rule], text: str, recipients: list[str]) -> Hit | None:
+    """Public name for the Waits-rule check, for what goes out as a person
+    (``delegation.handle_it``)."""
+    return _rule_hit(rules, text, recipients)
+
+
+def rule_goes(rules: list[Rule], text: str, recipients: list[str]) -> Rule | None:
+    """The first Goes rule that covers the whole action, or None. Stricter
+    than a Waits rule, since it lets something go: a person or domain must
+    be every recipient (or, with none, the person is named), words must
+    appear, and an amount rule needs at least one amount, every one under
+    its limit."""
+    lowered = text.lower()
+    found = amounts(text)
+    for rule in rules:
+        if rule.effect != EFFECT_GO:
+            continue
+        value = rule.value
+        if rule.kind == RULE_PERSON:
+            if "@" in value:
+                theirs = {value}
+            elif not recipients:
+                if re.search(rf"\b{re.escape(value.lower())}\b", lowered):
+                    return rule
+                continue
+            else:
+                theirs = _person_addresses(value)
+            if recipients and set(recipients) <= theirs:
+                return rule
+        elif rule.kind == RULE_DOMAIN:
+            if recipients and all(r.endswith("@" + value) or r.endswith("." + value) for r in recipients):
+                return rule
+        elif rule.kind == RULE_WORDS:
+            if value.lower() in lowered:
+                return rule
+        elif rule.kind == RULE_AMOUNT:
+            limit = _number(value) or 0
+            if found and all(a < limit for a in found):
+                return rule
+    return None
+
+
+def _person_addresses(name: str) -> set[str]:
+    """Every address on file for the People entry named ``name`` (case
+    ignored), or empty. Never raises."""
+    try:
+        from openexecutive.people.store import list_people
+
+        wanted = name.strip().lower()
+        out: set[str] = set()
+        for person in list_people(include_contacts=True):
+            if (person.full_name or "").strip().lower() == wanted:
+                out |= {a.strip().lower() for a in [person.email, *person.email_aliases] if a and a.strip()}
+        return out
+    except Exception:
+        return set()
+
+
+def rule_text(rule: Rule) -> str:
+    """A rule in the owner's words: "amounts under $500"."""
+    if rule.kind == RULE_AMOUNT:
+        return f"amounts under ${rule.value}" if rule.effect == EFFECT_GO else f"amounts of ${rule.value} or more"
+    if rule.kind == RULE_WORDS:
+        return f'anything with "{rule.value}"'
+    return f"anything with {rule.value}"
 
 
 def _mcp_deletes(tool: str, tool_input: dict[str, Any]) -> bool:
@@ -1587,10 +1680,11 @@ def _careful() -> bool:
         return True
 
 
-def _hit(name: str, tool_input: dict[str, Any], *, mcp: bool) -> tuple[Hit | None, Allowed | None]:
-    """Why this call waits (and for what it was allowed, when it runs under
-    an allowance): the owner's rules, then Careful, then In training, then
-    the level. Never raises: an error holds."""
+def _hit(name: str, tool_input: dict[str, Any], *, mcp: bool) -> tuple[Hit | None, Allowed | Rule | None]:
+    """Why this call waits (and what let it go, when an allowance or a Goes
+    rule did): the owner's Waits rules, then Careful, then In training, then
+    the level, where a Goes rule lets go what Balanced would hold. Never
+    raises: an error holds."""
     try:
         lead = get(SCOPE_EXECUTIVE)
         rules = list_rules([SCOPE_COMPANY])
@@ -1610,6 +1704,10 @@ def _hit(name: str, tool_input: dict[str, Any], *, mcp: bool) -> tuple[Hit | Non
             return None, found
         if _level_runs():
             return None, None
+        # A Goes rule lets it go where Balanced would hold it.
+        goes = rule_goes(rules, text, recipients)
+        if goes is not None:
+            return None, goes
         # Balanced: the six kinds wait, everything else goes.
         asks = Lead(scope=SCOPE_EXECUTIVE, ask_first=dict.fromkeys(KINDS, True))
         hit = check(name, tool_input, lead=asks, rules=[], mcp=mcp)
@@ -1635,7 +1733,7 @@ def _level_runs() -> bool:
 
 
 async def _gated(name: str, inner: _Handler, tool_input: dict[str, Any], *, source: str, mcp: bool) -> str:
-    allowed: Allowed | None = None
+    allowed: Allowed | Rule | None = None
     if (not mcp and _only_to_principal(name, tool_input)) or (mcp and _mail_only_to_principal(name, tool_input)):
         hit = None
     else:
@@ -1662,7 +1760,9 @@ async def _gated(name: str, inner: _Handler, tool_input: dict[str, Any], *, sour
     text = result if isinstance(result, str) else json.dumps(result) if isinstance(result, dict) else str(result)
     failed = result_failed(text)
     why = _SOURCE_WHY.get(source, "")
-    if allowed is not None:
+    if isinstance(allowed, Rule):
+        why = f"{why} Your rule: {rule_text(allowed)}.".strip()
+    elif allowed is not None:
         why = f"{why} You allowed this: {allowed.label}.".strip()
         if not failed:
             _used(allowed.id)

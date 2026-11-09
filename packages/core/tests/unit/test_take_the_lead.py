@@ -1275,3 +1275,91 @@ def test_the_owners_rules_hold_even_on_hands_off(owner: Any, monkeypatch: pytest
     assert result["status"] == "waiting_for_approval" and calls == []
     [decision] = ledger.list_instances(ttl.DECISION_CLASS)
     assert json.loads(decision.proposed_payload_json)["rule_id"] == rule.id
+
+
+# ── Goes rules ────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def balanced(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import outside_mode
+
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.OUTSIDERS)
+
+
+def _go(kind: str, value: str) -> ttl.Rule:
+    return ttl.add_rule(ttl.SCOPE_COMPANY, kind, value, created_by="t", effect=ttl.EFFECT_GO)
+
+
+def _run(owner: Any, text: str, person_id: int | None = None) -> tuple[dict[str, Any], list[Any]]:
+    calls: list[Any] = []
+    gated = ttl.gated_handlers(_handlers(calls), source="reflection")
+    result = json.loads(asyncio.run(gated["message_person"]({"person_id": person_id or _teammate(), "text": text})))
+    return result, calls
+
+
+def test_rules_keep_their_effect() -> None:
+    assert ttl.add_rule(ttl.SCOPE_COMPANY, "words", "acquisition", created_by="t").effect == ttl.EFFECT_WAIT
+    _go("amount", "500")
+    assert [r.effect for r in ttl.list_rules([ttl.SCOPE_COMPANY])] == [ttl.EFFECT_WAIT, ttl.EFFECT_GO]
+    with pytest.raises(ttl.RuleError):
+        ttl.add_rule(ttl.SCOPE_COMPANY, "words", "x", created_by="t", effect="maybe")
+
+
+def test_an_amount_goes_rule_needs_every_amount_under_it() -> None:
+    rules = [_go("amount", "500")]
+    assert ttl.rule_goes(rules, "Approve Priya's $180 software request", []) is not None
+    assert ttl.rule_goes(rules, "Pay $180 now and $900 later", []) is None
+    assert ttl.rule_goes(rules, "Pay the invoice", []) is None  # no amount: not covered
+
+
+def test_a_domain_goes_rule_needs_every_recipient_on_it() -> None:
+    rules = [_go("domain", "co.example")]
+    assert ttl.rule_goes(rules, "", ["dana@co.example"]) is not None
+    assert ttl.rule_goes(rules, "", ["dana@co.example", "x@far.example"]) is None
+
+
+def test_on_balanced_a_goes_rule_lets_small_money_go(owner: Any, balanced: None) -> None:
+    result, calls = _run(owner, "Approve the $180 software request")
+    assert result["status"] == "waiting_for_approval" and calls == []
+    _go("amount", "500")
+    result, calls = _run(owner, "Approve the $180 software request")
+    assert result["status"] == "sent" and len(calls) == 1
+    done = [d for d in ttl.done([ttl.SCOPE_EXECUTIVE]) if d.status == "done"]
+    assert "Your rule: amounts under $500." in done[0].why
+    result, calls = _run(owner, "Approve the $1,240 invoice")
+    assert result["status"] == "waiting_for_approval" and calls == []
+
+
+def test_a_waits_rule_beats_a_goes_rule(owner: Any, balanced: None) -> None:
+    _go("amount", "500")
+    ttl.add_rule(ttl.SCOPE_COMPANY, "words", "software", created_by="t")
+    result, calls = _run(owner, "Approve the $180 software request")
+    assert result["status"] == "waiting_for_approval" and calls == []
+
+
+def test_careful_and_in_training_still_hold_a_goes_rule(
+    owner: Any, balanced: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.orchestrator import outside_mode
+
+    _go("amount", "500")
+    ttl.set_(ttl.SCOPE_EXECUTIVE, training=True, updated_by="t")
+    result, calls = _run(owner, "Approve the $180 software request")
+    assert result["status"] == "waiting_for_approval" and calls == []
+    assert json.loads(ledger.list_instances(ttl.DECISION_CLASS)[0].proposed_payload_json)["kind"] == ttl.TRAINING
+    ttl.set_(ttl.SCOPE_EXECUTIVE, training=False, updated_by="t")
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.ASK)
+    result, calls = _run(owner, "Approve the $180 software request")
+    assert result["status"] == "waiting_for_approval" and calls == []
+
+
+def test_the_route_adds_a_goes_rule_for_a_provable_owner(
+    client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = client.post("/take-the-lead/rules", json={"kind": "amount", "value": "500", "effect": "go"}).json()
+    assert [(r["kind"], r["value"], r["effect"]) for r in body["rules"]] == [("amount", "500", "go")]
+    assert client.post("/take-the-lead/rules", json={"kind": "amount", "value": "5", "effect": "bogus"}).status_code == 422
+    monkeypatch.delenv("OE_LOCAL_LOGIN", raising=False)
+    assert client.post("/take-the-lead/rules", json={"kind": "amount", "value": "9", "effect": "go"}).status_code == 409
+    assert client.post("/take-the-lead/rules", json={"kind": "amount", "value": "9"}).status_code == 200
