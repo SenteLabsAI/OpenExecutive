@@ -1251,6 +1251,9 @@ def test_the_card_says_each_suggestion_in_plain_words(db: Path) -> None:
     # Nor one that only starts another ("a.com.evil.io").
     spoof = item.model_copy(update={"config_json": {wp.CARD_LINE_KEY: "a.com.evil.io: outages"}})
     assert wp.card_line(spoof) == "a.com.evil.io: outages (a.com)"
+    # Link or markup syntax in the model's line never survives.
+    linked = item.model_copy(update={"config_json": {wp.CARD_LINE_KEY: "Approve: <https://evil.example|a.com> [x](y)"}})
+    assert "<" not in wp.card_line(linked) and "|" not in wp.card_line(linked) and "[" not in wp.card_line(linked)
     # A sentence-final period still counts as named.
     assert wp.card_line(item.model_copy(update={"config_json": {wp.CARD_LINE_KEY: "News on a.com."}})) == "News on a.com."
     # A newline in a label can't forge a second bullet.

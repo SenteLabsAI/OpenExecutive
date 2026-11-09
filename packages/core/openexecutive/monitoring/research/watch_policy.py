@@ -1533,7 +1533,9 @@ def card_line(item: WatchlistItem) -> str:
     from openexecutive.monitoring.validation import registrable_domain
 
     config = item.config_json if isinstance(item.config_json, dict) else {}
-    written = " ".join(str(config.get(CARD_LINE_KEY) or "").split())
+    # Model words shaped by web content: no link or markup syntax survives,
+    # so a chat app can't render them as a link.
+    written = " ".join(re.sub(r"[<>\[\]|`]", " ", str(config.get(CARD_LINE_KEY) or "")).split())
     if written and len(written) <= MAX_CARD_LINE:
         # The model's words name no source on their own: the site it
         # watches stays beside them, so an approval is of the real target.
