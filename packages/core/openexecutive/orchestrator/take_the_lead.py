@@ -206,6 +206,21 @@ _DOMAIN_RE = re.compile(r"^[a-z0-9.-]+\.[a-z]{2,}$")
 # every one of these parsed by ``amounts``, and no percentages.
 _AMOUNT_SIGN_RE = re.compile(r"[$€£¥₹]\s*\d")
 _PERCENT_RE = re.compile(r"\d\s*%|\bper\s?cent\b", re.IGNORECASE)
+# A number next to money, to check it is written the plain way amounts()
+# reads (1,200.50 or 1200), not 1.200,50 or 1.000.000.
+_MONEY_NUMBER_RE = re.compile(
+    rf"[$€£¥₹]\s?([\d.,]*\d)|\b([\d.,]*\d)\s?(?:{_CURRENCY_CODES}|dollars?|euros?|pounds?|bucks)\b",
+    re.IGNORECASE,
+)
+_PLAIN_NUMBER_RE = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?")
+# Scale words: fine right after a number when amounts() knows them, else
+# an amount it can't read ("ten thousand dollars", "$5 trillion", "₹3 crore").
+_SCALE_RE = re.compile(r"\b(hundred|thousand|million|billion|trillion|grand|crores?|lakhs?|tn)\b", re.IGNORECASE)
+_SPELLED_MONEY_RE = re.compile(
+    r"\b(?:a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|thirty|forty|fifty|"
+    r"sixty|seventy|eighty|ninety|few|several|many)\s+(?:dollars?|euros?|pounds?|bucks|usd|eur|gbp)\b",
+    re.IGNORECASE,
+)
 
 
 def person_scope(person_id: int) -> str:
@@ -773,9 +788,21 @@ def goes_kinds(rules: list[Rule]) -> frozenset[str]:
 
 
 def _all_parsed(text: str, found: list[float]) -> bool:
-    """Whether ``amounts`` read every amount in ``text``: no percentage, and
-    no currency sign before a number it couldn't parse. Fails closed."""
-    return not _PERCENT_RE.search(text) and len(_AMOUNT_SIGN_RE.findall(text)) <= len(found)
+    """Whether ``amounts`` read every amount in ``text`` right: no
+    percentage, no spelled-out or unknown-scale amount, every number next to
+    money written plainly, and no currency sign it skipped. Fails closed."""
+    if _PERCENT_RE.search(text) or _SPELLED_MONEY_RE.search(text):
+        return False
+    if len(_AMOUNT_SIGN_RE.findall(text)) > len(found):
+        return False
+    for m in _MONEY_NUMBER_RE.finditer(text):
+        if not _PLAIN_NUMBER_RE.fullmatch(m.group(1) or m.group(2)):
+            return False
+    for m in _SCALE_RE.finditer(text):
+        known = m.group(1).lower() in _MULTIPLIERS
+        if not (known and re.search(r"\d\s?$", text[: m.start()])):
+            return False
+    return True
 
 
 def _person_address(name: str) -> set[str]:

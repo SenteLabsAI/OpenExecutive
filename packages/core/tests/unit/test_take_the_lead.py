@@ -1404,6 +1404,17 @@ def test_an_amount_goes_rule_fails_closed_on_an_amount_it_cant_read() -> None:
     rules = [_go("amount", "500")]
     assert ttl.rule_goes(rules, "I can do $100 now, and ₹9,000,000 next quarter", []) is None
     assert ttl.rule_goes(rules, "I can do $100 now and a 40% discount", []) is None
+    for text in [
+        "Pay $5 trillion today",
+        "Pay ₹3 crore today",
+        "Pay €1.200,50 today",
+        "Pay €1.000.000 today",
+        "The fee is $100, plus a ten thousand dollar deposit",
+        "The fee is $100, plus a few dollars",
+    ]:
+        assert ttl.rule_goes(rules, text, []) is None, text
+    for text in ["I can do $100 now.", "Pay $1,200.50 and $2k", "That's 300 dollars"]:
+        assert (ttl.rule_goes([_go("amount", "5000")], text, []) is not None), text
     assert ttl.rule_goes(rules, "I can do $100 now", []) is not None
 
 
