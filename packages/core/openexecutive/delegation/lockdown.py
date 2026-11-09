@@ -128,6 +128,9 @@ MAIL_TOUCHED_ALLOWED_TOOLS: frozenset[str] = frozenset({
     "watch_for_email",
     # Cards and drafts a person approves before anything happens.
     "propose_actions",
+    # The inbox's work turn hands its result back to the reply card it
+    # works on (orchestrator.reply_card_tools); it sends nothing.
+    "update_reply_card",
     "propose_form_values",
     "draft_workflow",
     # A document kept for the person this turn is for, never published on a

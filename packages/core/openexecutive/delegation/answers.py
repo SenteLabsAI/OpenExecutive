@@ -129,6 +129,10 @@ as it was.
 10. With <change> or <news>, return note: one short plain sentence to the \
 writer, as their assistant ("I"), saying what you changed and why. With \
 <news>, name who wrote ("Li can't do Thursday, so I moved it to Friday.").
+11. When <change> asks for work that rewriting words can't do (opening or \
+reading a file, making a spreadsheet or document, looking something up, \
+booking or sending something), set needs_tools true and return the draft as \
+it was: the Executive does that work with its tools. Never say you can't.
 
 Return the new body (and gist, note, questions) through rewrite_reply."""
 
@@ -141,6 +145,7 @@ _REWRITE_TOOL: dict[str, Any] = {
             "body": {"type": "string"},
             "gist": {"type": "string"},
             "note": {"type": "string"},
+            "needs_tools": {"type": "boolean"},
             "questions": {
                 "type": "array",
                 "items": {
@@ -156,6 +161,11 @@ _REWRITE_TOOL: dict[str, Any] = {
         "required": ["body"],
     },
 }
+
+
+class NeedsWork(Exception):
+    """What the person typed on the card is work for the Executive's tools,
+    not a change of words (``delegation.card_work``)."""
 
 
 @dataclass(frozen=True)
@@ -522,6 +532,8 @@ async def rewrite(
     except Exception as exc:
         logger.warning("delegation.answers: the rewrite failed (%s)", type(exc).__name__)
         written = {}
+    if change and not pairs and not news and written.get("needs_tools") is True:
+        raise NeedsWork(change)
     raw = written.get("body")
     if not isinstance(raw, str) or not raw.strip():
         raise SendRefused(502, "rewrite_failed", "Couldn't write that into your reply. Try again, or tap Edit.")

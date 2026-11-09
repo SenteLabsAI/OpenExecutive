@@ -143,9 +143,13 @@ async def send_approved_reply(
     approved. ``allow`` is "on its own next time" (In training): this sender
     (a follow-up's people) is allowed from now on; ``example`` keeps an
     edited draft as how they write to them. Returns the sent message's id;
-    raises ``SendRefused``."""
+    raises ``SendRefused``. Not while the Executive is still doing what the
+    email asks (delegation.card_work): the reply is about to change."""
     from openexecutive.audit import rows_for_person
+    from openexecutive.delegation import card_work
 
+    if card_work.still_working(instance):
+        raise SendRefused(409, "working", "I'm still doing what the email asks. The reply will be ready shortly.")
     owner = getattr(instance, "approver_person_id", None)
     with rows_for_person(owner if isinstance(owner, int) else None):
         return await _send(

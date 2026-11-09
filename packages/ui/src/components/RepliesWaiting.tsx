@@ -83,7 +83,7 @@ export function useReplyCards() {
     }
   }, []);
 
-  const settling = (cards ?? []).some((c) => c.status === "executing");
+  const settling = (cards ?? []).some((c) => c.status === "executing" || c.working);
   useEffect(() => {
     if (!settling) return;
     const timer = setInterval(() => void refresh(), SETTLE_POLL_MS);
@@ -527,7 +527,7 @@ export function ReplyCardItem({
                   </Button>
                 ) : (
                   <>
-                    <Button variant="primary" onClick={askToSend} disabled={busy}>
+                    <Button variant="primary" onClick={askToSend} disabled={busy || card.working}>
                       Send
                     </Button>
                     <Button variant="secondary" onClick={() => setOpen(true)} disabled={busy}>
@@ -593,6 +593,11 @@ export function ReplyCardItem({
               {i === lastNote && hasOpen && decideBlock}
             </ExecBubble>
           ),
+        )}
+        {card.working && (
+          <ExecBubble>
+            <p aria-live="polite">Working on what {followUp ? "you" : card.from_name.split(" ")[0] || "they"} asked…</p>
+          </ExecBubble>
         )}
         {busy && (step.label === "Writing it in…" || step.label === "Changing it…") && (
           <p className="text-xs text-fg-subtle" aria-live="polite">Writing it into your reply…</p>
@@ -669,6 +674,18 @@ export function ReplyCardItem({
                   )
                 : card.draft_body}
             </p>
+            {(card.files ?? []).length > 0 && (
+              <ul className="mt-2 flex flex-wrap gap-2" aria-label="Attached">
+                {(card.files ?? []).map((name) => (
+                  <li
+                    key={name}
+                    className="max-w-full truncate rounded-lg border border-line-strong bg-surface-overlay px-2.5 py-1 text-[13px] text-fg"
+                  >
+                    {name}
+                  </li>
+                ))}
+              </ul>
+            )}
             {!unconfirmed && !confirming && (
               <button
                 type="button"

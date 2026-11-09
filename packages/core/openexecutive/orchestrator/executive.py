@@ -48,6 +48,7 @@ from openexecutive.orchestrator import (
     extensions,
     levels,
     outside_content,
+    reply_card_tools,
     take_the_lead,
     tool_groups,
     turn_progress,
@@ -2505,6 +2506,11 @@ class Executive:
         if not mcp_client and not replaying and search_person(current_session.get()) is not None:
             delegation_tools = [*delegation_tools, *CHAT_SEARCH_TOOLS]
             turn_handlers = {**turn_handlers, **CHAT_SEARCH_TOOL_HANDLERS}
+        # The inbox's work turn on a reply card (delegation.card_work):
+        # update_reply_card hands back what it did, with Act as me's tools.
+        if ghostwrite_offered and reply_card_tools.offered(current_session.get()):
+            delegation_tools = [*delegation_tools, *reply_card_tools.REPLY_CARD_TOOLS]
+            turn_handlers = {**turn_handlers, **reply_card_tools.REPLY_CARD_TOOL_HANDLERS}
         # Tools an installed extension adds (orchestrator/extensions.py): only
         # on a turn someone is in, never an unattended run or a turn private
         # to the principal, and only where each tool says it is offered.

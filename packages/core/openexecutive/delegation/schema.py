@@ -28,6 +28,7 @@ CALENDAR_TABLE = "delegation_calendar"
 SAVED_FILES_TABLE = "delegation_saved_files"
 SAVED_FOLDER_TABLE = "delegation_saved_folder"
 UPGRADES_TABLE = "delegation_upgrades"
+CARD_FILES_TABLE = "delegation_card_files"
 
 TABLES: tuple[str, ...] = (
     SETTINGS_TABLE,
@@ -48,6 +49,7 @@ TABLES: tuple[str, ...] = (
     SAVED_FILES_TABLE,
     SAVED_FOLDER_TABLE,
     UPGRADES_TABLE,
+    CARD_FILES_TABLE,
 )
 
 _DDL: tuple[str, ...] = (
@@ -273,6 +275,18 @@ _DDL: tuple[str, ...] = (
     f"CREATE TABLE IF NOT EXISTS {UPGRADES_TABLE} ("
     "  name TEXT PRIMARY KEY,"
     "  done_at TEXT NOT NULL"
+    ")",
+    # The files a reply card's reply carries (``delegation.card_work``): what
+    # the Executive made or picked while doing what the email asked, attached
+    # when the reply is sent. One row per file, in order.
+    f"CREATE TABLE IF NOT EXISTS {CARD_FILES_TABLE} ("
+    "  decision_id INTEGER NOT NULL,"
+    "  position INTEGER NOT NULL,"
+    "  name TEXT NOT NULL,"
+    "  mime TEXT NOT NULL,"
+    "  data BLOB NOT NULL,"
+    "  created_at TEXT NOT NULL,"
+    "  PRIMARY KEY (decision_id, position)"
     ")",
 )
 

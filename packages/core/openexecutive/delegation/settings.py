@@ -70,14 +70,20 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class DelegationOverride:
-    """Evals and tests only: run a turn as if ``person`` had Act as me set to
-    ``enabled``, against ``gmail`` — a fake mailbox, never a real one. With an
-    override the surface checks are skipped (an eval has no web sign-in), so
-    the tool is offered only when a fake mailbox is supplied."""
+    """Run a turn as if ``person`` had Act as me set to ``enabled``, against
+    ``gmail``: an eval's or test's fake mailbox, or ``person``'s own for the
+    inbox's work turn on one of their reply cards (``delegation.card_work``),
+    which the inbox watcher starts in code from their own Draft replies to
+    my inbox, with no message anyone typed. With an override the surface
+    checks are skipped (neither has a web sign-in), so the tools are offered
+    only when a mailbox is supplied."""
 
     enabled: bool
     gmail: Any = None
     person: Person | None = None
+    # The inbox's work turn (``delegation.card_work``): the one override
+    # offered on an unattended turn, which its steps' Approvals then decide.
+    inbox_work: bool = False
 
 
 @dataclass
@@ -418,7 +424,13 @@ def speaker_surface_ok(session: Any, person: Person | None) -> bool:
 def _offered(session: Any, person: Person | None, enabled: bool) -> bool:
     if not enabled:
         return False
-    if getattr(session, "unattended", False) is True:
+    override = getattr(session, "delegation_override", None)
+    # The inbox's work turn is unattended and carries the person's own
+    # mailbox: Approvals decides each of its steps like any unattended run's.
+    # No other override widens an unattended turn.
+    if getattr(session, "unattended", False) is True and not (
+        isinstance(override, DelegationOverride) and override.inbox_work
+    ):
         return False
     if getattr(session, "private_to_principal", False) is True:
         return False
@@ -428,7 +440,6 @@ def _offered(session: Any, person: Person | None, enabled: bool) -> bool:
     # A host origin's turn (Session.from_host) only reads and advises.
     if getattr(session, "from_host", False) is True:
         return False
-    override = getattr(session, "delegation_override", None)
     if isinstance(override, DelegationOverride):
         return override.gmail is not None
     return speaker_surface_ok(session, person)
