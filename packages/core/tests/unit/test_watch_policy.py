@@ -1242,6 +1242,12 @@ def test_the_card_says_each_suggestion_in_plain_words(db: Path) -> None:
     # A line too long to be one line falls back to what it watches.
     assert "• The Stripe Services Agreement page" in body
     assert "vendor-status" not in body and "x" * 20 not in body and "y" * 20 not in body
+    # A host named only inside another one ("data.com") isn't named.
+    item = ms.list_pending_suggestions(db_path=db)[0].model_copy(
+        update={"target": "https://a.com/feed", "config_json": {wp.CARD_LINE_KEY: "Data.com: vendor news"}},
+    )
+    assert wp.card_line(item) == "Data.com: vendor news (a.com)"
+    assert wp.card_line(item.model_copy(update={"config_json": {wp.CARD_LINE_KEY: "A.com news"}})) == "A.com news"
     # A newline in a label can't forge a second bullet.
     forged = ms.insert_watchlist_item(
         slug="rss-forged", signal_type="rss", target="https://forged.example/feed",
