@@ -1537,7 +1537,6 @@ def card_line(item: WatchlistItem) -> str:
     """One plain line for ``item`` on the card: the line the model wrote for
     it, else what it watches in words (``describe.watching_line``)."""
     from openexecutive.monitoring.describe import watching_line
-    from openexecutive.monitoring.validation import registrable_domain
 
     config = item.config_json if isinstance(item.config_json, dict) else {}
     written = _plain(str(config.get(CARD_LINE_KEY) or ""))
