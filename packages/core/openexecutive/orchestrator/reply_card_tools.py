@@ -163,7 +163,7 @@ async def handle_update_reply_card(tool_input: dict[str, Any]) -> str:
         if refused:
             return _error(f"Nothing was changed: {refused}.")
         try:
-            resolved = await file_refs.resolve(handles, max_bytes=card_work.MAX_BYTES)
+            resolved = await file_refs.resolve(handles, allow_drive=False, max_bytes=card_work.MAX_BYTES)
         except file_refs.RefError as exc:
             return _error(f"Nothing was changed: {exc}.")
         files += [(f.name, f.mime, f.data) for f in resolved.items]
