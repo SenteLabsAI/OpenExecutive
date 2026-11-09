@@ -35,7 +35,7 @@ def sent(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, str]]:
 async def test_a_break_is_told_once_and_again_after_a_reconnect(tmp_path: Path, sent: list[tuple[Any, str]]) -> None:
     db = tmp_path / "e.db"
     assert await sign_in_notice.note(OWNER, "needs_reconnect", db_path=db)
-    assert len(sent) == 1 and "Act as me" in sent[0][1]
+    assert len(sent) == 1 and "Delegate → As you" in sent[0][1]
     # Every later check during the same break tells nothing.
     assert not await sign_in_notice.note(OWNER, "needs_reconnect", db_path=db)
     assert not await sign_in_notice.note(OWNER, "error", db_path=db)

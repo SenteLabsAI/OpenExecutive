@@ -1086,10 +1086,25 @@ async def resolve_in_chat(
     if instance.decision_class == _TAKE_THE_LEAD.name:
         # As it stands (changing it is the web card's); "next time" allows
         # it from now on, the owner's alone, as the web card's tick does.
+        # The web card's checks, in its order: a training card with a grant,
+        # the owner's own tap (a ChatTap naming their address is as proven as
+        # a signed sign-in, ``verified.caller_refusal``), and room on the
+        # allowed list before anything is done.
+        from openexecutive.delegation.verified import caller_refusal
+        from openexecutive.orchestrator import take_the_lead
+
         payload = _parse_payload(instance)
         grant = payload.get("allow") if isinstance(payload.get("allow"), dict) else None
-        if allow and (grant is None or not is_principal):
-            raise HTTPException(status_code=422, detail="This one can't be allowed from its card.")
+        if allow:
+            if grant is None or payload.get("kind") != take_the_lead.TRAINING:
+                raise HTTPException(status_code=422, detail="This one can't be allowed from its card.")
+            if principal is None or not is_principal or caller_refusal(tap, normalize_email(principal.email or "")) is not None:
+                raise HTTPException(status_code=403, detail="Only the account owner can allow this.")
+            if not take_the_lead.room_for(str(grant.get("key"))):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"It can learn at most {take_the_lead.ALLOWED_MAX} things. Remove one in Settings first.",
+                )
         return await _run_lead(instance, payload, person.id, by_principal=is_principal, grant=grant if allow else None)
     if instance.decision_class == _DEPARTMENT_ACTION.name:
         return await _run_department_action(instance, person.id, by_principal=is_principal)
