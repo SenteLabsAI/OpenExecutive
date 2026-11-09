@@ -527,7 +527,7 @@ export function ReplyCardItem({
                   </Button>
                 ) : (
                   <>
-                    <Button variant="primary" onClick={askToSend} disabled={busy}>
+                    <Button variant="primary" onClick={askToSend} disabled={busy || card.working}>
                       Send
                     </Button>
                     <Button variant="secondary" onClick={() => setOpen(true)} disabled={busy}>
