@@ -2729,6 +2729,11 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
             recorded = True
         else:
             sending = True
+            # Held messages going out alone on a quiet day are not a digest,
+            # so they record no outcome, like a quiet skip.
+            held_only = bool(quiet_held)
+            if held_only:
+                recorded = True
             # Messages the principal asked to get in their brief ride along
             # as one "While you were away" block (people.held_messages).
             delivered_text, held_ids = (
@@ -2745,10 +2750,11 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
                 await _mark_held_sent(held_ids)
             else:
                 _unclaim_held(held_ids)
-            brief_state.record_delivery_outcome(
-                kind, reason=delivery.reason, channel=delivery.channel,
-                detail=None if ok else detail,
-            )
+            if not held_only:
+                brief_state.record_delivery_outcome(
+                    kind, reason=delivery.reason, channel=delivery.channel,
+                    detail=None if ok else detail,
+                )
             recorded = True
             if ok:
                 logger.info("scheduler: %s delivered (%s)", kind, detail)

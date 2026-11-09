@@ -380,7 +380,37 @@ def test_a_quiet_day_still_sends_messages_held_for_the_brief(
     assert sends == ["**While you were away**\n- Dana: hi", "marked [5]"]
     from openexecutive.briefing import brief_state
 
+    # Not a digest: the window stays, and no "digest delivered" outcome.
     assert brief_state.last_delivered("principal_brief_morning") is None
+    assert brief_state.last_delivery_outcome() is None
+
+
+@pytest.mark.parametrize("how", ["refused", "crash"])
+def test_a_quiet_day_held_message_that_fails_is_unclaimed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    from openexecutive.briefing import brief_state
+
+    unclaimed: list[list[int]] = []
+
+    async def _deliver(text: str, **_kw: object) -> runner.PrincipalDelivery:
+        if how == "crash":
+            raise RuntimeError("people store locked")
+        return runner.PrincipalDelivery(False, "email refused", "send_failed", "email")
+
+    async def _sent(ids: list[int]) -> None:
+        raise AssertionError("a failed send must not mark held messages sent")
+
+    monkeypatch.setattr(
+        runner, "_with_held_messages",
+        lambda kind, artifact: (f"{artifact}\n\n**While you were away**\n- Dana: hi", [5]),
+    )
+    monkeypatch.setattr(runner, "_mark_held_sent", _sent)
+    monkeypatch.setattr(runner, "_unclaim_held", lambda ids: unclaimed.append(list(ids)))
+    _run_brief(tmp_path, monkeypatch, workflow=_quiet_brief_workflow(), deliver=_deliver)
+    assert unclaimed == [[5]]
+    assert brief_state.last_delivered("principal_brief_morning") is None
+    assert brief_state.last_delivery_outcome() is None
 
 
 def test_a_send_that_crashes_is_recorded_as_failed(

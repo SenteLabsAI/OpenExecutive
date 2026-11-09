@@ -395,8 +395,9 @@ def _research_found(since: datetime) -> list[str]:
     except Exception:
         logger.exception("eod_digest: reading the research runs failed")
         return []
-    findings: list[dict[str, str]] = []
-    links: list[str] = []
+    # Each finding keeps its own run's write-up, so "Read it" opens the run
+    # the top finding came from, not merely the newest one.
+    findings: list[tuple[dict[str, str], str]] = []
     for run in runs:
         at = parse_aware(run.get("updated_at"))
         if at is None or at < since:
@@ -404,22 +405,21 @@ def _research_found(since: datetime) -> list[str]:
         found = parse_artifact_findings(str(run.get("artifact") or ""))
         if not found:
             continue
-        findings.extend(found)
         url = write_up_url(run_outcome.write_up_id(run) or "")
-        if url:
-            links.append(url)
+        findings.extend((f, url) for f in found)
     if not findings:
         return []
-    findings.sort(key=lambda f: _SEVERITY_ORDER.get(f.get("severity", "").lower(), 3))
+    findings.sort(key=lambda fu: _SEVERITY_ORDER.get(fu[0].get("severity", "").lower(), 3))
     from openexecutive.briefing.brief_state import quoted
 
     # Findings quote the web: no address or "link:" of their own.
     lines = [
         f"- {quoted(f['title'], 160)} — {quoted(f['summary'], 320)}"
-        for f in findings[:_FOUND_LIMIT]
+        for f, _ in findings[:_FOUND_LIMIT]
     ]
-    if links:
-        lines.append(f"- The full write-up — link: {links[0]}")
+    top_url = findings[0][1]
+    if top_url:
+        lines.append(f"- The full write-up — link: {top_url}")
     return lines
 
 
@@ -467,8 +467,9 @@ def _has_news(
 ) -> bool:
     """Whether the day had anything new for the digest to say: a chat, mail
     in, work done, a finding, a new or rewritten open item, or the reader's
-    own notes. Older items still open, and follow-ups merely scheduled, are
-    not news on their own."""
+    own notes. Older items still open, and follow-ups scheduled for later
+    (COMING UP), are not news on their own; a follow-up that went out today
+    is work done, so it is."""
     if conversation or live_lines or activity or handled or owner_notes or found:
         return True
     from openexecutive.briefing.brief_state import rewritten_since, split_proposals

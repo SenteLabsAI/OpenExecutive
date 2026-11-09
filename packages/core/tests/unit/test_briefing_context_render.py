@@ -323,6 +323,23 @@ def test_research_found_lists_the_window_s_findings_most_important_first(monkeyp
     assert not any("Old news" in line for line in lines)
 
 
+def test_research_found_links_the_write_up_of_the_top_finding(monkeypatch) -> None:
+    from openexecutive.alerts import card_refs
+    from openexecutive.workflows import end_of_day_digest
+    from openexecutive.workflows import persistence as wf_persistence
+
+    monkeypatch.setattr(card_refs, "_base", lambda: "https://app.example.com")
+    monkeypatch.delenv("OE_TENANT_ID", raising=False)
+    runs = [
+        _research_run("newest", 1, [("low", "Port fees")]),
+        _research_run("older", 5, [("high", "Supplier closing")]),
+    ]
+    monkeypatch.setattr(wf_persistence, "list_runs", lambda *a, **k: runs)
+    lines = end_of_day_digest._research_found(datetime.now(UTC) - timedelta(hours=24))
+    assert lines[0].startswith("- Supplier closing — ")
+    assert lines[-1] == "- The full write-up — link: https://app.example.com/artifacts/run%3Aolder"
+
+
 def test_research_found_is_empty_when_the_runs_cant_be_read(monkeypatch) -> None:
     from openexecutive.workflows import end_of_day_digest
     from openexecutive.workflows import persistence as wf_persistence
