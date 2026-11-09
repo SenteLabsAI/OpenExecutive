@@ -113,6 +113,34 @@ def test_a_table_from_before_keeps_the_switch(tmp_path: Path) -> None:
     assert not handle_it.get(4, db_path=db).enabled
 
 
+def test_someone_who_never_turned_it_on_starts_in_training(tmp_path: Path) -> None:
+    """Handle it for me was off until the person turned it on. Now that
+    Approvals decides, anyone whose switch was off is put in training, so
+    nothing goes out as them until they allow it; turning training off
+    afterwards sticks."""
+    from openexecutive.delegation import training
+    from openexecutive.delegation.schema import ensure_schema
+
+    db = tmp_path / "old.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE delegation_handle_it (person_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0, "
+        "levels TEXT NOT NULL DEFAULT '{}', updated_at TEXT, updated_by TEXT)"
+    )
+    conn.execute("INSERT INTO delegation_handle_it VALUES (1, 1, '{}', '', 't')")  # had turned it on
+    conn.execute("INSERT INTO delegation_handle_it VALUES (4, 0, '{}', '', 't')")  # never did
+    conn.commit()
+    ensure_schema(conn)
+    conn.close()
+    assert not training.get(1, db_path=db).training
+    assert training.get(4, db_path=db).training
+    training.set_(4, {"training": False}, updated_by="t", db_path=db)
+    conn = sqlite3.connect(str(db))
+    ensure_schema(conn)
+    conn.close()
+    assert not training.get(4, db_path=db).training
+
+
 # ── sending on its own ────────────────────────────────────────────────────────
 
 

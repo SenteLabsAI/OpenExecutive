@@ -304,7 +304,7 @@ def _move_training_off_the_dial(conn: sqlite3.Connection) -> None:
     if not rows:
         return
     for (person_id,) in rows:
-        for setting in ("replies", "follow_ups"):
+        for setting in ("replies", "follow_ups", "training"):
             conn.execute(
                 f"INSERT INTO {TRAINING_TABLE} (person_id, setting, enabled, updated_by) "  # noqa: S608
                 "VALUES (?, ?, 1, 'migration') ON CONFLICT(person_id, setting) DO UPDATE SET enabled = 1",
@@ -312,6 +312,27 @@ def _move_training_off_the_dial(conn: sqlite3.Connection) -> None:
             )
         conn.execute(
             f"UPDATE {HANDLE_IT_TABLE} SET mode = 'balanced' WHERE person_id = ?",  # noqa: S608
+            (person_id,),
+        )
+    conn.commit()
+
+
+def _keep_the_old_opt_in(conn: sqlite3.Connection) -> None:
+    """Handle it for me was a switch of its own (``enabled`` on
+    ``delegation_handle_it``, off until the person turned it on); now
+    Approvals alone decides what goes from the inbox replies. Anyone whose
+    switch was off never said yes to sends on their own, so In training is
+    turned on for them: everything still waits on a card until they allow
+    it. Turning it off afterwards sticks (the row is only ever added)."""
+    rows = conn.execute(
+        f"SELECT person_id FROM {HANDLE_IT_TABLE} WHERE enabled = 0"  # noqa: S608 — constant table name
+    ).fetchall()
+    if not rows:
+        return
+    for (person_id,) in rows:
+        conn.execute(
+            f"INSERT INTO {TRAINING_TABLE} (person_id, setting, enabled, updated_by) "  # noqa: S608
+            "VALUES (?, 'training', 1, 'migration') ON CONFLICT(person_id, setting) DO NOTHING",
             (person_id,),
         )
     conn.commit()
@@ -360,3 +381,4 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _add_draft_session_id(conn)
     _add_draft_replaced_by(conn)
     _move_training_off_the_dial(conn)
+    _keep_the_old_opt_in(conn)
