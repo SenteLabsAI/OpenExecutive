@@ -23,9 +23,13 @@ function fromAddress() {
   set(tabFromHash(window.location.hash));
 }
 
+// Only a plain left click stays on this page. A click that opens a new tab
+// or window leaves this one as it is. (Not defaultPrevented: the app's own
+// links prevent the browser's default to navigate themselves.)
 function onClick(event: MouseEvent) {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
   const link = (event.target as Element | null)?.closest?.("a[href]");
-  if (!link) return;
+  if (!link || ((link as HTMLAnchorElement).target && (link as HTMLAnchorElement).target !== "_self")) return;
   const url = new URL((link as HTMLAnchorElement).href, window.location.href);
   if (url.origin === window.location.origin && url.pathname === "/delegate" && url.hash) {
     set(tabFromHash(url.hash));
