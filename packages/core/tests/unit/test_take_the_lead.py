@@ -1363,3 +1363,9 @@ def test_the_route_adds_a_goes_rule_for_a_provable_owner(
     monkeypatch.delenv("OE_LOCAL_LOGIN", raising=False)
     assert client.post("/take-the-lead/rules", json={"kind": "amount", "value": "9", "effect": "go"}).status_code == 409
     assert client.post("/take-the-lead/rules", json={"kind": "amount", "value": "9"}).status_code == 200
+
+
+def test_a_goes_rule_never_lets_a_delete_go(owner: Any, balanced: None) -> None:
+    _go("words", "standup")
+    hit, _ = ttl._hit("cancel_calendar_event", {"event_id": "e1", "title": "standup"}, mcp=False)
+    assert hit is not None and hit.kind == "delete_share"

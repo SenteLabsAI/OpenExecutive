@@ -18,7 +18,8 @@ Everything else, in order:
   same person or thing, ``allow``), and from then on it runs on its own,
   except on Careful;
 - Hands-off runs everything else;
-- a Goes rule (``rule_goes``) lets it go where Balanced would hold it;
+- a Goes rule (``rule_goes``) lets it go where Balanced would hold it,
+  except a delete or share;
 - Balanced holds the six ``KINDS`` (money, contracts, people decisions,
   deleting or sharing, someone new, big sends; ``check``) and runs the
   rest.
@@ -1704,10 +1705,13 @@ def _hit(name: str, tool_input: dict[str, Any], *, mcp: bool) -> tuple[Hit | Non
             return None, found
         if _level_runs():
             return None, None
-        # A Goes rule lets it go where Balanced would hold it.
+        # A Goes rule lets it go where Balanced would hold it, except a
+        # delete or share, which still waits.
         goes = rule_goes(rules, text, recipients)
         if goes is not None:
-            return None, goes
+            only_deletes = Lead(scope=SCOPE_EXECUTIVE, ask_first={k: k == DELETE_SHARE for k in KINDS})
+            held = check(name, tool_input, lead=only_deletes, rules=[], mcp=mcp)
+            return (held, None) if held is not None else (None, goes)
         # Balanced: the six kinds wait, everything else goes.
         asks = Lead(scope=SCOPE_EXECUTIVE, ask_first=dict.fromkeys(KINDS, True))
         hit = check(name, tool_input, lead=asks, rules=[], mcp=mcp)

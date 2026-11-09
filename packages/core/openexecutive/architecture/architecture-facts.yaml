@@ -12099,7 +12099,8 @@ delegation:
     it lets something go: every recipient is that address, that People
     name's addresses, or at that domain (a name with no recipients matches
     by name); words appear; an amount rule needs at least one amount and
-    every amount under the limit. Goes only lifts the level's topic holds:
+    every amount under the limit. A delete or share (DELETE_SHARE) still
+    waits under a Goes rule. Goes only lifts the level's topic holds:
     levels.decide's always-card reasons (STRANGER, outside content giving
     orders, NOT_OWNER, SHARED) are decided before and never see it.
     In training stays the last check: nothing goes out on its own while it
