@@ -18,6 +18,20 @@ export const APPROVALS_HREF = `/delegate#${APPROVALS_ANCHOR}`;
 
 export const REACH_ORDER: ReachStep[] = ["off", "when_asked", "inbox"];
 
+// Short names for the As you tab's badge, the same as the picker's choices.
+export const REACH_LABEL: Record<ReachStep, string> = { off: "Off", when_asked: "When you ask", inbox: "Your inbox" };
+
+// The page's three tabs, named by their anchors so the old links still land
+// on the right one.
+export type DelegateTab = typeof AS_YOU_ANCHOR | typeof AS_ME_ANCHOR | typeof APPROVALS_ANCHOR;
+export const DELEGATE_TABS: DelegateTab[] = [AS_YOU_ANCHOR, AS_ME_ANCHOR, APPROVALS_ANCHOR];
+
+// Which tab a link's #hash opens. Anything else opens As you.
+export function tabFromHash(hash: string): DelegateTab {
+  const id = hash.replace(/^#/, "");
+  return (DELEGATE_TABS as string[]).includes(id) ? (id as DelegateTab) : AS_YOU_ANCHOR;
+}
+
 // What goes on its own from your inbox at each Approvals level
 // (delegation/handle_it.py, invites.py, action_cards.py), once In training
 // lets it.
@@ -59,4 +73,22 @@ export function reachLine(step: ReachStep, inTraining: boolean, level: OutsideCo
 
 export function sentTodayLine(n: number): string {
   return n === 1 ? "Sent 1 reply on its own today." : `Sent ${n} replies on its own today.`;
+}
+
+// The tab a click on a link opens on this page, or null when it leaves the
+// page alone: a click that opens a new tab or window (a modifier key, a
+// button other than the left one, a target other than this one), or a link
+// to somewhere other than Delegate. A plain /delegate link opens As you.
+export function tabForClick(click: {
+  button: number;
+  modified: boolean;
+  target: string;
+  href: string;
+  origin: string;
+}): DelegateTab | null {
+  if (click.button !== 0 || click.modified) return null;
+  if (click.target && click.target !== "_self") return null;
+  const url = new URL(click.href, click.origin);
+  if (url.origin !== click.origin || url.pathname !== "/delegate") return null;
+  return tabFromHash(url.hash);
 }

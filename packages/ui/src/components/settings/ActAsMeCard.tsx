@@ -39,10 +39,11 @@ import { PageSpinner } from "@/components/ui/Spinner";
 // /delegation/voice. Not offered to anyone who can't have it (the owner can,
 // and team members once the owner lets them: PUT /delegation/team).
 //
-// The block: the mailbox and How far it goes as you (with the inbox
-// watcher's status under Your inbox), then Read my calendar and the page's
-// `children` (In training, what it's learned). How I write and Let team
-// members use it are exported for the page's Advanced fold.
+// The As you tab, in two columns: the mailbox (with How I write under it
+// once it's connected) and the page's `children` (In training, what it's
+// learned); then How far it goes as you (with the inbox watcher's status
+// under Your inbox), Read my calendar and the page's `side` (Let team
+// members use it).
 
 const LENGTHS = ["short", "medium", "long"] as const;
 const FORMALITIES = ["casual", "neutral", "formal"] as const;
@@ -82,10 +83,14 @@ export default function ActAsMeCard({
   load,
   level,
   children,
+  side,
 }: {
   load: DelegationLoad;
   level: OutsideContentMode | null;
+  /** Under Your mailbox, in the first column. */
   children?: ReactNode;
+  /** Under How far it goes as you, in the second column. */
+  side?: ReactNode;
 }) {
   const { settings, state, setSettings } = load;
   const [busy, setBusy] = useState(false);
@@ -156,84 +161,92 @@ export default function ActAsMeCard({
 
   const pre =
     "mt-2 whitespace-pre-wrap break-all rounded-xl border border-line bg-surface px-3 py-2 text-xs text-fg font-mono";
+  // Two columns where the page is wide enough (the page sets the container):
+  // your mailbox (with How I write once it's connected) and what's passed
+  // in, then how far it goes, your calendar and `side`.
   return (
-    <>
-      <SettingsCard
-        title={connected ? `Your ${mailbox}` : "Your mailbox"}
-        description={connected ? `Connected to ${settings.gmail.email}.` : settings.gmail.message}
-        action={
-          connected ? (
-            <span className="inline-flex items-center gap-2 text-sm font-medium text-fg">
-              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" aria-hidden="true" />
-              Connected
-            </span>
-          ) : undefined
-        }
-      >
-        {!connected && (
-          <div className="space-y-3">
-            {settings.gmail.status === "not_configured" && (
-              <details className="group">
-                <summary className="cursor-pointer text-sm font-medium text-accent hover:underline">
-                  How to connect it
-                </summary>
-                <p className="mt-2 text-sm text-fg-muted leading-relaxed">
-                  For Gmail, on a computer with a browser, with the Executive&apos;s Google OAuth
-                  client exported, run this and sign in as yourself, then put the file it writes
-                  where the API reads it (see the Act as me section of .env.example):
-                </p>
-                <pre className={pre}>{settings.gmail.connect_command}</pre>
-                {settings.gmail.outlook_connect_command && (
-                  <>
-                    <p className="mt-3 text-sm text-fg-muted leading-relaxed">
-                      For Outlook, with the Executive&apos;s Microsoft 365 app exported, run this
-                      instead and sign in as yourself with the code it prints:
-                    </p>
-                    <pre className={pre}>{settings.gmail.outlook_connect_command}</pre>
-                  </>
-                )}
-              </details>
-            )}
-            <Button variant="primary" onClick={() => void recheck()} disabled={busy}>
-              {busy ? "Checking…" : "Check again"}
-            </Button>
-          </div>
-        )}
-      </SettingsCard>
-
-      {connected || on ? (
-        <ReachCard
-          settings={settings}
-          onSettings={setSettings}
-          level={level}
-          inbox={
-            settings.inbox?.enabled && (
-              <InboxSection
-                inbox={stoppedWaiting ? { ...settings.inbox, checking: false } : settings.inbox}
-                mailbox={mailbox}
-                onSettings={setSettings}
-                onInbox={(inbox) => {
-                  setStoppedWaiting(false);
-                  polls.current = 0;
-                  setSettings({ ...settings, inbox });
-                }}
-              />
-            )
+    <div className="grid gap-4 @4xl:grid-cols-2 @4xl:items-start">
+      <div className="space-y-4">
+        <SettingsCard
+          title={connected ? `Your ${mailbox}` : "Your mailbox"}
+          description={connected ? `Connected to ${settings.gmail.email}.` : settings.gmail.message}
+          action={
+            connected ? (
+              <span className="inline-flex items-center gap-2 text-sm font-medium text-fg">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" aria-hidden="true" />
+                Connected
+              </span>
+            ) : undefined
           }
-        />
-      ) : null}
+        >
+          {!connected && (
+            <div className="space-y-3">
+              {settings.gmail.status === "not_configured" && (
+                <details className="group">
+                  <summary className="cursor-pointer text-sm font-medium text-accent hover:underline">
+                    How to connect it
+                  </summary>
+                  <p className="mt-2 text-sm text-fg-muted leading-relaxed">
+                    For Gmail, on a computer with a browser, with the Executive&apos;s Google OAuth
+                    client exported, run this and sign in as yourself, then put the file it writes
+                    where the API reads it (see the Act as me section of .env.example):
+                  </p>
+                  <pre className={pre}>{settings.gmail.connect_command}</pre>
+                  {settings.gmail.outlook_connect_command && (
+                    <>
+                      <p className="mt-3 text-sm text-fg-muted leading-relaxed">
+                        For Outlook, with the Executive&apos;s Microsoft 365 app exported, run this
+                        instead and sign in as yourself with the code it prints:
+                      </p>
+                      <pre className={pre}>{settings.gmail.outlook_connect_command}</pre>
+                    </>
+                  )}
+                </details>
+              )}
+              <Button variant="primary" onClick={() => void recheck()} disabled={busy}>
+                {busy ? "Checking…" : "Check again"}
+              </Button>
+            </div>
+          )}
+          {connected && <VoiceSection connected outlook={outlook} inCard />}
+        </SettingsCard>
+        {children}
+      </div>
 
-      {settings.calendar && (
-        <CalendarSection
-          calendar={settings.calendar}
-          actAsMeOn={on}
-          mailboxConnected={connected}
-          onSettings={setSettings}
-        />
-      )}
+      <div className="space-y-4">
+        {connected || on ? (
+          <ReachCard
+            settings={settings}
+            onSettings={setSettings}
+            level={level}
+            inbox={
+              settings.inbox?.enabled && (
+                <InboxSection
+                  inbox={stoppedWaiting ? { ...settings.inbox, checking: false } : settings.inbox}
+                  mailbox={mailbox}
+                  onSettings={setSettings}
+                  onInbox={(inbox) => {
+                    setStoppedWaiting(false);
+                    polls.current = 0;
+                    setSettings({ ...settings, inbox });
+                  }}
+                />
+              )
+            }
+          />
+        ) : null}
 
-      {children}
-    </>
+        {settings.calendar && (
+          <CalendarSection
+            calendar={settings.calendar}
+            actAsMeOn={on}
+            mailboxConnected={connected}
+            onSettings={setSettings}
+          />
+        )}
+        {side}
+      </div>
+    </div>
   );
 }
 
@@ -455,7 +468,17 @@ function CalendarSection({
 // that into the style, shown with what's new marked and a sample reply,
 // saved only with Save), or learn it from your sent mail. The fields sit
 // behind "Fine-tune details", and stay open while an edit is unsaved.
-export function VoiceSection({ connected, outlook = false }: { connected: boolean; outlook?: boolean }) {
+export function VoiceSection({
+  connected,
+  outlook = false,
+  inCard = false,
+}: {
+  connected: boolean;
+  outlook?: boolean;
+  /** Inside the Your Gmail card, as a section under a line, not a card of its own. */
+  inCard?: boolean;
+}) {
+  const Card = inCard ? CardSection : SettingsCard;
   const [mode, setMode] = useState<"view" | "describe" | "review">("view");
   const [description, setDescription] = useState("");
   const [proposed, setProposed] = useState<DescribedVoice | null>(null);
@@ -495,9 +518,9 @@ export function VoiceSection({ connected, outlook = false }: { connected: boolea
 
   if (loadFailed) {
     return (
-      <SettingsCard title="How I write">
+      <Card title="How I write">
         <p className="text-sm text-fg-muted">Couldn&apos;t load how you write.</p>
-      </SettingsCard>
+      </Card>
     );
   }
   if (!profile) return null;
@@ -610,7 +633,7 @@ export function VoiceSection({ connected, outlook = false }: { connected: boolea
 
   if (mode === "describe") {
     return (
-      <SettingsCard
+      <Card
         title="Describe how you write"
         description={
           hasStyle
@@ -651,13 +674,13 @@ export function VoiceSection({ connected, outlook = false }: { connected: boolea
         </div>
         <p className="mt-2 text-[13px] text-fg-subtle">Nothing changes until you save.</p>
         {feedback}
-      </SettingsCard>
+      </Card>
     );
   }
 
   if (mode === "review" && proposed) {
     return (
-      <SettingsCard title="Here's your new style" description="Check it, then save. New lines are marked.">
+      <Card title="Here's your new style" description="Check it, then save. New lines are marked.">
         <ul className="space-y-2">
           {markNew(profile, proposed).map(({ text, isNew }) => (
             <StyleLine key={text} text={text} isNew={isNew} />
@@ -680,12 +703,12 @@ export function VoiceSection({ connected, outlook = false }: { connected: boolea
           </Button>
         </div>
         {feedback}
-      </SettingsCard>
+      </Card>
     );
   }
 
   return (
-    <SettingsCard
+    <Card
       title="How I write"
       description={
         hasStyle
@@ -928,7 +951,34 @@ export function VoiceSection({ connected, outlook = false }: { connected: boolea
         </div>
       )}
       {feedback}
-    </SettingsCard>
+    </Card>
+  );
+}
+
+// A section inside another card: the same title, line and body as
+// SettingsCard, under a divider.
+function CardSection({
+  title,
+  description,
+  action,
+  children,
+}: {
+  title?: ReactNode;
+  description?: ReactNode;
+  action?: ReactNode;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="border-t border-line pt-5">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          {title && <h3 className="text-[15px] font-semibold text-fg">{title}</h3>}
+          {description && <p className="mt-1 text-sm text-fg-muted leading-relaxed">{description}</p>}
+        </div>
+        {action && <div className="flex-shrink-0">{action}</div>}
+      </div>
+      {children && <div className="mt-4">{children}</div>}
+    </div>
   );
 }
 

@@ -1,29 +1,46 @@
 "use client";
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 
 import { WhatItDoesAside, WhatItDoesSheet, useIsWide, useWhatItDoesOpen } from "@/components/delegate/WhatItDoesPanel";
-import ActAsMeCard, { TeamSection, VoiceSection } from "@/components/settings/ActAsMeCard";
-import AdvancedFold from "@/components/settings/AdvancedFold";
+import { useDelegateTab } from "@/components/delegate/useDelegateTab";
+import { useExecutiveStatus } from "@/components/executive/ExecutiveStatusContext";
+import ActAsMeCard, { TeamSection } from "@/components/settings/ActAsMeCard";
 import AsMeCard, { useTakeTheLead } from "@/components/settings/AsMeCard";
 import BeforeAnythingCard from "@/components/settings/BeforeAnythingCard";
-import { AsYouTrainingCard, useJumpTo } from "@/components/settings/ReachCard";
+import { AsYouTrainingCard } from "@/components/settings/ReachCard";
 import ReplyDisclosureCard from "@/components/settings/ReplyDisclosureCard";
 import SentCard from "@/components/settings/SentCard";
 import SettingsCard from "@/components/settings/SettingsCard";
 import { LearnedCard } from "@/components/settings/TrainingCard";
 import { useDelegation } from "@/components/settings/useDelegation";
 import { getOutsideContent, type OutsideContentSetting } from "@/lib/api";
-import { onApprovalsChanged } from "@/lib/approvalsLevel";
-import { APPROVALS_ANCHOR, AS_ME_ANCHOR, AS_YOU_ANCHOR } from "@/lib/reach";
+import { approvalsTitle, onApprovalsChanged } from "@/lib/approvalsLevel";
+import {
+  APPROVALS_ANCHOR,
+  AS_ME_ANCHOR,
+  AS_YOU_ANCHOR,
+  DELEGATE_TABS,
+  REACH_LABEL,
+  reachOf,
+  type DelegateTab,
+} from "@/lib/reach";
 import { PageSpinner } from "@/components/ui/Spinner";
 
-// Delegate: one page, three blocks. As you (Act as me): what it writes and
-// sends in your name, from your own mailbox. As me (Take the lead): what it
-// does in its own name without being asked. Before anything goes out: the
-// one Approvals setting for both, and your rules. In training, on either
-// side, holds everything for you first. What it does for you sits beside the
-// page (to the right on a wide screen, a sheet on a narrow one).
+// Delegate: one page, three tabs. As you (Act as me): what it writes and
+// sends in your name, from your own mailbox, and how you write. As me (Take
+// the lead): what it does in its own name without being asked. Before
+// anything goes out: the one Approvals setting for both, and your rules. In
+// training, on either side, holds everything for you first. Each tab shows
+// where it stands (Your inbox, On, Balanced), so all three read at a glance.
+// What it does for you sits beside the page (to the right on a wide screen,
+// a sheet on a narrow one).
+
+const TAB_NAME: Record<DelegateTab, string> = {
+  [AS_YOU_ANCHOR]: "As you",
+  [AS_ME_ANCHOR]: "As me",
+  [APPROVALS_ANCHOR]: "Before anything goes out",
+};
 
 export default function DelegatePage() {
   const delegation = useDelegation();
@@ -33,9 +50,8 @@ export default function DelegatePage() {
   const wide = useIsWide();
   const [sheet, setSheet] = useState(false);
   const closeSheet = useCallback(() => setSheet(false), []);
-  useJumpTo(AS_YOU_ANCHOR);
-  useJumpTo(AS_ME_ANCHOR);
-  useJumpTo(APPROVALS_ANCHOR);
+  const [tab, pickTab] = useDelegateTab();
+  const { status, unknown } = useExecutiveStatus();
 
   useEffect(() => {
     const controller = new AbortController();
@@ -77,87 +93,82 @@ export default function DelegatePage() {
             see your Executive did it. Both learn from you. One Approvals setting decides what waits for your yes.
           </p>
 
-          <div className="@container mt-8">
-            <div className="grid gap-x-8 gap-y-10 @4xl:grid-cols-2 @4xl:items-start">
-              <Block
-                id={AS_YOU_ANCHOR}
-                title="As you"
-                tag="Act as me"
-                lede="It writes email in your voice from your own mailbox. How far it goes is your call."
-              >
-                {delegation.state === "loading" && <PageSpinner />}
-                {delegation.state === "error" && (
-                  <SettingsCard>
-                    <p className="text-[15px] text-fg-muted">Couldn&apos;t load this setting.</p>
-                  </SettingsCard>
-                )}
-                {delegation.state === "hidden" && (
-                  <SettingsCard>
-                    <p className="text-[15px] text-fg-muted leading-relaxed">
-                      Act as me isn&apos;t available to you here. The owner of this Open Executive can turn it on for team
-                      members.
-                    </p>
-                  </SettingsCard>
-                )}
-                {settings && (
-                  <ActAsMeCard load={delegation} level={level}>
-                    {settings.enabled && (
-                      <AsYouTrainingCard settings={settings} onSettings={delegation.setSettings} />
-                    )}
-                    {settings.training && <LearnedCard training={settings.training} onSettings={delegation.setSettings} />}
-                    {settings.handle_it?.enabled && <SentCard handleIt={settings.handle_it} />}
-                  </ActAsMeCard>
-                )}
-              </Block>
+          <DelegateTabs
+            current={tab}
+            onPick={pickTab}
+            badges={{
+              [AS_YOU_ANCHOR]: settings ? { text: REACH_LABEL[reachOf(settings)] } : null,
+              // No badge while the last status read failed, rather than a stale one.
+              [AS_ME_ANCHOR]:
+                !status || unknown ? null : status.paused ? { text: "Paused" } : { text: "On", dot: true },
+              [APPROVALS_ANCHOR]: level ? { text: approvalsTitle(level) } : null,
+            }}
+          />
 
-              <Block
-                id={AS_ME_ANCHOR}
-                title="As me"
-                tag="Take the lead"
-                lede="In its own name, without being asked. Every day before your brief, and when new mail or a message comes in, it follows up with people, books meetings, starts workflows, assigns tasks and makes changes in your apps. People can see it's the Executive."
-              >
+          <div className="@container">
+            <Panel
+              id={AS_YOU_ANCHOR}
+              hidden={tab !== AS_YOU_ANCHOR}
+              lede="It writes email in your voice from your own mailbox. How far it goes is your call."
+            >
+              {delegation.state === "loading" && <PageSpinner />}
+              {delegation.state === "error" && (
+                <SettingsCard>
+                  <p className="text-[15px] text-fg-muted">Couldn&apos;t load this setting.</p>
+                </SettingsCard>
+              )}
+              {delegation.state === "hidden" && (
+                <SettingsCard>
+                  <p className="text-[15px] text-fg-muted leading-relaxed">
+                    Act as me isn&apos;t available to you here. The owner of this Open Executive can turn it on for team
+                    members.
+                  </p>
+                </SettingsCard>
+              )}
+              {settings && (
+                <ActAsMeCard
+                  load={delegation}
+                  level={level}
+                  side={
+                    <>
+                      {settings.team && <TeamSection team={settings.team} onSettings={delegation.setSettings} />}
+                      {settings.disclosure?.enabled && (
+                        <ReplyDisclosureCard
+                          disclosure={settings.disclosure}
+                          onSettings={delegation.setSettings}
+                          title="Say it was written with AI"
+                        />
+                      )}
+                    </>
+                  }
+                >
+                  {settings.enabled && (
+                    <AsYouTrainingCard settings={settings} onSettings={delegation.setSettings} />
+                  )}
+                  {settings.training && <LearnedCard training={settings.training} onSettings={delegation.setSettings} />}
+                  {settings.handle_it?.enabled && <SentCard handleIt={settings.handle_it} />}
+                </ActAsMeCard>
+              )}
+            </Panel>
+
+            <Panel
+              id={AS_ME_ANCHOR}
+              hidden={tab !== AS_ME_ANCHOR}
+              lede="In its own name, without being asked. Every day before your brief, and when new mail or a message comes in, it follows up with people, books meetings, starts workflows, assigns tasks and makes changes in your apps. People can see it's the Executive."
+            >
+              <div className="grid gap-4 @4xl:grid-cols-2 @4xl:items-start">
                 <AsMeCard lead={lead.lead} state={lead.state} setLead={lead.setLead} level={level} />
-              </Block>
-            </div>
+              </div>
+            </Panel>
+
+            <Panel
+              id={APPROVALS_ANCHOR}
+              hidden={tab !== APPROVALS_ANCHOR}
+              lede="One setting for both As you and As me. It decides what goes on its own and what comes to you as an Approve card on Home, the same in the app, email and every chat app."
+            >
+              <BeforeAnythingCard approvals={approvals} lead={lead.lead} setLead={lead.setLead} />
+            </Panel>
           </div>
-
-          <Block
-            id={APPROVALS_ANCHOR}
-            title="Before anything goes out"
-            tag="Approvals"
-            lede="One setting for both. It decides what goes on its own and what comes to you as an Approve card on Home, the same in the app, email and every chat app."
-            wide
-          >
-            <BeforeAnythingCard approvals={approvals} lead={lead.lead} setLead={lead.setLead} />
-          </Block>
-
-          {settings && (
-            <div className="mt-8">
-              <AdvancedFold
-                id="delegate-advanced"
-                summary={[
-                  "How I write",
-                  settings.disclosure?.enabled ? "Say it was written with AI" : null,
-                  settings.team ? "Let team members use it" : null,
-                ]
-                  .filter(Boolean)
-                  .join(" · ")}
-              >
-                <VoiceSection
-                  connected={settings.gmail?.status === "connected"}
-                  outlook={settings.gmail?.provider === "microsoft"}
-                />
-                {settings.disclosure?.enabled && (
-                  <ReplyDisclosureCard
-                    disclosure={settings.disclosure}
-                    onSettings={delegation.setSettings}
-                    title="Say it was written with AI"
-                  />
-                )}
-                {settings.team && <TeamSection team={settings.team} onSettings={delegation.setSettings} />}
-              </AdvancedFold>
-            </div>
-          )}
         </div>
       </main>
       {wide && open && <WhatItDoesAside onClose={() => setOpen(false)} />}
@@ -166,32 +177,100 @@ export default function DelegatePage() {
   );
 }
 
-function Block({
+type Badge = { text: string; dot?: boolean } | null;
+
+// The tab row: each tab's name and where it stands. Arrow keys, Home and End
+// move between tabs.
+function DelegateTabs({
+  current,
+  onPick,
+  badges,
+}: {
+  current: DelegateTab;
+  onPick: (tab: DelegateTab) => void;
+  badges: Record<DelegateTab, Badge>;
+}) {
+  const refs = useRef<Partial<Record<DelegateTab, HTMLButtonElement | null>>>({});
+  const move = (event: KeyboardEvent<HTMLDivElement>) => {
+    const at = DELEGATE_TABS.indexOf(current);
+    const to =
+      event.key === "ArrowRight"
+        ? (at + 1) % DELEGATE_TABS.length
+        : event.key === "ArrowLeft"
+          ? (at - 1 + DELEGATE_TABS.length) % DELEGATE_TABS.length
+          : event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? DELEGATE_TABS.length - 1
+              : -1;
+    if (to < 0) return;
+    event.preventDefault();
+    const next = DELEGATE_TABS[to];
+    onPick(next);
+    refs.current[next]?.focus();
+  };
+  return (
+    <div
+      role="tablist"
+      aria-label="Delegate"
+      onKeyDown={move}
+      className="mt-6 -mx-4 flex gap-1 overflow-x-auto border-b border-line px-4 sm:mx-0 sm:px-0"
+    >
+      {DELEGATE_TABS.map((id) => {
+        const on = id === current;
+        const badge = badges[id];
+        return (
+          <button
+            key={id}
+            ref={(el) => {
+              refs.current[id] = el;
+            }}
+            type="button"
+            role="tab"
+            id={`${id}-tab`}
+            aria-selected={on}
+            aria-controls={id}
+            tabIndex={on ? 0 : -1}
+            onClick={() => onPick(id)}
+            className={`-mb-px flex flex-none items-center gap-2 border-b-2 px-3 sm:px-4 pb-3 pt-2 text-[15px] ${
+              on ? "border-accent font-semibold text-fg" : "border-transparent text-fg-muted hover:text-fg"
+            }`}
+          >
+            {TAB_NAME[id]}
+            {badge && (
+              <span
+                className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ${
+                  on ? "bg-accent/10 text-accent" : "bg-surface-overlay text-fg-subtle"
+                }`}
+              >
+                {badge.dot && <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden="true" />}
+                {badge.text}
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// All three stay mounted, so a half-written edit on one tab is still there
+// when you come back to it.
+function Panel({
   id,
-  title,
-  tag,
+  hidden,
   lede,
-  wide = false,
   children,
 }: {
-  id: string;
-  title: string;
-  tag: string;
+  id: DelegateTab;
+  hidden: boolean;
   lede: string;
-  /** Under the two side-by-side blocks, across the page. */
-  wide?: boolean;
   children: ReactNode;
 }) {
   return (
-    <section id={id} aria-labelledby={`${id}-title`} className={`scroll-mt-24 ${wide ? "mt-10 border-t border-line pt-8" : ""}`}>
-      <div className="flex items-baseline gap-3">
-        <h2 id={`${id}-title`} className="text-xl sm:text-2xl font-semibold tracking-tight text-fg">
-          {title}
-        </h2>
-        <span className="text-xs text-fg-subtle">{tag}</span>
-      </div>
-      <p className="mt-2 text-[15px] text-fg-muted leading-relaxed">{lede}</p>
-      <div className="mt-4 space-y-4">{children}</div>
+    <section id={id} role="tabpanel" aria-labelledby={`${id}-tab`} hidden={hidden} className="mt-6">
+      <p className="max-w-3xl text-[15px] text-fg-muted leading-relaxed">{lede}</p>
+      <div className="mt-5 space-y-4">{children}</div>
     </section>
   );
 }

@@ -83,8 +83,8 @@ export default function AsMeCard({
   return (
     <>
       <SettingsCard
-        title="Leading or paused"
-        description="Leading, it acts on what it finds. Paused, it only answers when asked, and briefs and nudges stop too."
+        title="On or paused"
+        description="On, it acts on what it finds. Paused, it only answers when asked. Briefs and nudges stop too."
       >
         <ExecutiveRunSwitch />
         <p className="mt-4 border-t border-line pt-4 text-[15px] text-fg">
