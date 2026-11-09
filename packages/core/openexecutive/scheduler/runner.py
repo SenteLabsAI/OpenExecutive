@@ -2763,7 +2763,9 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
                 )
                 # Only a delivered brief advances the "since last brief"
                 # window and the unchanged-detection fingerprint.
-                if fingerprint:
+                # Held messages alone on a quiet day leave the window
+                # where it was, like a quiet skip.
+                if fingerprint and artifact:
                     brief_state.record_delivered(kind, fingerprint, artifact)
             else:
                 logger.warning("scheduler: %s NOT delivered — %s", kind, detail)

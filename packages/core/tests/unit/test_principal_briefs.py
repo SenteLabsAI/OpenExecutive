@@ -378,6 +378,9 @@ def test_a_quiet_day_still_sends_messages_held_for_the_brief(
     monkeypatch.setattr(runner, "_mark_held_sent", _sent)
     _run_brief(tmp_path, monkeypatch, workflow=_quiet_brief_workflow(), deliver=_deliver)
     assert sends == ["**While you were away**\n- Dana: hi", "marked [5]"]
+    from openexecutive.briefing import brief_state
+
+    assert brief_state.last_delivered("principal_brief_morning") is None
 
 
 def test_a_send_that_crashes_is_recorded_as_failed(
