@@ -306,6 +306,35 @@ def test_files_wait_for_the_reply_and_go_back_if_it_isnt_changed(
     assert card_work.files_for(card.id) == [SHEET]
 
 
+def test_what_the_work_made_for_someone_not_in_people_waits(
+    db: Path, owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.delegation import handle_it
+    from openexecutive.memory.decision_ledger import update_open_payload
+
+    mailbox, card = _card(owner)
+    _apply(card, owner, mailbox, body="Hi Dana,\n\nAttached.", files=[SHEET])
+    sent: list[int] = []
+    held: list[str | None] = []
+
+    async def fake_send(person: Any, client: Any, decision_id: int, result: Any, *, now: Any) -> None:
+        sent.append(decision_id)
+
+    monkeypatch.setattr(inbox, "_send_on_its_own", fake_send)
+    monkeypatch.setattr(inbox, "_hand_back", lambda c, reason: held.append(reason))
+    monkeypatch.setattr(ledger, "get_decision_instance", _with_gate(ledger.get_decision_instance))
+    monkeypatch.setattr(handle_it, "content_hold", lambda *a, **k: None)
+    fresh = _fresh(card)
+    for relation, expected in (("stranger", ["work_stranger"]), ("contact", ["work_stranger"])):
+        payload = {**inbox.card_payload(fresh), "relation": relation}
+        assert update_open_payload(card.id, payload)
+        fresh = _fresh(card)
+        asyncio.run(card_work.finished(owner, card.id, gmail=mailbox))
+        if relation == "stranger":
+            assert held == expected and sent == []
+    assert held == ["work_stranger"] and sent == [card.id]
+
+
 def _with_gate(real: Any) -> Any:
     """Cards read as if Approvals let them go on their own (auto_execute)."""
     def read(card_id: int, *a: Any, **k: Any) -> Any:

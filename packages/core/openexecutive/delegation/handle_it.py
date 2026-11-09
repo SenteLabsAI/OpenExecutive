@@ -53,7 +53,9 @@ with the reason recorded.
 Never sent on its own: a reply to a new recipient. A reply the Executive
 rewrote after doing what the email asked (``delegation.card_work``), files
 and all, is checked again here once that work is on its card, with its new
-words (``content_hold``), and goes on its own only when they pass.
+words (``content_hold``), and goes on its own only when they pass and the
+email came from someone they know (``KNOWN_RELATIONS``): what the work made
+for anyone else waits for them (``work_stranger``), on every level.
 
 **Meeting invites.** It also accepts a meeting invite on its own
 (``delegation.invites``, never a decline) from someone the person knows,
@@ -170,6 +172,8 @@ REASONS: dict[str, str] = {
     # Found just before sending (reply_send.send_on_its_own).
     "draft_changed": "You changed the draft in your mailbox, so it's yours to send.",
     "handle_it_off": "Handle it for me was off by the time it came to send.",
+    # After the Executive did what the email asked (delegation.card_work).
+    "work_stranger": "I did what they asked, and they aren't in your People, so it waits for you to look.",
     # Meeting invites (delegation.invites).
     "stranger": "Below Hands-off it acts on its own only for people you know.",
     "sensitive": "Below Hands-off, mail about money, contracts, passwords and the like waits for you.",

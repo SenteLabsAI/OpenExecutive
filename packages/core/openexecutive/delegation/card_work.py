@@ -426,6 +426,11 @@ async def _after(person: Any, card_id: int, *, gmail: Any) -> None:
         if card is None or card.status != STATUS_PROPOSED or getattr(card, "gate_mode", "") != "auto_execute":
             return
         payload = card_payload(card)
+        if payload.get(WORK_KEY) == DONE and payload.get("relation") not in handle_it.KNOWN_RELATIONS:
+            # What the work made from their data goes on its own only to
+            # people they know; for anyone else it waits for them to look.
+            _hand_back(card, "work_stranger")
+            return
         held = handle_it.content_hold(
             str(payload.get("subject") or ""), str(payload.get("they_wrote") or ""),
             str(payload.get("draft_subject") or ""), str(payload.get("draft_body") or ""),
