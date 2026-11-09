@@ -5,7 +5,8 @@ import test from "node:test";
 // An absolutely positioned element inside a page (an sr-only label) escapes
 // the shell's scroll slot unless an ancestor is its containing block and
 // clips it. When none is, the document grows past the screen, the whole page
-// scrolls on a phone and the bottom bar slides up off the bottom edge.
+// scrolls on a phone and the bottom bar slides up off the bottom edge. The
+// chat home (app/page.tsx) draws its own root, so it needs the same.
 const read = (p) => readFileSync(new URL(p, import.meta.url), "utf8");
 
 for (const [name, path, root] of [
