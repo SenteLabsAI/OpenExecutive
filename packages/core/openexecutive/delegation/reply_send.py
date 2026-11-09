@@ -483,10 +483,13 @@ async def _send_checked(
 
 
 def _going(payload: dict[str, Any]) -> list[str]:
-    """Who an allowance on this card covers: a reply's sender, or a
-    follow-up's people."""
-    if payload.get("source") == "follow_up":
-        return _addresses(payload.get("draft_to")) or []
+    """Who an allowance on this card covers, and who an In-training send
+    must have been allowed for: everyone the draft goes to (``draft_to``,
+    which Send checks the mailbox draft against), else the sender it
+    answers."""
+    going = _addresses(payload.get("draft_to"))
+    if going:
+        return going
     sender = str(payload.get("from_email") or "").strip().lower()
     return [sender] if sender else []
 

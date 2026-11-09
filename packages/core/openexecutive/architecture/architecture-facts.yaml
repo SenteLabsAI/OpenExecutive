@@ -11815,7 +11815,7 @@ delegation:
     act_as_me|person:<id>|person|<address>, label "Send to Name (addr) on
     its own", audit delegation_reply_allowed), checked before anything is
     sent; training.all_allowed(person, reply_goes_to(payload)) gates the
-    reply (follow-ups by draft_to, else the sender), invites by sender,
+    reply (everyone in draft_to, else the sender), invites by sender,
     action cards by every address. Chat-app cards carry the same as a
     third button "<Send|Accept|Approve> + on its own next time"
     (channel_cards.allow_label / tapped_allow). Listed on Delegate as

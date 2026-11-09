@@ -370,10 +370,11 @@ def _refusal(
         return "off"
     if approvals_hold(db_path=db_path):
         return "level"
-    # In training, only a sender they allowed, whoever they are; otherwise,
-    # below Hands-off, a reply to someone they don't know waits on a card, as
-    # an invite from one does (delegation.invites).
-    held = training_hold(person_id, [message.from_addr], db_path=db_path)
+    # In training, only when everyone the reply reaches (its sender and the
+    # others on it) was allowed; otherwise, below Hands-off, a reply to
+    # someone they don't know waits on a card, as an invite from one does
+    # (delegation.invites).
+    held = training_hold(person_id, [*reply.to, *reply.cc], db_path=db_path)
     if held is not None:
         return held
     if not in_training(person_id, db_path=db_path) and kind_for(relation) != KIND_REPLY_KNOWN and not hands_off(

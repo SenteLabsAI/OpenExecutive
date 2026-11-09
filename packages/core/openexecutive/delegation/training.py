@@ -218,11 +218,12 @@ def all_allowed(person_id: int, addresses: list[str], *, db_path: Path | None = 
 
 
 def reply_goes_to(payload: dict[str, Any]) -> list[str]:
-    """Who a reply card's send reaches: a follow-up's people, else the
-    sender it answers."""
-    if payload.get("source") == "follow_up":
-        to = payload.get("draft_to")
-        return [str(v) for v in to if isinstance(v, str) and v] if isinstance(to, list) else []
+    """Who a reply card's send reaches: everyone the draft goes to
+    (``draft_to``), else the sender it answers."""
+    to = payload.get("draft_to")
+    going = [str(v) for v in to if isinstance(v, str) and v] if isinstance(to, list) else []
+    if going:
+        return going
     sender = str(payload.get("from_email") or "")
     return [sender] if sender else []
 

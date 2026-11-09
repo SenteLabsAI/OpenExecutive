@@ -725,6 +725,26 @@ def test_once_they_allow_the_person_replies_to_them_go(owner: Any, models: dict[
     assert inbox.card_payload(card)["handle_it_reason"] == "training"
 
 
+def test_everyone_the_reply_reaches_must_be_allowed(owner: Any, models: dict[str, Any]) -> None:
+    """In training, a reply to an allowed sender that also goes to someone
+    on the email they haven't allowed waits; allowing them too lets it go."""
+    from openexecutive.delegation import training
+
+    _on(owner)
+    _in_training(owner)
+    training.allow_person(owner.id, DANA, "Dana Park", decision_id=None)
+    ben = "ben@northpeak.example"
+    mailbox, result = _scan_one(owner, _msg("m1", "t1", cc=(ben,)))
+    assert result.handled == 0 and mailbox.sent == []
+    card = _only_card(owner)
+    payload = inbox.card_payload(card)
+    assert payload["handle_it_reason"] == "training"
+    assert sorted(training.reply_goes_to(payload)) == sorted([DANA, ben])
+    training.allow_person(owner.id, ben, "Ben", decision_id=None)
+    mailbox, result = _scan_one(owner, _msg("m2", "t2", cc=(ben,)))
+    assert result.handled == 1 and mailbox.sent == ["d1"]
+
+
 def test_someone_with_no_address_on_file_is_never_allowed_by_omission(owner: Any, models: dict[str, Any]) -> None:
     """A card reaching an allowed person and someone with no email on file
     (``action_cards._addresses`` gives "" for them) still waits in training."""
