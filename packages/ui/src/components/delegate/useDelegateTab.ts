@@ -31,7 +31,8 @@ function onClick(event: MouseEvent) {
   const link = (event.target as Element | null)?.closest?.("a[href]");
   if (!link || ((link as HTMLAnchorElement).target && (link as HTMLAnchorElement).target !== "_self")) return;
   const url = new URL((link as HTMLAnchorElement).href, window.location.href);
-  if (url.origin === window.location.origin && url.pathname === "/delegate" && url.hash) {
+  // A plain /delegate link opens As you, as the page would on arriving.
+  if (url.origin === window.location.origin && url.pathname === "/delegate") {
     set(tabFromHash(url.hash));
   }
 }
