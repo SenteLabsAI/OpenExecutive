@@ -14,6 +14,7 @@ from openexecutive.alerts import store as alert_store
 from openexecutive.api.routes import alerts as alerts_route
 from openexecutive.memory import episodic
 from openexecutive.monitoring import store as monitoring_store
+from openexecutive.people import store as people_store
 
 
 @pytest.fixture()
@@ -21,10 +22,14 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "alerts.db"
     monkeypatch.setattr(alert_store, "DB_PATH", db_path)
     monkeypatch.setattr(episodic, "DB_PATH", db_path)
+    # The principal check reads the roster; without this it reads
+    # ./episodic_memory.db, which may lack a people table (403).
+    monkeypatch.setattr(people_store, "DB_PATH", db_path)
     monkeypatch.setattr(lifecycle, "_ttl_settings", lambda: (3, 14))
     alert_store.initialize_db(db_path)
     episodic.initialize_db(db_path)
     monitoring_store.initialize_db(db_path)
+    people_store.initialize_db(db_path)
     return db_path
 
 
