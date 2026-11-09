@@ -1358,7 +1358,9 @@ async def change_delegation_reply(request: Request, decision_id: int, body: Repl
         from openexecutive.delegation import card_work
 
         if not card_work.start(person, decision_id, ask=body.text):
-            raise _refuse(409, "busy", "I'm already working on this one.") from None
+            if card_work.running(decision_id):
+                raise _refuse(409, "busy", "I'm already working on this one.") from None
+            raise _refuse(404, "not_found", "That reply isn't waiting for you any more.") from None
     except SendRefused as refused:
         raise HTTPException(
             status_code=refused.status, detail={"code": refused.code, "message": refused.message, **refused.extra},
