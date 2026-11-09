@@ -470,6 +470,9 @@ class MorningBriefWorkflow(Workflow):
             name_cards_for, artifact_text, card_reader,
             principal=for_principal, include_private=private_used,
         )
+        from openexecutive.alerts.card_refs import keep_app_links
+
+        artifact_text = keep_app_links(artifact_text)
 
         yield WorkflowEvent(
             type="step_done",

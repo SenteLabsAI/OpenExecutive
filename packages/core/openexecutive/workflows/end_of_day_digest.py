@@ -223,15 +223,16 @@ def _render_eod_context(
 
     if activity:
         from openexecutive.alerts.card_refs import write_up_url
+        from openexecutive.briefing.brief_state import quoted as _quoted
 
         parts.append("WHAT OE DID TODAY (most recent first):")
         for item in activity[:20]:
             line = (
                 f"- [{item.get('at', '')[:10]}] {item.get('kind', 'action')}: "
-                f"{item.get('summary', '')[:140]}"
+                f"{_quoted(item.get('summary'), 140)}"
             )
             if item.get("detail"):
-                line += f" — {str(item['detail'])[:160]}"
+                line += f" — {_quoted(item['detail'], 160)}"
             url = write_up_url(str(item.get("artifact_id") or ""))
             if url:
                 line += f" — link: {url}"
@@ -250,16 +251,17 @@ def _render_eod_context(
     from openexecutive.briefing.brief_state import (
         card_link,
         carried_lines,
+        quoted,
         rewritten_lines,
         rewritten_since,
         split_proposals,
     )
 
     def _open_line(p: dict[str, Any]) -> str:
-        line = f"- {p.get('headline', '')[:160]}"
-        action = " ".join(str(p.get("suggested_action") or "").split())
+        line = f"- {quoted(p.get('headline'), 160)}"
+        action = quoted(p.get("suggested_action"), 110)
         if action:
-            line += f" — needs: {action[:110]}"
+            line += f" — needs: {action}"
         return line + card_link(p)
 
     proposals = today_data.get("proposals", [])
@@ -410,8 +412,12 @@ def _research_found(since: datetime) -> list[str]:
     if not findings:
         return []
     findings.sort(key=lambda f: _SEVERITY_ORDER.get(f.get("severity", "").lower(), 3))
+    from openexecutive.briefing.brief_state import quoted
+
+    # Findings quote the web: no address or "link:" of their own.
     lines = [
-        f"- {f['title'][:160]} — {f['summary'][:320]}" for f in findings[:_FOUND_LIMIT]
+        f"- {quoted(f['title'], 160)} — {quoted(f['summary'], 320)}"
+        for f in findings[:_FOUND_LIMIT]
     ]
     if links:
         lines.append(f"- The full write-up — link: {links[0]}")
@@ -718,6 +724,9 @@ class EndOfDayDigestWorkflow(Workflow):
             name_cards_for, artifact_text, card_reader,
             principal=for_principal, include_private=private_used,
         )
+        from openexecutive.alerts.card_refs import keep_app_links
+
+        artifact_text = keep_app_links(artifact_text)
 
         yield WorkflowEvent(
             type="step_done",

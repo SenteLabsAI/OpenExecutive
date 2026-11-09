@@ -99,6 +99,23 @@ def home_url() -> str:
     return f"{base}/" if base else ""
 
 
+_MD_LINK = re.compile(r"\[([^\]\n]*)\]\(([^)\s]*)\)")
+
+
+def keep_app_links(text: str) -> str:
+    """A brief with every Markdown link that doesn't point into this app
+    reduced to its text: a brief links only to the app's own pages (cards,
+    write-ups), so a link anywhere else came from quoted mail or chat."""
+    base = _base()
+
+    def keep(m: re.Match[str]) -> str:
+        url = m.group(2)
+        ok = bool(base) and (url == base or url.startswith(base + "/") or url.startswith(base + "?"))
+        return m.group(0) if ok else m.group(1)
+
+    return _MD_LINK.sub(keep, text or "")
+
+
 def write_up_url(artifact_id: str) -> str:
     """The address of a run's write-up (``run_outcome.write_up_id``), or ""
     when the app has no web address set."""

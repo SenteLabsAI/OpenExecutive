@@ -598,12 +598,14 @@ def render_briefing_context(
                 parts.extend(_goal_line(g) for g in d.get("attention_goals") or [])
         parts.append("")
 
+    from openexecutive.briefing.brief_state import quoted
+
     proposals = today_data.get("proposals", [])
     if since is None:
         if proposals:
             parts.append("PROPOSALS AWAITING DECISION:")
             for p in proposals[:10]:
-                line = f"- {p.get('headline', '')[:160]}"
+                line = f"- {quoted(p.get('headline'), 160)}"
                 if rich:
                     line += f" ({_age_label(p.get('created_at'), now)})"
                 parts.append(line)
@@ -621,7 +623,7 @@ def render_briefing_context(
         if new_items:
             parts.append("NEEDS YOU — NEW SINCE LAST BRIEF:")
             for p in new_items[:10]:
-                line = f"- {p.get('headline', '')[:160]}"
+                line = f"- {quoted(p.get('headline'), 160)}"
                 if rich:
                     line += f" ({_age_label(p.get('created_at'), now)})"
                 if p.get("why_now"):

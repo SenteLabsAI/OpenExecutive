@@ -370,6 +370,21 @@ def rewritten_lines(
     ]
 
 
+# A link or a "link:" marker in quoted card text, which comes from inbound
+# mail and chat: the briefs' LINK_RULE trusts only the addresses this module
+# writes after "link:", so quoted text must not be able to write one.
+_QUOTED_LINK = re.compile(r"(?:[a-z][a-z0-9+.-]*://|www\.)\S*", re.IGNORECASE)
+_QUOTED_MARKER = re.compile(r"\blink\s*:", re.IGNORECASE)
+
+
+def quoted(text: object, limit: int) -> str:
+    """Card text (a headline, a suggested action) made safe to quote in a
+    brief's context: one line, no address of its own, no "link:" marker."""
+    line = " ".join(str(text or "").split())
+    line = _QUOTED_LINK.sub("(link removed)", line)
+    return _QUOTED_MARKER.sub("link -", line)[:limit]
+
+
 # The most older open items a brief names one by one. Past it, the rest are
 # one closing "and N more on Home" line.
 CARRIED_LIMIT = 8
@@ -397,10 +412,10 @@ def carried_lines(
     for p in carried[:limit]:
         created = parse_aware(p.get("created_at"))
         days = max(0, (now - created).days) if created is not None else 0
-        line = f"- {str(p.get('headline', ''))[:140]}"
-        action = " ".join(str(p.get("suggested_action") or "").split())
+        line = f"- {quoted(p.get('headline'), 140)}"
+        action = quoted(p.get("suggested_action"), 110)
         if action:
-            line += f" — needs: {action[:110]}"
+            line += f" — needs: {action}"
         line += f" (open {days}d"
         if p.get("review_verdict") == "likely_stale":
             line += ", likely stale"
