@@ -265,8 +265,8 @@ def test_after_an_outside_read_everything_waits(roster: dict[str, Any]) -> None:
 def test_turning_on_act_as_me_waits_but_off_does_not() -> None:
     action = app_control.CATALOG.actions["change_setting"]
     assert action.needs_tap("act_as_me", "on")
-    assert action.needs_tap("handle_it", "on")
-    assert not action.needs_tap("handle_it", "off")
+    assert action.needs_tap("inbox_drafts", "on")
+    assert not action.needs_tap("inbox_drafts", "off")
     assert not action.needs_tap("quiet_hours", "22:00-07:00")
 
 

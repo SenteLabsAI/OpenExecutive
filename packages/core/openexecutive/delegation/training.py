@@ -1,13 +1,22 @@
-"""Act as me, in training: Drafts.
+"""As you, in training: one switch and what it learns.
 
-Approvals (Careful / Balanced / Hands-off) and Handle it for me decide what
-goes on its own, so nothing here lets anything go. What is left is
-**Drafts** (``drafts``, one row in ``delegation_training``, absent means
-off): nothing is sent. When they change a reply's draft in their mailbox
-before tapping Send and tick "Do it like this next time", what they sent is
-kept as an example the ghostwriter follows when it next writes to that
-person (``ghostwriter``'s ``<writer_example>``), from the inbox and from
-chat.
+**In training** (``training``, one row in ``delegation_training``, absent
+means off) sits above Approvals for everything sent as the person. While it
+is on, nothing goes out as them on its own, on any level: every reply,
+follow-up, invite answer and suggested action waits on its card, which says
+what it would have done. Send (Accept, Approve) does it once. Ticked "Send to
+them on its own next time", it also allows that person (``allow_person``,
+one allowance per address): from then on replies to them, follow-ups to
+them, their invites and messages or meetings with them go on their own,
+where Approvals lets them (Careful still holds everything; the checks
+``handle_it.refusal`` always makes still apply). Everything not allowed yet
+keeps coming as a card. Off, Approvals alone decides.
+
+**Drafts** (``drafts``): nothing is sent. When they change a reply's draft
+in their mailbox before tapping Send and tick "Do it like this next time",
+what they sent is kept as an example the ghostwriter follows when it next
+writes to that person (``ghostwriter``'s ``<writer_example>``), from the
+inbox and from chat.
 
 What it keeps lives in Take the lead's one "What it's learned" list
 (``take_the_lead.allow``), as feature ``act_as_me`` with the person's id:
@@ -23,17 +32,19 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from openexecutive.delegation.schema import TRAINING_TABLE, ensure_schema
 from openexecutive.orchestrator.take_the_lead import FEATURE_ACT_AS_ME, Allowed
 
 logger = logging.getLogger(__name__)
 
+TRAINING = "training"
 DRAFTS = "drafts"
-SETTINGS: tuple[str, ...] = (DRAFTS,)
+SETTINGS: tuple[str, ...] = (TRAINING, DRAFTS)
 
 # What each kind of key teaches, by the action in it.
-_SETTING_OF_ACTION = {"style": DRAFTS}
+_SETTING_OF_ACTION = {"style": DRAFTS, "person": TRAINING}
 
 # The longest example kept, after the quoted thread is dropped.
 EXAMPLE_CHARS = 1000
@@ -42,6 +53,8 @@ EXAMPLE_CHARS = 1000
 @dataclass(frozen=True)
 class Training:
     person_id: int
+    # In training: nothing goes out as them on its own but to people they allowed.
+    training: bool = False
     drafts: bool = False
 
     def on(self, setting: str) -> bool:
@@ -128,6 +141,12 @@ def style_key(person_id: int, recipient: str) -> str:
     return f"{_prefix(person_id)}|style|{_email(recipient)}"
 
 
+def person_key(person_id: int, address: str) -> str:
+    """What one "on its own next time" covers: everything sent as
+    ``person_id`` to ``address``."""
+    return f"{_prefix(person_id)}|person|{_email(address)}"
+
+
 def setting_of(key: str) -> str:
     """The setting an item in the list was learned under ("" if none)."""
     parts = key.split("|")
@@ -178,6 +197,46 @@ def example_for(person_id: int, recipient: str, *, db_path: Path | None = None) 
     return _text_of(_find(person_id, style_key(person_id, recipient), db_path=db_path))
 
 
+def allowed_person(person_id: int, address: str, *, db_path: Path | None = None) -> Allowed | None:
+    """``person_id``'s allowance for ``address``, if they gave one."""
+    if not _email(address):
+        return None
+    return _find(person_id, person_key(person_id, address), db_path=db_path)
+
+
+def all_allowed(person_id: int, addresses: list[str], *, db_path: Path | None = None) -> list[Allowed] | None:
+    """The allowances covering every one of ``addresses``; None when any is
+    missing (or there is nobody to cover)."""
+    found = [allowed_person(person_id, a, db_path=db_path) for a in addresses]
+    if not found or any(f is None for f in found):
+        return None
+    return [f for f in found if f is not None]
+
+
+def reply_goes_to(payload: dict[str, Any]) -> list[str]:
+    """Who a reply card's send reaches: a follow-up's people, else the
+    sender it answers."""
+    if payload.get("source") == "follow_up":
+        to = payload.get("draft_to")
+        return [str(v) for v in to if isinstance(v, str) and v] if isinstance(to, list) else []
+    sender = str(payload.get("from_email") or "")
+    return [sender] if sender else []
+
+
+def can_allow_reply(person_id: int, payload: dict[str, Any], trained: Training, *, db_path: Path | None = None) -> bool:
+    """Whether a reply card offers "on its own next time": In training is
+    on and someone it goes to isn't allowed yet."""
+    if not trained.training:
+        return False
+    going = reply_goes_to(payload)
+    return bool(going) and all_allowed(person_id, going, db_path=db_path) is None
+
+
+def in_training(person_id: int, *, db_path: Path | None = None) -> bool:
+    """Whether ``person_id``'s As you is in training. Never raises."""
+    return get(person_id, db_path=db_path).training
+
+
 def room_for(person_id: int, key: str, *, db_path: Path | None = None) -> bool:
     from openexecutive.orchestrator import take_the_lead
 
@@ -201,6 +260,21 @@ def _allow(
     )
 
 
+def allow_person(
+    person_id: int, address: str, name: str, *, decision_id: int | None, db_path: Path | None = None,
+) -> Allowed | None:
+    """"Send to them on its own next time": let everything sent as
+    ``person_id`` to ``address`` go on its own, where Approvals lets it.
+    None when there is no address. Raises ``take_the_lead.RuleError`` when
+    their list is full."""
+    if not _email(address):
+        return None
+    return _allow(
+        person_id, person_key(person_id, address), f"Send to {_who(name, address)} on its own",
+        decision_id=decision_id, db_path=db_path,
+    )
+
+
 def keep_style(
     person_id: int, recipient: str, name: str, text: str, *, decision_id: int | None, db_path: Path | None = None,
 ) -> Allowed | None:
@@ -218,12 +292,13 @@ def keep_style(
 
 
 def learned(person_id: int, *, db_path: Path | None = None) -> list[Allowed]:
-    """``person_id``'s own Act as me items (how they write), newest first."""
+    """``person_id``'s own As you items (who it may send to on its own, and
+    how they write), newest first."""
     from openexecutive.orchestrator import take_the_lead
 
     return [
         a for a in take_the_lead.list_allowed(feature=FEATURE_ACT_AS_ME, person_id=person_id, db_path=db_path)
-        if setting_of(a.key) == DRAFTS
+        if setting_of(a.key) in SETTINGS
     ]
 
 

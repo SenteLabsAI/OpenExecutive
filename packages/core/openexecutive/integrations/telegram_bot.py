@@ -127,7 +127,7 @@ async def send_message(token: str, chat_id: int, text: str) -> str | None:
 
 async def send_card(
     token: str, chat_id: int, decision_id: int, text: str, *,
-    labels: tuple[str, str] = ("Approve", "Skip"), raise_on_error: bool = False,
+    labels: tuple[str, ...] = ("Approve", "Skip"), raise_on_error: bool = False,
 ) -> None:
     """Send an approval card as a message with its two buttons, Approve (or
     Send, Accept) and Skip (``integrations.channel_cards``). Plain text: the
@@ -141,10 +141,15 @@ async def send_card(
             "chat_id": chat_id,
             "text": text[:_MAX_MSG_LEN],
             "link_preview_options": {"is_disabled": True},
-            "reply_markup": {"inline_keyboard": [[
-                {"text": labels[0], "callback_data": channel_cards.callback_data(decision_id, channel_cards.APPROVE)},
-                {"text": labels[1], "callback_data": channel_cards.callback_data(decision_id, channel_cards.SKIP)},
-            ]]},
+            "reply_markup": {"inline_keyboard": [
+                [
+                    {"text": labels[0], "callback_data": channel_cards.callback_data(decision_id, channel_cards.APPROVE)},
+                    {"text": labels[1], "callback_data": channel_cards.callback_data(decision_id, channel_cards.SKIP)},
+                ],
+                *([[{"text": labels[2],
+                     "callback_data": channel_cards.callback_data(decision_id, channel_cards.ALLOW)}]]
+                  if len(labels) > 2 else []),
+            ]},
         },
     )
     if resp.is_error:
@@ -190,8 +195,9 @@ async def _handle_card_tap(
             logger.exception("Telegram: couldn't answer a tap on chat %s", chat_id)
         return
     decision_id, approve = parsed
-    line = await channel_cards.resolve(decision_id, person, approve=approve)
-    choice = "approve" if approve else "skip"
+    allow = channel_cards.tapped_allow(data)
+    line = await channel_cards.resolve(decision_id, person, approve=approve, allow=allow)
+    choice = "allow" if allow else "approve" if approve else "skip"
     await asyncio.to_thread(
         audit_log,
         "integration_inbound",

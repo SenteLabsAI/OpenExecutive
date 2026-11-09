@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import Button from "@/components/ui/Button";
+import NextTimeTick from "@/components/NextTimeTick";
 import ChatAppActionCard from "@/components/ChatAppActionCard";
 import ChatHeldActionCard from "@/components/ChatHeldActionCard";
 import ChatMeetingCard from "@/components/ChatMeetingCard";
@@ -91,11 +92,16 @@ export function ActionCardItem({
       return next;
     });
 
-  const approve = async () => {
+  // `nextTime`: the "on its own next time" tick, In training: Approve then
+  // also allows everyone the ticked actions reach.
+  const [nextTime, setNextTime] = useState(false);
+  const [allowed, setAllowed] = useState(false);
+  const approve = async (allow = false) => {
     setBusy("Doing it…");
     setError(null);
     try {
-      setResults(await approveActionCard(card.decision_id, [...ticked].sort((a, b) => a - b)));
+      setResults(await approveActionCard(card.decision_id, [...ticked].sort((a, b) => a - b), allow));
+      setAllowed(allow);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't do that.");
     } finally {
@@ -173,6 +179,11 @@ export function ActionCardItem({
         })}
       </ul>
 
+      {results && allowed && (
+        <p className="mt-3 text-sm text-fg-muted">
+          From now on, what it sends as you to these people goes on its own, where Approvals lets it.
+        </p>
+      )}
       {results ? (
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <Button variant="secondary" onClick={() => onGone(card.decision_id)}>
@@ -181,10 +192,20 @@ export function ActionCardItem({
         </div>
       ) : (
         <>
+        {card.can_allow && (
+          <NextTimeTick
+            className="mt-4"
+            checked={nextTime}
+            disabled={busy !== null}
+            onChange={setNextTime}
+            label="Send to these people on its own next time"
+            help="Everything sent as you to them goes on its own from then on, where Approvals lets it. Undo it on Delegate."
+          />
+        )}
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <Button
             variant="primary"
-            onClick={() => void approve()}
+            onClick={() => void approve(Boolean(card.can_allow) && nextTime)}
             disabled={busy !== null || ticked.size === 0}
           >
             {busy ?? (ticked.size === card.actions.length ? "Approve" : `Approve ${ticked.size}`)}

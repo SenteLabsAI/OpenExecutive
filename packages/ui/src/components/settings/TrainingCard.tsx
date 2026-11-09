@@ -10,10 +10,11 @@ import {
   type TrainingLearned,
 } from "@/lib/api";
 
-// What Learn from my edits kept (delegation/training.py): how you write to
-// each person, from drafts you changed before sending, with Remove
-// (DELETE /delegation/learned/{id}). Shown on Delegate → Act as me while
-// Learn from my edits is on or something is on the list.
+// What In training kept for As you (delegation/training.py): who it may
+// send to on its own ("training", from "Send to them on its own next time"
+// on a card) and how you write to each person ("drafts", from Learn from my
+// edits), with Remove (DELETE /delegation/learned/{id}). Yours alone. Shown
+// on Delegate → As you while either is on or something is on the list.
 
 function useSave(onSettings: (next: DelegationSettings) => void) {
   const [busy, setBusy] = useState(false);
@@ -36,9 +37,9 @@ function times(n: number): string {
   return n === 1 ? "once" : n === 2 ? "twice" : `${n} times`;
 }
 
-function learnedLine(item: TrainingLearned): string {
+export function learnedLine(item: TrainingLearned): string {
   const when = new Date(item.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  const parts = [`learned ${when}`];
+  const parts = [item.setting === "training" ? `allowed ${when}` : `learned ${when}`];
   if (item.uses > 0) parts.push(`done ${times(item.uses)} since`);
   if (item.example) parts.push(`writes like “${item.example}”`);
   return parts.join(" · ");
@@ -52,17 +53,17 @@ export function LearnedCard({
   onSettings: (next: DelegationSettings) => void;
 }) {
   const { busy, error, run } = useSave(onSettings);
-  const learned = training.learned.filter((item) => item.setting === "drafts");
-  if (!training.drafts && learned.length === 0) return null;
+  const learned = training.learned.filter((item) => item.setting === "training" || item.setting === "drafts");
+  if (!training.training && !training.drafts && learned.length === 0) return null;
   const titleId = "learned-label";
   return (
     <SettingsCard
-      title="What it's learned"
+      title="What it's learned as you"
       titleId={titleId}
-      description="How you write to each person, from your edits. Yours alone."
+      description="Who it may send to on its own, and how you write to each person. Yours alone. Remove one and it asks again."
     >
       {learned.length === 0 ? (
-        <p className="text-sm text-fg-muted">Nothing yet.</p>
+        <p className="text-sm text-fg-muted">Nothing yet. Tick “on its own next time” or “Do it like this next time” on a card.</p>
       ) : (
         <ul
           aria-labelledby={titleId}

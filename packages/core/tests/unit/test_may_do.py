@@ -53,7 +53,6 @@ def ids() -> dict[str, int]:
 def _handling(pid: int) -> None:
     set_enabled(pid, True, updated_by="t")
     inbox.set_watch(pid, True, updated_by="t")
-    handle_it.set_(pid, enabled=True, updated_by="t")
 
 
 def _level(monkeypatch: pytest.MonkeyPatch, level: str) -> None:
@@ -83,21 +82,20 @@ def test_with_everything_off_nothing_goes_out_as_you(ids: dict[str, int]) -> Non
     assert section.notes == []
 
 
-def test_drafts_and_the_inbox_without_handle_it_wait_for_a_tap(ids: dict[str, int]) -> None:
+def test_drafts_without_the_inbox_watcher_wait_for_a_tap(ids: dict[str, int]) -> None:
     pid = ids["principal"]
     set_enabled(pid, True, updated_by="t")
-    inbox.set_watch(pid, True, updated_by="t")
     rows = _rows(_you(pid))
     assert rows["chat_drafts"].outcome == "drafts" and rows["chat_drafts"].then == "Drafts, sent on your tap"
-    assert rows["replies"].outcome == "waits" and "Handle it for me is off" in rows["replies"].why
-    assert rows["follow_ups"].outcome == "waits"
+    assert rows["replies"].outcome == "off" and "Draft replies to my inbox is off" in rows["replies"].why
+    assert rows["follow_ups"].outcome == "off"
     assert rows["actions"].outcome == "waits"
 
 
 @pytest.mark.parametrize(("level", "outcome", "setting"), [
     ("ask", "waits", may_do.SETTING_APPROVALS),
-    ("outsiders", "goes", may_do.SETTING_HANDLE_IT),
-    ("trust", "goes", may_do.SETTING_HANDLE_IT),
+    ("outsiders", "goes", may_do.SETTING_ACT_AS_ME),
+    ("trust", "goes", may_do.SETTING_ACT_AS_ME),
 ])
 def test_approvals_decides_what_goes_as_you(
     ids: dict[str, int], monkeypatch: pytest.MonkeyPatch, level: str, outcome: str, setting: str,
@@ -111,9 +109,26 @@ def test_approvals_decides_what_goes_as_you(
         assert rows[row_id].outcome == outcome and rows[row_id].setting == setting
     assert rows["actions"].outcome == outcome
     assert "links" not in rows and "sensitive" not in rows and "rules" not in rows
-    assert section.notes and "needs Draft replies" in section.notes[0]
+    assert section.notes == []
     if outcome == "goes":
         assert "a day" in section.footer
+
+
+def test_in_training_everything_as_you_waits_on_any_level(ids: dict[str, int], monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.delegation import training
+
+    pid = ids["principal"]
+    _handling(pid)
+    _level(monkeypatch, "trust")
+    training.set_(pid, {training.TRAINING: True}, updated_by="t")
+    section = _you(pid)
+    rows = _rows(section)
+    for row_id in ("replies", "follow_ups", "invites", "actions"):
+        assert rows[row_id].outcome == "waits" and rows[row_id].setting == may_do.SETTING_ACT_AS_ME
+        assert "In training" in rows[row_id].why
+    assert section.goes == 0 and section.footer == ""
+    training.set_(pid, {training.TRAINING: False}, updated_by="t")
+    assert _rows(_you(pid))["replies"].outcome == "goes"
 
 
 def test_on_balanced_suggested_actions_skip_someone_new(ids: dict[str, int], monkeypatch: pytest.MonkeyPatch) -> None:
@@ -159,6 +174,18 @@ def test_approvals_decides_what_it_does_on_its_own(
     assert list(rows) == ["lead", "to_you", "meetings_chat"]
     assert rows["lead"].outcome == outcome and rows["lead"].setting == may_do.SETTING_APPROVALS
     assert rows["to_you"].outcome == "goes"
+
+
+def test_in_training_the_executive_waits_even_on_hands_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import outside_mode, take_the_lead
+
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.TRUST)
+    take_the_lead.set_(take_the_lead.SCOPE_EXECUTIVE, training=True, updated_by="t")
+    rows = {r.id: r for r in may_do.as_the_executive(is_principal=True).rows}
+    assert rows["lead"].outcome == "waits" and rows["lead"].setting == may_do.SETTING_TAKE_THE_LEAD
+    assert "In training" in rows["lead"].why
+    take_the_lead.set_(take_the_lead.SCOPE_EXECUTIVE, training=False, updated_by="t")
+    assert {r.id: r for r in may_do.as_the_executive(is_principal=True).rows}["lead"].outcome == "goes"
 
 
 def test_meetings_asked_for_in_chat_follow_approvals(monkeypatch: pytest.MonkeyPatch) -> None:

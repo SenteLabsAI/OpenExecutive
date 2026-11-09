@@ -27,7 +27,7 @@ test("the main menu is seven places, team is the default", () => {
     "Chats → /chats",
     "Work → /tasks",
     "Company → /people",
-    "Delegate → /delegate/act-as-me",
+    "Delegate → /delegate",
     "Knowledge → /knowledge",
     "Memory → /memories",
   ]);
@@ -37,7 +37,7 @@ test("the main menu is seven places, team is the default", () => {
 test("solo swaps Company for You, which opens on Goals", () => {
   const solo = links(buildDestinations({ mode: "solo", roleKind: "owner" }));
   assert.equal(solo[3], "You → /goals");
-  assert.equal(solo[4], "Delegate → /delegate/act-as-me");
+  assert.equal(solo[4], "Delegate → /delegate");
   assert.equal(solo.length, 7);
 });
 
@@ -58,19 +58,14 @@ test("team hubs: Work and Company tabs", () => {
   );
 });
 
-test("Delegate opens on Act as me, then Handle it for me and Take the lead, each a named feature", () => {
+test("Delegate is one page, not a hub, in both modes", () => {
   for (const opts of [{}, { mode: "solo", roleKind: "owner" }]) {
-    const delegate = buildHubs(opts).find((h) => h.key === "delegate");
-    assert.deepEqual(links(delegate.tabs), [
-      "Act as me → /delegate/act-as-me",
-      "Handle it for me → /delegate/handle-it",
-      "Take the lead → /delegate/take-the-lead",
-    ]);
-    assert.deepEqual(
-      delegate.tabs.map((t) => t.feature),
-      ["act_as_me", "handle_it", "take_the_lead"],
-    );
-    assert.equal(hubForPath("/delegate/handle-it", opts)?.key, "delegate");
+    assert.ok(!buildHubs(opts).some((h) => h.key === "delegate"));
+    assert.equal(hubForPath("/delegate", opts), null);
+    const delegate = buildDestinations(opts).find((d) => d.key === "delegate");
+    assert.equal(delegate.href, "/delegate");
+    assert.ok(isDestinationActive(delegate, "/delegate"));
+    assert.ok(isDestinationActive(delegate, "/delegate/act-as-me"));
   }
 });
 
@@ -240,8 +235,8 @@ test("old /settings#anchors land on the matching page", () => {
   assert.equal(to("#on-its-own"), "/settings/executive");
   assert.equal(to("#workspace"), "/settings/workspace");
   assert.equal(to("act-as-me"), null);
-  // Act as me moved out of Settings: its old anchor goes to its Delegate tab.
-  assert.equal(settingsHrefForHash("#act-as-me"), "/delegate/act-as-me");
+  // Act as me moved out of Settings: its old anchor goes to its Delegate block.
+  assert.equal(settingsHrefForHash("#act-as-me"), "/delegate#as-you");
   assert.equal(settingsHrefForHash("#workspace"), "/settings/workspace");
   assert.equal(settingsHrefForHash("#nope"), null);
   assert.equal(to("#memory"), "/settings/memory");

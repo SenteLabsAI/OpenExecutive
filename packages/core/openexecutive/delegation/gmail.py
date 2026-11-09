@@ -114,7 +114,7 @@ STATUS_MESSAGES: dict[str, str] = {
     "connected": "Connected.",
     "not_configured": (
         "Your mailbox isn't connected. Run scripts/connect-own-gmail.py (Gmail) or "
-        "scripts/connect-own-outlook.py (Outlook) as yourself (Delegate → Act as me "
+        "scripts/connect-own-outlook.py (Outlook) as yourself (Delegate → As you "
         "shows how)."
     ),
     "needs_reconnect": (

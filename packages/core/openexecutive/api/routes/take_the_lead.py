@@ -1,5 +1,5 @@
-"""Take the lead (orchestrator.take_the_lead): the switches and rules on
-Delegate → Take the lead. What it did shows in Recent activity
+"""Take the lead (orchestrator.take_the_lead): In training and the rules on
+Delegate → As me and Before anything goes out. What it did shows in Recent activity
 (``today._build_activity``), with each person's own As you rows.
 
   GET    /take-the-lead              — the As the Executive switch, its Ask
@@ -210,11 +210,9 @@ def update_take_the_lead(request: Request, body: LeadUpdate) -> LeadOut:
     if unknown:
         raise HTTPException(status_code=422, detail=f"Unknown kind: {unknown[0]}.")
     turning_on = bool(body.enabled) and not current.enabled
-    # Leaving training while on lets everything it was asking about go.
-    leaving_training = (
-        body.training is False and current.training and (body.enabled if body.enabled is not None else current.enabled)
-    )
-    loosening = turning_on or bool(leaving_training) or any(
+    # Leaving training lets everything it was asking about go.
+    leaving_training = body.training is False and current.training
+    loosening = turning_on or leaving_training or any(
         value is False and current.asks_first(kind) for kind, value in (body.ask_first or {}).items()
     )
     if loosening and not _provably_theirs(request, principal):

@@ -44,7 +44,7 @@ MAX_DAYS = 31
 
 NOT_GRANTED = (
     "Your saved sign-in doesn't include your calendar. Add it under Read my calendar "
-    "in Delegate → Act as me, then turn Read my calendar on."
+    "in Delegate → As you, then turn Read my calendar on."
 )
 OFF = "Read my calendar is off. They can turn it on in Settings → Act as me."
 

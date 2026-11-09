@@ -6,7 +6,7 @@
 // invisible, lay its own buttons over it and catch clicks meant for those.
 // So in a frame, approving, rejecting or cancelling a card, sending a chat
 // message as the person, and any other change the host list doesn't already
-// let the host make itself (a setting, Handle it for me, People) that follows
+// let the host make itself (a setting, Delegate, People) that follows
 // a click, first asks inside the frame, naming what will happen; its Yes
 // counts only once the browser has reported the question seen (lib/seen.ts).
 // A browser that can't report it gets no Yes: the person goes to `page`, this
@@ -44,7 +44,6 @@ const READS = new Set(["GET", "HEAD", "OPTIONS"]);
 const CHAT_SENDS = new Set(["/chat", "/chat/upload", "/chat/add"]);
 // The changes a lured click would most like to make, said plainly.
 const NAMED_CHANGES: readonly (readonly [RegExp, string])[] = [
-  [/^\/delegation\/handle-it/, "Change Handle it for me: what the Executive sends as you without asking."],
   [/^\/delegation\//, "Change what the Executive may do as you (Delegate)."],
   [/^\/executive\/(pause|resume)$/, "Pause or resume the Executive."],
   [/^\/people(\/|$)/, "Change People: who is on the roster and what they may do."],

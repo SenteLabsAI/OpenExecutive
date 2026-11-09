@@ -42,10 +42,13 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # A button's data (Telegram callback_data, a Slack button value, a Discord
-# custom_id): "card:<decision id>:a" (Approve) or ":s" (Skip).
+# custom_id): "card:<decision id>:a" (Approve), ":s" (Skip) or ":n"
+# (Approve, and on its own next time: the In training tick, shown only on
+# a card that can teach, ``allow_label``).
 _PREFIX = "card"
 APPROVE = "a"
 SKIP = "s"
+ALLOW = "n"
 # A reply leaves at most this many cards (action_cards.CARDS_PER_TURN plus a meeting).
 MAX_CARDS = 4
 
@@ -126,15 +129,16 @@ def callback_data(decision_id: int, choice: str) -> str:
 
 
 def parse_callback(data: Any) -> tuple[int, bool] | None:
-    """(decision id, approve) from a button's callback data, or None."""
+    """(decision id, approve) from a button's callback data, or None. The
+    "next time" button approves too; ``tapped_allow`` tells it apart."""
     if not isinstance(data, str):
         return None
     parts = data.split(":")
-    if len(parts) != 3 or parts[0] != _PREFIX or parts[2] not in (APPROVE, SKIP):
+    if len(parts) != 3 or parts[0] != _PREFIX or parts[2] not in (APPROVE, SKIP, ALLOW):
         return None
     if not parts[1].isdigit() or len(parts[1]) > 12:
         return None
-    return int(parts[1]), parts[2] == APPROVE
+    return int(parts[1]), parts[2] != SKIP
 
 
 def _when(start: Any, end: Any) -> str:
@@ -232,13 +236,69 @@ def card_text(decision_id: int) -> str | None:
     return text
 
 
-def card_buttons(decision_id: int) -> tuple[str, str]:
-    """The labels of a card's two buttons: Send, Accept or Approve, and Skip."""
+def tapped_allow(data: Any) -> bool:
+    """Whether a button's callback data is the "next time" button."""
+    return isinstance(data, str) and data.split(":")[-1] == ALLOW and parse_callback(data) is not None
+
+
+def card_buttons(decision_id: int) -> tuple[str, ...]:
+    """The labels of a card's buttons: Send, Accept or Approve, and Skip,
+    and, on a card that can teach (In training, ``allow_label``), a third:
+    the same and on its own next time."""
     from openexecutive.memory.decision_ledger import get_decision_instance
 
     instance = get_decision_instance(decision_id)
     label = _APPROVE_LABEL.get(instance.decision_class, "Approve") if instance is not None else "Approve"
+    if instance is not None and allow_label(instance):
+        return label, "Skip", f"{label} + on its own next time"
     return label, "Skip"
+
+
+def allow_label(instance: Any) -> str | None:
+    """What approving with "on its own next time" would allow on this
+    card, in words, or None when the card can't teach: In training is off
+    (``delegation.training`` for a person's own, ``take_the_lead.Lead`` for
+    the Executive's), or everything on it is allowed already. Never raises."""
+    try:
+        payload = json.loads(instance.proposed_payload_json or "{}")
+        if not isinstance(payload, dict):
+            return None
+        kind = instance.decision_class
+        person_id = instance.approver_person_id
+        if kind == "take_the_lead_action":
+            from openexecutive.orchestrator.take_the_lead import TRAINING
+
+            grant = payload.get("allow")
+            if payload.get("kind") == TRAINING and isinstance(grant, dict) and grant.get("key"):
+                return str(grant.get("label") or "this")
+            return None
+        if person_id is None:
+            return None
+        from openexecutive.delegation import training
+
+        if not training.in_training(person_id):
+            return None
+        if kind == "delegation_reply":
+            if not training.can_allow_reply(person_id, payload, training.get(person_id)):
+                return None
+            return ", ".join(training.reply_goes_to(payload))
+        if kind == "delegation_invite":
+            sender = str(payload.get("from_email") or "")
+            if payload.get("can_answer") is False or not sender or training.allowed_person(person_id, sender):
+                return None
+            return sender
+        if kind == "delegation_actions":
+            from openexecutive.delegation.action_cards import _addresses
+
+            addresses = [a for a in _addresses(payload.get("actions") or []) if a]
+            if not addresses or training.all_allowed(person_id, addresses) is not None:
+                return None
+            return ", ".join(sorted(set(addresses)))
+        return None
+    except Exception:
+        logger.warning("channel_cards: couldn't tell whether card %s can teach", getattr(instance, "id", "?"),
+                       exc_info=True)
+        return None
 
 
 def outcome_text(approved: bool, error: str | None, decision_class: str = "") -> str:
@@ -254,9 +314,10 @@ def outcome_of(line: str) -> str:
     return "refused" if line.startswith("Not done") else "done"
 
 
-async def resolve(decision_id: int, person: Any, *, approve: bool) -> str:
-    """Approve or skip a card for ``person``, the proven tapper. Returns the
-    line to show under the card."""
+async def resolve(decision_id: int, person: Any, *, approve: bool, allow: bool = False) -> str:
+    """Approve or skip a card for ``person``, the proven tapper; ``allow``
+    is the "next time" button (approve, and allow it from now on). Returns
+    the line to show under the card."""
     from fastapi import HTTPException
 
     from openexecutive.api.routes.decisions import resolve_in_chat
@@ -275,7 +336,7 @@ async def resolve(decision_id: int, person: Any, *, approve: bool) -> str:
     kind = instance.decision_class if instance is not None else ""
     _resolving.add(decision_id)
     try:
-        await resolve_in_chat(decision_id, person, approve=approve)
+        await resolve_in_chat(decision_id, person, approve=approve, allow=allow)
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, str) else "it couldn't be done."
         return outcome_text(approve, detail)
@@ -418,7 +479,7 @@ def _waiting(now: datetime) -> list[Any]:
     return sorted(cards, key=lambda c: c.id)
 
 
-async def _send(channel: str, person: Any, decision_id: int, text: str, labels: tuple[str, str]) -> None:
+async def _send(channel: str, person: Any, decision_id: int, text: str, labels: tuple[str, ...]) -> None:
     from openexecutive.config import get_settings
 
     if channel == "telegram":
@@ -515,6 +576,8 @@ def maybe_push(now: datetime) -> bool:
 
 __all__ = [
     "MAX_CARDS",
+    "ALLOW",
+    "allow_label",
     "callback_data",
     "card_buttons",
     "card_here",
@@ -522,6 +585,7 @@ __all__ = [
     "chat_for",
     "maybe_push",
     "parse_callback",
+    "tapped_allow",
     "push_waiting",
     "resolve",
     "shows_cards",

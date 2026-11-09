@@ -673,7 +673,7 @@ def _find_discord_sender(discord_user_id: str) -> object:
 _MAX_CARD_TEXT = 1900
 
 
-def _card_view(decision_id: int, labels: tuple[str, str] = ("Approve", "Skip")) -> Any:
+def _card_view(decision_id: int, labels: tuple[str, ...] = ("Approve", "Skip")) -> Any:
     """A card's Approve and Skip buttons. Their custom ids carry the card
     (``channel_cards.callback_data``); ``on_interaction`` takes the tap, so it
     still works after a restart."""
@@ -690,6 +690,11 @@ def _card_view(decision_id: int, labels: tuple[str, str] = ("Approve", "Skip")) 
         label=labels[1], style=discord.ButtonStyle.secondary,
         custom_id=channel_cards.callback_data(decision_id, channel_cards.SKIP),
     ))
+    if len(labels) > 2:
+        view.add_item(discord.ui.Button(
+            label=labels[2], style=discord.ButtonStyle.primary,
+            custom_id=channel_cards.callback_data(decision_id, channel_cards.ALLOW),
+        ))
     return view
 
 
@@ -736,10 +741,11 @@ async def handle_card_tap(interaction: Any) -> None:
         await interaction.response.send_message("This card is no longer there.", ephemeral=True)
         return
     decision_id, approve = parsed
+    allow = channel_cards.tapped_allow(data.get("custom_id") if isinstance(data, dict) else None)
     # Deciding can take longer than Discord's three seconds.
     await interaction.response.defer()
-    line = await channel_cards.resolve(decision_id, person, approve=approve)
-    choice = "approve" if approve else "skip"
+    line = await channel_cards.resolve(decision_id, person, approve=approve, allow=allow)
+    choice = "allow" if allow else "approve" if approve else "skip"
     await asyncio.to_thread(
         audit_log,
         "integration_inbound",
@@ -1844,7 +1850,7 @@ async def send_dm(discord_user_id: str, text: str) -> str | None:
     return last_message_id
 
 
-async def send_dm_card(discord_user_id: str, decision_id: int, text: str, labels: tuple[str, str]) -> None:
+async def send_dm_card(discord_user_id: str, decision_id: int, text: str, labels: tuple[str, ...]) -> None:
     """Send a card waiting outside any chat to ``discord_user_id``'s DM with
     the bot, with its two buttons (``channel_cards.push_waiting``); the
     bot's ``on_interaction`` takes the tap. Raises when it couldn't."""
@@ -1876,6 +1882,9 @@ async def send_dm_card(discord_user_id: str, decision_id: int, text: str, labels
                      "custom_id": channel_cards.callback_data(decision_id, channel_cards.APPROVE)},
                     {"type": 2, "style": 2, "label": labels[1],
                      "custom_id": channel_cards.callback_data(decision_id, channel_cards.SKIP)},
+                    *([{"type": 2, "style": 1, "label": labels[2],
+                        "custom_id": channel_cards.callback_data(decision_id, channel_cards.ALLOW)}]
+                      if len(labels) > 2 else []),
                 ]}],
             },
         )

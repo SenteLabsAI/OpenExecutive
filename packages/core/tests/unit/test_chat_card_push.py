@@ -126,7 +126,7 @@ def test_send_in_a_chat_app_sends_the_draft_as_its_person(owner: int, monkeypatc
     card = _reply(owner)
     line = asyncio.run(channel_cards.resolve(card, get_person(owner), approve=True))
     assert line == "Sent."
-    assert calls == [{"caller": ChatTap(OWNER), "resolver": owner, "confirm": {}}]
+    assert calls == [{"caller": ChatTap(OWNER), "resolver": owner, "confirm": {}, "allow": False}]
 
 
 def test_a_send_that_needs_a_second_yes_says_where_to_give_it(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -160,7 +160,7 @@ def test_accept_answers_the_invite(owner: int, monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(invites, "answer", answer)
     card = _card("delegation_invite", {"private": True, "person_id": owner, "title": "Pilot review"}, owner)
     assert asyncio.run(channel_cards.resolve(card, get_person(owner), approve=True)) == "Accepted."
-    assert calls == [{"caller": ChatTap(OWNER), "resolver": owner, "answer": "accept"}]
+    assert calls == [{"caller": ChatTap(OWNER), "resolver": owner, "answer": "accept", "allow": False}]
 
 
 def test_a_take_the_lead_card_is_done_as_it_stands(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:

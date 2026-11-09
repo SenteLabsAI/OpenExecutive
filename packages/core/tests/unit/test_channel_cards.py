@@ -267,7 +267,7 @@ def test_a_tap_answers_audits_and_leaves_the_card_without_buttons(
                         lambda chat: person if chat == "4242" else None)
     resolved: list[tuple[int, Any, bool]] = []
 
-    async def resolve(decision_id: int, who: Any, *, approve: bool) -> str:
+    async def resolve(decision_id: int, who: Any, *, approve: bool, allow: bool = False) -> str:
         resolved.append((decision_id, who, approve))
         return "Approved."
 
@@ -301,7 +301,7 @@ def test_a_tap_answers_audits_and_leaves_the_card_without_buttons(
 def test_a_second_tap_while_the_first_is_booking_is_turned_away(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[int] = []
 
-    async def slow(decision_id: int, person: Any, *, approve: bool) -> None:
+    async def slow(decision_id: int, person: Any, *, approve: bool, allow: bool = False) -> None:
         calls.append(decision_id)
         await asyncio.sleep(0.05)
 
@@ -321,7 +321,7 @@ def test_a_second_tap_while_the_first_is_booking_is_turned_away(monkeypatch: pyt
 def test_a_busy_tap_only_answers(fake_telegram: _FakeTelegram, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("openexecutive.people.store.find_person_by_telegram_chat_id", lambda chat: SimpleNamespace(id=3))
 
-    async def busy(decision_id: int, who: Any, *, approve: bool) -> str:
+    async def busy(decision_id: int, who: Any, *, approve: bool, allow: bool = False) -> str:
         return channel_cards.BUSY
 
     monkeypatch.setattr(channel_cards, "resolve", busy)
@@ -337,3 +337,19 @@ def test_a_taps_outcome_is_recorded_apart_from_its_choice() -> None:
     assert channel_cards.outcome_of("Skipped.") == "done"
     assert channel_cards.outcome_of("Not done: This card was already handled.") == "refused"
     assert channel_cards.outcome_of(channel_cards.BUSY) == "busy"
+
+
+def test_a_card_that_can_teach_gets_a_third_button(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace as NS
+
+    teaching = NS(id=7, decision_class="take_the_lead_action", approver_person_id=1,
+                  proposed_payload_json=json.dumps({"kind": "training", "allow": {"key": "k", "label": "Message Sam"}}))
+    plain = NS(id=8, decision_class="take_the_lead_action", approver_person_id=1,
+               proposed_payload_json=json.dumps({"kind": "level"}))
+    cards = {7: teaching, 8: plain}
+    monkeypatch.setattr("openexecutive.memory.decision_ledger.get_decision_instance", lambda i, **k: cards.get(i))
+    assert channel_cards.card_buttons(7) == ("Approve", "Skip", "Approve + on its own next time")
+    assert channel_cards.card_buttons(8) == ("Approve", "Skip")
+    data = channel_cards.callback_data(7, channel_cards.ALLOW)
+    assert channel_cards.parse_callback(data) == (7, True) and channel_cards.tapped_allow(data)
+    assert not channel_cards.tapped_allow(channel_cards.callback_data(7, channel_cards.APPROVE))

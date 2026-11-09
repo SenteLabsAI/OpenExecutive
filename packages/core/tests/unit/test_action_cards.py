@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from openexecutive.api.routes import decisions as decisions_route
 from openexecutive.api.routes import delegation as delegation_route
-from openexecutive.delegation import action_cards, lockdown
+from openexecutive.delegation import action_cards, inbox, lockdown
 from openexecutive.delegation.settings import DelegationOverride, pin_turn_delegation, set_enabled
 from openexecutive.memory.decision_ledger import (
     STATUS_APPROVED_UNCHANGED,
@@ -400,11 +400,11 @@ def _level(monkeypatch: pytest.MonkeyPatch, level: str) -> None:
 
 @pytest.fixture
 def actions_on(roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
-    """Act as me and Handle it for me on, Approvals on Balanced."""
+    """Act as me writing replies to the inbox, Approvals on Balanced."""
     from openexecutive.delegation import handle_it
 
     set_enabled(roster.principal, True, updated_by="t")
-    handle_it.set_(roster.principal, enabled=True, updated_by="t")
+    inbox.set_watch(roster.principal, True, updated_by="test")
     monkeypatch.setattr(handle_it, "signing_ok", lambda: True)
     _level(monkeypatch, "outsiders")
     _settle(roster.principal, roster.teammate, roster.contact)
@@ -460,17 +460,16 @@ def test_a_link_or_amount_goes_too(actions_on: SimpleNamespace, sends: list[Any]
 
 
 @pytest.mark.parametrize(("arrange", "reason"), [("careful", "level"), ("off", "handle_it_off")])
-def test_careful_or_handle_it_off_waits(
+def test_careful_or_the_inbox_watcher_off_waits(
     actions_on: SimpleNamespace, sends: list[Any], signed: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
     arrange: str, reason: str,
 ) -> None:
-    from openexecutive.delegation import handle_it
 
     roster = actions_on
     if arrange == "careful":
         _level(monkeypatch, "ask")
     else:
-        handle_it.set_(roster.principal, enabled=False, updated_by="t")
+        inbox.set_watch(roster.principal, False, updated_by="test")
     person = people_store.get_person(roster.principal)
     checked = action_cards.check([_message(roster.teammate)], person, now=datetime.now(UTC))
     assert not isinstance(checked, str)
@@ -503,7 +502,6 @@ def test_an_invite_on_its_own_goes_through_the_meeting_gate(
 def test_a_card_held_at_the_last_check_waits_as_an_ordinary_card(
     actions_on: SimpleNamespace, sends: list[Any], signed: dict[str, Any],
 ) -> None:
-    from openexecutive.delegation import handle_it
 
     roster = actions_on
     person = people_store.get_person(roster.principal)
@@ -511,7 +509,7 @@ def test_a_card_held_at_the_last_check_waits_as_an_ordinary_card(
     assert not isinstance(checked, str)
     decision_id = action_cards.propose(person, checked, "y", session_id=None, on_its_own=True)
     # Turned off since: held, handed back to wait on a tap.
-    handle_it.set_(roster.principal, enabled=False, updated_by="t")
+    inbox.set_watch(roster.principal, False, updated_by="test")
     assert asyncio.run(action_cards.run_on_its_own(decision_id, person)) is None
     card = get_decision_instance(decision_id)
     assert card is not None and card.status == "proposed" and card.gate_mode == "propose" and sends == []
@@ -623,3 +621,39 @@ def test_a_drive_card_waits_for_drive_to_be_connected(roster: SimpleNamespace, m
 
     monkeypatch.setattr(mcp_gateway, "get_active_gateway", lambda: None)
     assert "isn't connected" in _propose(_session(FakeMailbox()), {"why": "x", "actions": [_drive(two="x.pdf")]})["error"]
+
+
+# ── In training ───────────────────────────────────────────────────────────────
+
+
+def test_in_training_a_card_waits_until_they_allow_who_it_reaches(
+    actions_on: SimpleNamespace, sends: list[Any], signed: dict[str, Any],
+) -> None:
+    from openexecutive.delegation import training
+
+    roster = actions_on
+    training.set_(roster.principal, {training.TRAINING: True}, updated_by="t")
+    person = people_store.get_person(roster.principal)
+    checked = action_cards.check([_message(roster.teammate)], person, now=datetime.now(UTC))
+    assert not isinstance(checked, str)
+    assert action_cards.on_its_own_refusal(person, checked, now=datetime.now(UTC)) == "training"
+    result = _propose(_session(FakeMailbox()), {"why": "y", "actions": [_message(roster.teammate)]})
+    assert result["status"] == "waiting_for_approval" and sends == []
+    card = get_decision_instance(result["decision_id"])
+    assert card is not None and action_cards.cards(person)[0].can_allow is True
+    # The tap with "on its own next time" does it and allows Ben from now on.
+    asyncio.run(action_cards.approve(card, caller=None, resolver=roster.principal, allow=True))
+    assert len(sends) == 1 and training.allowed_person(roster.principal, TEAM) is not None
+    again = _propose(_session(FakeMailbox()), {"why": "y", "actions": [_message(roster.teammate, "And Friday?")]})
+    assert again["status"] == "done_on_its_own" and len(sends) == 2
+
+
+def test_allow_is_only_for_cards_in_training(
+    actions_on: SimpleNamespace, sends: list[Any], signed: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    roster = actions_on
+    _level(monkeypatch, "ask")
+    card = _card(_session(FakeMailbox()), [_message(roster.teammate)])
+    with pytest.raises(action_cards.ApproveRefused) as err:
+        asyncio.run(action_cards.approve(card, caller=None, resolver=roster.principal, allow=True))
+    assert err.value.code == "cant_allow" and sends == []

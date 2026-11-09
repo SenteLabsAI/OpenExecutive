@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 import Icon from "@/components/Icon";
-import AdvancedFold from "@/components/settings/AdvancedFold";
-import { WritesCard } from "@/components/settings/ReachCard";
+import { ReachCard } from "@/components/settings/ReachCard";
 import SettingsCard from "@/components/settings/SettingsCard";
+import type { DelegationLoad } from "@/components/settings/useDelegation";
 import Switch from "@/components/Switch";
 import Button from "@/components/ui/Button";
 import {
@@ -24,6 +24,7 @@ import {
   type DelegationTeam,
   type DescribedVoice,
   type InboxWatch,
+  type OutsideContentMode,
   type ReadMyCalendar,
   type VoiceProfile,
 } from "@/lib/api";
@@ -31,21 +32,17 @@ import { formatAgo } from "@/lib/setupStatus";
 import { addPhrase, markNew, STYLE_PHRASES, styleSentences } from "@/lib/voiceStyle";
 import { PageSpinner } from "@/components/ui/Spinner";
 
-// Delegate → Act as me: let the Executive draft email AS you, in your own
-// Gmail Drafts, when you ask it to — and, with What it writes as you at
-// Draft replies automatically, for mail that needs you, which it sends when you tap Send
-// on Today (or on its own, under Handle it for me, which has its own tab).
-// Backed by GET /delegation, PUT /delegation/reach (WritesCard) and /delegation/voice.
-// Not offered to anyone who can't have it (the owner can, and team members
-// once the owner lets them: PUT /delegation/team) or on a backend without
-// it: the hub then shows no tile, and this page says so.
+// Delegate → As you (Act as me): the Executive writes email as you, in your
+// own mailbox, when you ask it to and, at Your inbox, for mail that needs
+// you; Approvals and In training decide which of those go on their own.
+// Backed by GET /delegation, PUT /delegation/reach (ReachCard) and
+// /delegation/voice. Not offered to anyone who can't have it (the owner can,
+// and team members once the owner lets them: PUT /delegation/team).
 //
-// The page body: the mailbox and What it writes as you (with the inbox
-// watcher's status under Draft replies automatically) up front; How I write, the
-// page's `advanced` cards and Let team members use it under Advanced.
-
-export const ACT_AS_ME_INTRO =
-  "Drafts written as you, in your own mailbox. You send them.";
+// The block: the mailbox and How far it goes as you (with the inbox
+// watcher's status under Your inbox), then Read my calendar and the page's
+// `children` (In training, what it's learned). How I write and Let team
+// members use it are exported for the page's Advanced fold.
 
 const LENGTHS = ["short", "medium", "long"] as const;
 const FORMALITIES = ["casual", "neutral", "formal"] as const;
@@ -77,52 +74,21 @@ function greetingFields(p: VoiceProfile): Record<string, string> {
   return Object.fromEntries(AUDIENCES.map((a) => [a, p.greetings[a] ?? ""]));
 }
 
-// `onSettings` hears every change made here, so the page's other cards
-// (What it's learned) keep up; `children` sit after Read my calendar, and
-// `advanced` (with its `advancedLabel` for the fold's summary) after How I
-// write, under Advanced.
+// The page loads the settings once (useDelegation) and every card reports
+// its change through `setSettings`, so they all show the same state.
+// `children` sit after Read my calendar. `level` is the Approvals level,
+// for the line under the picker.
 export default function ActAsMeCard({
-  onSettings,
+  load,
+  level,
   children,
-  advanced,
-  advancedLabel,
 }: {
-  onSettings?: (next: DelegationSettings) => void;
+  load: DelegationLoad;
+  level: OutsideContentMode | null;
   children?: ReactNode;
-  advanced?: ReactNode;
-  advancedLabel?: string;
-} = {}) {
-  const [settings, setSettingsState] = useState<DelegationSettings | null>(null);
-  const setSettings = useCallback(
-    (next: DelegationSettings | ((prev: DelegationSettings | null) => DelegationSettings | null)) => {
-      setSettingsState(next);
-      if (typeof next !== "function") onSettings?.(next);
-    },
-    [onSettings],
-  );
-  const [state, setState] = useState<"loading" | "hidden" | "ready" | "error">("loading");
+}) {
+  const { settings, state, setSettings } = load;
   const [busy, setBusy] = useState(false);
-
-  const load = useCallback(async (signal?: AbortSignal) => {
-    try {
-      const next = await getDelegation(signal);
-      if (!next) {
-        setState("hidden");
-        return;
-      }
-      setSettingsState(next);
-      setState("ready");
-    } catch (err) {
-      if ((err as Error)?.name === "AbortError") return;
-      setState("error");
-    }
-  }, []);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    void load(controller.signal);
-    return () => controller.abort();
-  }, [load]);
 
   // While an inbox check runs, look again every few seconds until it's done.
   // A failed look keeps the card as it is and tries again; after
@@ -144,13 +110,13 @@ export default function ActAsMeCard({
       polls.current += 1;
       getDelegation()
         .then((next) => {
-          if (next) setSettingsState(next);
+          if (next) setSettings(next);
         })
         .catch(() => { /* keep the card; the next look may work */ })
         .finally(() => setPollTick((n) => n + 1));
     }, CHECK_POLL_MS);
     return () => clearTimeout(timer);
-  }, [checking, pollTick]);
+  }, [checking, pollTick, setSettings]);
 
   if (state === "loading") return <PageSpinner />;
   if (state === "hidden") {
@@ -178,8 +144,14 @@ export default function ActAsMeCard({
 
   const recheck = async () => {
     setBusy(true);
-    await load();
-    setBusy(false);
+    try {
+      const next = await getDelegation();
+      if (next) setSettings(next);
+    } catch {
+      // Keep what's shown; Check again can be tapped once more.
+    } finally {
+      setBusy(false);
+    }
   };
 
   const pre =
@@ -227,9 +199,10 @@ export default function ActAsMeCard({
       </SettingsCard>
 
       {connected || on ? (
-        <WritesCard
+        <ReachCard
           settings={settings}
           onSettings={setSettings}
+          level={level}
           inbox={
             settings.inbox?.enabled && (
               <InboxSection
@@ -239,7 +212,7 @@ export default function ActAsMeCard({
                 onInbox={(inbox) => {
                   setStoppedWaiting(false);
                   polls.current = 0;
-                  setSettings((prev) => (prev ? { ...prev, inbox } : prev));
+                  setSettings({ ...settings, inbox });
                 }}
               />
             )
@@ -257,17 +230,6 @@ export default function ActAsMeCard({
       )}
 
       {children}
-
-      <AdvancedFold
-        id="act-as-me-advanced"
-        summary={["How I write", advanced ? advancedLabel : null, settings.team ? "Let team members use it" : null]
-          .filter(Boolean)
-          .join(" · ")}
-      >
-        <VoiceSection connected={connected} outlook={outlook} />
-        {advanced}
-        {settings.team && <TeamSection team={settings.team} onSettings={setSettings} />}
-      </AdvancedFold>
     </>
   );
 }
@@ -276,7 +238,7 @@ export default function ActAsMeCard({
 // only to the owner and only where the install allows it. Each member
 // connects their own Gmail and turns it on for themselves; the owner sees
 // counts only, never their mail, drafts or reply cards.
-function TeamSection({
+export function TeamSection({
   team,
   onSettings,
 }: {
@@ -332,7 +294,7 @@ function TeamSection({
   );
 }
 
-// Inside What it writes as you, under Draft replies automatically: how the inbox
+// Inside How far it goes as you, under Your inbox: how the inbox
 // watcher is doing, Check now (POST /delegation/inbox/check) and where its
 // replies are kept (PUT /delegation/inbox {mailbox_drafts}).
 function InboxSection({
@@ -457,7 +419,7 @@ function CalendarSection({
             ? "Connect your mailbox above first."
             : actAsMeOn
               ? "Off: it can't see your calendar. On, it reads it when you ask, and never changes it."
-              : "Set What it writes as you above Off first."
+              : "Set How far it goes as you above Off first."
       }
       action={
         <Switch
@@ -490,7 +452,7 @@ function CalendarSection({
 // that into the style, shown with what's new marked and a sample reply,
 // saved only with Save), or learn it from your sent mail. The fields sit
 // behind "Fine-tune details", and stay open while an edit is unsaved.
-function VoiceSection({ connected, outlook = false }: { connected: boolean; outlook?: boolean }) {
+export function VoiceSection({ connected, outlook = false }: { connected: boolean; outlook?: boolean }) {
   const [mode, setMode] = useState<"view" | "describe" | "review">("view");
   const [description, setDescription] = useState("");
   const [proposed, setProposed] = useState<DescribedVoice | null>(null);

@@ -2069,20 +2069,25 @@ export interface InboxWatch {
   mailbox_drafts?: boolean;
 }
 
-// Something Act as me learned from your edits, yours alone (DELETE
-// /delegation/learned/{id}): how you write to someone.
+// Something Act as me learned, yours alone (DELETE /delegation/learned/{id}):
+// someone it may send to on its own ("training"), or how you write to
+// someone ("drafts").
 export interface TrainingLearned {
   id: number;
   label: string;
-  setting: string;
+  setting: "training" | "drafts" | string;
   // What you sent after changing a draft, kept as an example ("").
   example: string;
   uses: number;
   created_at: string;
 }
 
-// Learn from my edits (delegation/training.py).
+// In training and Learn from my edits (delegation/training.py). `training`:
+// nothing goes out as you on its own, on any Approvals level, until you tick
+// "Send to them on its own next time" on a card; `drafts`: a draft you change
+// before sending is kept as how you write to that person.
 export interface Training {
+  training: boolean;
   drafts: boolean;
   learned: TrainingLearned[];
 }
@@ -2107,8 +2112,9 @@ export interface ReplyDisclosure {
   line: string;
 }
 
-// Handle it for me: the inbox watcher sends some replies on its own
-// (delegation/handle_it.py). One switch; the Approvals level decides what goes.
+// Whether replies to your inbox may go on their own (delegation/handle_it.py):
+// no switch of its own. On while Your inbox drafts is on; Approvals and In
+// training decide each one.
 export interface HandleIt {
   enabled: boolean;
   // Whether this server can tie the switch to you (signed sign-ins or local
@@ -2172,6 +2178,9 @@ export interface ReplyCard {
   waited_because?: string;
   // "follow_up": the draft chases your own unanswered email.
   source?: string;
+  // In training: "Send to them on its own next time" is offered (this
+  // sender, or a follow-up's people, aren't allowed yet).
+  can_allow?: boolean;
   // Learn from my edits: "Do it like this next time" keeps your changed draft.
   learns_style?: boolean;
   // Also saved in your mailbox's Drafts; false when it waits on this card
@@ -2569,14 +2578,14 @@ export async function removeTrainingLearned(id: number): Promise<DelegationSetti
   return (await res.json()) as DelegationSettings;
 }
 
-// Learn from my edits on or off.
-export async function setTraining(update: { drafts: boolean }): Promise<DelegationSettings> {
+// In training, or Learn from my edits, on or off.
+export async function setTraining(update: { training?: boolean; drafts?: boolean }): Promise<DelegationSettings> {
   const res = await fetch(`${API_BASE}/delegation/training`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(update),
   });
-  if (!res.ok) throw await delegationError(res, "Couldn't change Learn from my edits.");
+  if (!res.ok) throw await delegationError(res, "Couldn't change that.");
   delegationChanged();
   return (await res.json()) as DelegationSettings;
 }
@@ -2601,17 +2610,6 @@ export async function setReplyDisclosure(update: {
     body: JSON.stringify(update),
   });
   if (!res.ok) throw await delegationError(res, "Couldn't change the AI line on your replies.");
-  return res.json();
-}
-
-export async function setHandleIt(update: { enabled: boolean }): Promise<DelegationSettings> {
-  const res = await fetch(`${API_BASE}/delegation/handle-it`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(update),
-  });
-  if (!res.ok) throw await delegationError(res, "Couldn't change Handle it for me.");
-  delegationChanged();
   return res.json();
 }
 
@@ -2701,13 +2699,16 @@ function strings(value: unknown): string[] {
 // Send the reply's draft from your Gmail, exactly as it is there (POST
 // /decisions/{id}/approve). `confirm` is your second yes: the recipients you
 // were shown, and that a newer message in the thread is fine.
-// `example` keeps your sent version when you changed the draft (Learn from
-// my edits).
+// `allow` is "Send to them on its own next time" (In training): replies and
+// follow-ups to this sender (a follow-up's people) go on their own from now
+// on, where Approvals lets them; `example` keeps your sent version when you
+// changed the draft (Learn from my edits).
 export async function sendReplyCard(
   id: number,
   confirm?: {
     recipients: string[];
     thread_moved_on?: boolean;
+    allow?: boolean;
     example?: boolean;
     // The card's caught_up_at as shown: brought up to date since asks again.
     seen_caught_up_at?: string;
@@ -2815,6 +2816,8 @@ export interface ActionCard {
   created_at: string;
   why: string;
   actions: ActionCardAction[];
+  // In training: "on its own next time" is offered.
+  can_allow?: boolean;
 }
 
 // What happened to one action: done, waiting (sent to whoever approves
@@ -2835,12 +2838,13 @@ export async function getActionCards(signal?: AbortSignal): Promise<ActionCard[]
 }
 
 // Do the ticked actions (`only`, by index) of an action card. Returns what
-// happened to each.
-export async function approveActionCard(id: number, only: number[]): Promise<ActionCardResult[]> {
+// happened to each. `allow` is "on its own next time" (In training): everyone
+// the ticked actions reach may be written to on its own from now on.
+export async function approveActionCard(id: number, only: number[], allow = false): Promise<ActionCardResult[]> {
   const res = await fetch(`${API_BASE}/decisions/${id}/approve`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ edits: { only } }),
+    body: JSON.stringify({ edits: allow ? { only, allow: true } : { only } }),
   });
   if (!res.ok) throw await delegationError(res, "Couldn't do that.");
   const body = (await res.json()) as { final_payload_json?: string | null };
@@ -2874,7 +2878,9 @@ export interface InviteCard {
   clash_checked: boolean;
   // false: your calendar sign-in can read but not answer invites yet.
   can_answer: boolean;
-  // Why Handle it for me left it for you ("" when it was off).
+  // In training: "Accept from them on its own next time" is offered.
+  can_allow?: boolean;
+  // Why it waited for you instead of accepting ("" when nothing held it).
   waited_because: string;
   connect_command: string;
 }
@@ -2888,12 +2894,13 @@ export async function getInviteCards(signal?: AbortSignal): Promise<InviteCard[]
   return body.cards;
 }
 
-// Accept or decline an invite in your own calendar.
-export async function answerInviteCard(id: number, answer: "accept" | "decline"): Promise<void> {
+// Accept or decline an invite in your own calendar. `allow` (accept, In
+// training): everything sent as you to that person goes on its own from now on.
+export async function answerInviteCard(id: number, answer: "accept" | "decline", allow = false): Promise<void> {
   const res = await fetch(`${API_BASE}/decisions/${id}/approve`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ edits: { answer } }),
+    body: JSON.stringify({ edits: allow ? { answer, allow: true } : { answer } }),
   });
   if (!res.ok) throw await delegationError(res, "Couldn't answer that invite.");
 }
@@ -6261,9 +6268,10 @@ export async function declineWatchSuggestion(
   return res.json();
 }
 
-// How far it goes as you (PUT /delegation/reach): one dial over Act as me,
-// the inbox watcher, Handle it for me and its level, and Everything.
-export type ReachStep = "off" | "when_asked" | "inbox" | "handle_it";
+// How far it goes as you (PUT /delegation/reach): Off, When you ask, or
+// Your inbox too (drafts for mail that needs you; Approvals decides which
+// go on their own).
+export type ReachStep = "off" | "when_asked" | "inbox";
 
 export async function setReach(step: ReachStep): Promise<DelegationSettings> {
   const res = await fetch(`${API_BASE}/delegation/reach`, {

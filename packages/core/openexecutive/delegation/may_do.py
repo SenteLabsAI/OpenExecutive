@@ -9,14 +9,18 @@ read from the same code the gates use, so the page can't say something the
 gates don't do:
 
 - **As you** (the caller's own, ``can_delegate``): Write drafts as me
-  (``settings.is_enabled``), Draft replies to my inbox (``inbox.get_watch``),
-  Handle it for me (``handle_it.get``) and the Approvals level
-  (``handle_it.approvals_hold``), and the cards it suggests from their mail
+  (``settings.is_enabled``), Draft replies to my inbox (``inbox.get_watch``,
+  which is also what lets replies go on their own, ``handle_it.get``),
+  their own In training (``training.in_training``: everything waits until
+  they allow each person) and
+  the Approvals level (``handle_it.approvals_hold``), and the cards it
+  suggests from their mail
   (``action_cards.on_its_own_refusal``). The checks in ``handle_it.refusal``
   and ``follow_up_refusal`` are the source of each row.
 - **As the Executive** (the principal's alone): what it does on its own,
   which Approvals decides (``take_the_lead._gated``): Hands-off goes,
-  otherwise an Approve card. Meetings asked for in chat
+  otherwise an Approve card; In training (``take_the_lead.get``) holds
+  everything not yet allowed, on any level. Meetings asked for in chat
   (``calendar_tools.handle_create_calendar_event``) book when the owner
   asks.
 - **Departments**: the Approvals level each department's work runs at
@@ -43,7 +47,6 @@ Outcome = Literal["goes", "waits", "always_waits", "drafts", "off"]
 
 # Where each row's setting lives: the UI turns these into links.
 SETTING_ACT_AS_ME = "act_as_me"
-SETTING_HANDLE_IT = "handle_it"
 SETTING_TAKE_THE_LEAD = "take_the_lead"
 SETTING_PAUSE = "pause"
 # Approvals (Careful / Balanced / Hands-off), on Settings → Your Executive.
@@ -119,9 +122,9 @@ def _plural(n: int, one: str, many: str | None = None) -> str:
 
 
 def as_you(person_id: int, *, can_have_it: bool, signing: bool, is_principal: bool = False) -> Section:
-    """What goes out as ``person_id``, from their own mailbox: Handle it for
-    me and Approvals decide."""
-    from openexecutive.delegation import handle_it, inbox
+    """What goes out as ``person_id``, from their own mailbox: what it
+    writes as them, and Approvals, decide."""
+    from openexecutive.delegation import inbox
     from openexecutive.delegation.settings import is_enabled
     from openexecutive.orchestrator import outside_mode
 
@@ -135,12 +138,12 @@ def as_you(person_id: int, *, can_have_it: bool, signing: bool, is_principal: bo
 
     drafts_on = is_enabled(person_id)
     watching = drafts_on and inbox.get_watch(person_id).enabled
-    settings = handle_it.get(person_id)
-    handling = watching and settings.enabled
     level = _level()
     level_word = _LEVEL_WORDS.get(level, "Careful")
     careful = level == outside_mode.ASK
-    sends = handling and signing and not careful
+    in_training = _in_training(person_id)
+    sends = watching and signing and not careful and not in_training
+    training_why = "In training: each one waits on a card until you allow that person."
 
     rows: list[Row] = []
     notes: list[str] = []
@@ -171,17 +174,11 @@ def as_you(person_id: int, *, can_have_it: bool, signing: bool, is_principal: bo
                 else "Write drafts as me is off. Replies to your inbox need it."
             )
             return Row(row_id, what, "off", "Off", why, SETTING_ACT_AS_ME)
-        if not settings.enabled:
-            return Row(
-                row_id, what, "waits", "Waits for you",
-                "Each one waits on a card for you to send. Handle it for me is off.",
-                SETTING_HANDLE_IT,
-            )
         if not signing:
             return Row(
                 row_id, what, "waits", "Waits for you",
                 "Signed sign-ins are off on this server, so nothing goes out as you.",
-                SETTING_HANDLE_IT,
+                SETTING_ACT_AS_ME,
             )
         if careful:
             return Row(
@@ -189,7 +186,9 @@ def as_you(person_id: int, *, can_have_it: bool, signing: bool, is_principal: bo
                 "Approvals is on Careful, so each one waits on a card for you.",
                 SETTING_APPROVALS,
             )
-        return Row(row_id, what, "goes", "Goes out", f"{goes_why} Approvals is on {level_word}.", SETTING_HANDLE_IT)
+        if in_training:
+            return Row(row_id, what, "waits", "Waits for you", training_why, SETTING_ACT_AS_ME)
+        return Row(row_id, what, "goes", "Goes out", f"{goes_why} Approvals is on {level_word}.", SETTING_ACT_AS_ME)
 
     rows.append(mail_row(
         "replies", "Replies to your email.",
@@ -208,21 +207,23 @@ def as_you(person_id: int, *, can_have_it: bool, signing: bool, is_principal: bo
     # Messages and meetings it suggests from their mail.
     if drafts_on:
         what = "Messages and invites it suggests from your mail."
-        if not settings.enabled:
+        if not watching:
             rows.append(Row(
                 "actions", what, "waits", "Waits for you",
-                "Each one waits on a card. Handle it for me is off.", SETTING_HANDLE_IT,
+                "Each one waits on a card. Draft replies to my inbox is off.", SETTING_ACT_AS_ME,
             ))
         elif not signing:
             rows.append(Row(
                 "actions", what, "waits", "Waits for you",
-                "Signed sign-ins are off on this server, so nothing goes out as you.", SETTING_HANDLE_IT,
+                "Signed sign-ins are off on this server, so nothing goes out as you.", SETTING_ACT_AS_ME,
             ))
         elif careful:
             rows.append(Row(
                 "actions", what, "waits", "Waits for you",
                 "Approvals is on Careful, so each one waits on a card for you.", SETTING_APPROVALS,
             ))
+        elif in_training:
+            rows.append(Row("actions", what, "waits", "Waits for you", training_why, SETTING_ACT_AS_ME))
         elif level == outside_mode.TRUST:
             rows.append(Row(
                 "actions", what, "goes", "Goes out", "Approvals is on Hands-off.", SETTING_APPROVALS,
@@ -235,12 +236,7 @@ def as_you(person_id: int, *, can_have_it: bool, signing: bool, is_principal: bo
                 SETTING_APPROVALS,
             ))
 
-    if handling:
-        notes.append(
-            "Handle it for me needs Draft replies to my inbox and Write drafts as me. Turning either off "
-            "turns Handle it for me off too."
-        )
-    if handling and not signing:
+    if watching and not signing:
         notes.append(
             "Signed sign-ins are off on this server, so nothing goes out as you until they're on."
         )
@@ -263,6 +259,29 @@ def as_you(person_id: int, *, can_have_it: bool, signing: bool, is_principal: bo
 
 
 _LEVEL_WORDS: dict[str, str] = {"ask": "Careful", "outsiders": "Balanced", "trust": "Hands-off"}
+
+
+def _in_training(person_id: int) -> bool:
+    """Whether ``person_id``'s own In training is on (``delegation.training``).
+    Unreadable is off, as the gate reads it."""
+    from openexecutive.delegation import training
+
+    try:
+        return training.in_training(person_id)
+    except Exception:
+        logger.warning("may_do: couldn't read In training", exc_info=True)
+        return False
+
+
+def _lead_in_training() -> bool:
+    """Whether the Executive's own In training is on (``take_the_lead.get``)."""
+    from openexecutive.orchestrator import take_the_lead
+
+    try:
+        return take_the_lead.get(take_the_lead.SCOPE_EXECUTIVE).training
+    except Exception:
+        logger.warning("may_do: couldn't read Take the lead's In training", exc_info=True)
+        return False
 
 
 def _level() -> str:
@@ -289,14 +308,20 @@ def as_the_executive(*, is_principal: bool) -> Section:
     level = _level()
     words = _LEVEL_WORDS.get(level, "Careful")
     hands_off = level == "trust"
-    rows: list[Row] = [
-        Row(
-            "lead", "Messages, bookings, workflows and changes in connected apps it thinks of.",
-            "goes" if hands_off else "waits", "Goes out" if hands_off else "Waits for you",
-            f"Approvals is on {words}."
-            + ("" if hands_off else " Each one comes to you as an Approve card."),
+    what = "Messages, bookings, workflows and changes in connected apps it thinks of."
+    if _lead_in_training():
+        lead = Row(
+            "lead", what, "waits", "Waits for you",
+            "In training: each one comes to you as a card first, until you allow it.", SETTING_TAKE_THE_LEAD,
+        )
+    else:
+        lead = Row(
+            "lead", what, "goes" if hands_off else "waits", "Goes out" if hands_off else "Waits for you",
+            f"Approvals is on {words}." + ("" if hands_off else " Each one comes to you as an Approve card."),
             SETTING_APPROVALS,
-        ),
+        )
+    rows: list[Row] = [
+        lead,
         Row("to_you", "Messages to you.", "goes", "Goes out", "You're who it would ask.", SETTING_NONE),
         _meetings_in_chat(),
     ]

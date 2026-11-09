@@ -68,7 +68,7 @@ test("in a frame, any change off the host list asks; reads and host-list calls d
     assert.match(action.what, new RegExp(`${method} /`));
   }
   // The ones a lured click would most like say what they do.
-  assert.match(frameActionFor("PUT", "/api/backend/delegation/handle-it", "{}", CALLS).what, /^Change Handle it for me/);
+  assert.match(frameActionFor("PUT", "/api/backend/delegation/reach", "{}", CALLS).what, /^Change what the Executive may do as you/);
   assert.match(frameActionFor("POST", "/api/backend/people/3/archive", "{}", CALLS).what, /^Change People/);
   assert.equal(frameActionFor("POST", "/api/backend/decisions/7/approve", undefined, CALLS).card, true);
   // A chat message is on the host list, but sent from this app's page in a

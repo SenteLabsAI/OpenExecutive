@@ -1,21 +1,38 @@
-"""Take the lead: the Executive acts on its own, and Approvals decides each step.
+"""Take the lead (As me): the Executive acts on its own, and Approvals decides each step.
 
 The unattended passes (reflection, research, the scheduler's proactive
 trigger) keep the acting tools they otherwise lose in solo mode (booking,
 starting a workflow, messaging teammates and not just the principal), and
-every acting call they make goes through ``_gated``: on Hands-off it runs,
-on any other level it waits as a ``take_the_lead_action`` decision with an
-Approve card on Today (``hold``). A message only to the principal skips it:
-they are who it would wait for (``_only_to_principal``). Approving carries
-the exact call out (``carry_out``); declining drops it. What goes out as a
-person (their replies and follow-ups) is Handle it for me's, decided by the
-same level (``delegation.handle_it``).
+every acting call they make goes through ``_gated``. A message only to the
+principal skips it: they are who it would wait for (``_only_to_principal``).
+Everything else, in order:
 
-There is no switch, training or Ask first list of its own any more. The
-rule, Ask first and training code below (``check``, ``list_rules``,
-``get`` / ``set_``, ``suggestions``) is no longer consulted by ``_gated``;
-``take_the_lead_allowed`` still holds Learn from my edits' examples
-(feature ``act_as_me``, ``delegation.training``).
+- the owner's added rules (``list_rules``, a person, domain, words or an
+  amount) hold at every level;
+- Careful holds everything;
+- **In training** (``Lead.training``, ``PUT /take-the-lead``) sits above the
+  level: while it is on, everything not yet allowed waits, on any level, as
+  a card that says what it would have done (``hold`` with kind
+  ``TRAINING``). Approving does it once; ticked "Do this on its own next
+  time" it also allows that action (``allowance``: the same action for the
+  same person or thing, ``allow``), and from then on it runs on its own,
+  except on Careful;
+- Hands-off runs everything else;
+- Balanced holds the six ``KINDS`` (money, contracts, people decisions,
+  deleting or sharing, someone new, big sends; ``check``) and runs the
+  rest.
+
+A held call waits as a ``take_the_lead_action`` decision with an Approve
+card on Today, and in the owner's chat app
+(``integrations.channel_cards``). Approving carries the exact call out
+(``carry_out``); declining drops it. What goes out as a person (their
+replies and follow-ups) is ``delegation.handle_it``'s, decided by the same
+level and the person's own In training (``delegation.training``).
+
+The Ask first switches (``Lead.ask_first``) are no longer a setting of
+their own: Balanced asks on every kind, Hands-off on none.
+``take_the_lead_allowed`` also holds As you's allowances and Learn from my
+edits' examples (feature ``act_as_me``).
 
 Pausing the Executive stops all of it: every pass above runs behind the
 scheduler's pause gate. A person approving a held action is their own act,
@@ -1068,8 +1085,6 @@ def learned_note(*, db_path: Path | None = None) -> str:
     wrote or approved word for word. Empty when there's nothing to say."""
     try:
         lead = get(SCOPE_EXECUTIVE, db_path=db_path)
-        if not lead.enabled:
-            return ""
         examples = [a for a in list_allowed(feature=FEATURE, db_path=db_path) if a.example][:_LEARNED_SHOWN]
     except Exception:
         logger.warning("take_the_lead: couldn't read what it's learned", exc_info=True)
@@ -1542,6 +1557,52 @@ def _idem_used(key: str, *, db_path: Path | None = None) -> bool:
 _Handler = Callable[[dict[str, Any]], Awaitable[Any]]
 
 
+def _careful() -> bool:
+    """Whether Approvals is on Careful, where everything waits. Never
+    raises: an error holds."""
+    try:
+        from openexecutive.orchestrator import outside_mode
+
+        return outside_mode.get_mode() == outside_mode.ASK
+    except Exception:
+        logger.warning("take_the_lead: couldn't read the level — holding the action", exc_info=True)
+        return True
+
+
+def _hit(name: str, tool_input: dict[str, Any], *, mcp: bool) -> tuple[Hit | None, Allowed | None]:
+    """Why this call waits (and for what it was allowed, when it runs under
+    an allowance): the owner's rules, then Careful, then In training, then
+    the level. Never raises: an error holds."""
+    try:
+        lead = get(SCOPE_EXECUTIVE)
+        rules = list_rules([SCOPE_COMPANY])
+        text = "\n".join([*_strings(tool_input), *_targets(name, tool_input)[1]])
+        addresses, _ = _targets(name, tool_input)
+        recipients = sorted({a.lower() for a in [*_EMAIL_RE.findall(text), *addresses]})
+        rule = _rule_hit(rules, text, recipients)
+        if rule is not None:
+            return rule, None
+        if _careful():
+            return Hit("level", "it came up while nobody was chatting, and Approvals is on Careful"), None
+        if lead.training:
+            grant = allowance(name, tool_input, mcp=mcp)
+            found = find_allowed(grant[0]) if grant is not None else None
+            if found is None:
+                return Hit(TRAINING, "it's in training and you haven't allowed this yet"), None
+            return None, found
+        if _level_runs():
+            return None, None
+        # Balanced: the six kinds wait, everything else goes.
+        asks = Lead(scope=SCOPE_EXECUTIVE, ask_first=dict.fromkeys(KINDS, True))
+        hit = check(name, tool_input, lead=asks, rules=[], mcp=mcp)
+        if hit is not None:
+            return hit, None
+        return None, None
+    except Exception:
+        logger.warning("take_the_lead: the gate failed — holding the action", exc_info=True)
+        return Hit("rule", "its rules couldn't be read"), None
+
+
 def _level_runs() -> bool:
     """Whether the company's Approvals level lets unattended work act on
     its own: Hands-off only (``orchestrator.levels``). Never raises: an
@@ -1557,12 +1618,10 @@ def _level_runs() -> bool:
 
 async def _gated(name: str, inner: _Handler, tool_input: dict[str, Any], *, source: str, mcp: bool) -> str:
     allowed: Allowed | None = None
-    if (not mcp and _only_to_principal(name, tool_input)) or (
-        mcp and _mail_only_to_principal(name, tool_input)
-    ) or _level_runs():
+    if (not mcp and _only_to_principal(name, tool_input)) or (mcp and _mail_only_to_principal(name, tool_input)):
         hit = None
     else:
-        hit = Hit("level", "it came up while nobody was chatting, and Approvals is below Hands-off")
+        hit, allowed = _hit(name, tool_input, mcp=mcp)
     if hit is not None and mcp and not str(name or "").strip():
         # A connected-app call naming no tool is nothing anyone
         # could approve; an empty "The Executive wants to:" card helps no one.
@@ -1718,15 +1777,14 @@ _LAST_WAKE: dict[str, datetime] = {}
 
 
 def wake(reason: str, *, now: datetime | None = None) -> int | None:
-    """Under Hands-off, run the reflection soon (``scheduler.runner``'s
-    ``take_the_lead_wake`` kind) instead of waiting for its daily time: at
-    most one waiting, and one every ``WAKE_GAP``. Below Hands-off each step
-    would only wait on a card, so the daily look is enough. Returns the
+    """Run the reflection soon (``scheduler.runner``'s ``take_the_lead_wake``
+    kind) instead of waiting for its daily time: at most one waiting, and
+    one every ``WAKE_GAP``. At every Approvals level: on Hands-off the steps
+    run, below it each waits on a card on Today, which is still worth
+    having the same hour rather than the next morning. Returns the
     scheduled action's id, or None. Never raises; the pause holds it like
     any scheduled work."""
     try:
-        if not _level_runs():
-            return None
         from openexecutive.memory.episodic import insert_scheduled_action
         from openexecutive.scheduler.runner import TAKE_THE_LEAD_WAKE_KIND, _has_pending_brief
 

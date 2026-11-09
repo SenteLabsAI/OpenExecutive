@@ -634,10 +634,10 @@ _SETTINGS: dict[str, str] = {
     "urgent_through": "Let urgent things through quiet hours",
     "act_as_me": "Act as me",
     "inbox_drafts": "Draft replies to my inbox",
-    "handle_it": "Handle it for me",
 }
-# Turning these on lets the Executive send as the person or act on its own.
-_WIDENING = frozenset({"act_as_me", "handle_it"})
+# Turning these on lets the Executive write as the person, or (inbox
+# replies, where Approvals lets them go) send as them.
+_WIDENING = frozenset({"act_as_me", "inbox_drafts"})
 
 
 async def _find_settings(request: Any) -> list[Item]:
@@ -658,7 +658,7 @@ async def _find_settings(request: Any) -> list[Item]:
         d = await delegation.get_delegation(request)
         state = d.model_dump()
         items.append(Item(id="act_as_me", title=_SETTINGS["act_as_me"], detail="on" if state.get("enabled") else "off"))
-        items += [Item(id=k, title=_SETTINGS[k]) for k in ("inbox_drafts", "handle_it")]
+        items.append(Item(id="inbox_drafts", title=_SETTINGS["inbox_drafts"]))
     except Exception:
         pass
     return items
@@ -706,10 +706,8 @@ async def _change_setting(request: Any, setting: str, value: str) -> str:
     on = _on(value)
     if setting == "act_as_me":
         await delegation.update_delegation(request, delegation.DelegationUpdate(enabled=on))
-    elif setting == "inbox_drafts":
-        await delegation.update_delegation_inbox(request, delegation.InboxUpdate(enabled=on))
     else:
-        await delegation.update_delegation_handle_it(request, delegation.HandleItUpdate(enabled=on))
+        await delegation.update_delegation_inbox(request, delegation.InboxUpdate(enabled=on))
     return f"Turned {label} {'on' if on else 'off'}"
 
 
@@ -839,7 +837,7 @@ _ACTIONS = (
     # Settings
     Action("change_setting", "setting",
            "Change one of the person's own settings: quiet_hours (start-end or off), delivery "
-           "(instant or digest), urgent_through, act_as_me, inbox_drafts, handle_it (on or off)",
+           "(instant or digest), urgent_through, act_as_me, inbox_drafts (on or off)",
            _change_setting, confirm=_setting_needs_tap, value="the new value", card="Set {title} to {value}"),
     Action("check_inbox_now", "inbox", "Check the person's inbox for emails to draft replies to now (use id \"inbox\")",
            _check_inbox),

@@ -1,13 +1,16 @@
 """Handle it for me: the inbox watcher sends some replies on its own.
 
-**The switch.** A third switch under Act as me, after "Draft replies to my
-inbox" (``delegation_handle_it``, one row per person, absent means off). It
-has no dial of its own: Approvals decides (``orchestrator.outside_mode``,
-``approvals_hold``). On Careful every reply waits on a card, since any
-outside read waits there; on Balanced and Hands-off a reply goes on its own
-unless one of the checks below holds it; below Hands-off that includes a
-reply to someone they don't know (``stranger``). On every level the last
-look (``injection_check``) holds anything it flags.
+**No switch of its own.** It is on whenever Act as me writes replies to the
+person's inbox (``delegation.settings.is_enabled`` and the inbox watcher,
+``delegation.inbox.get_watch``): one setting, What it writes as you, on the
+Delegate page. Whether a reply then goes on its own is Approvals' alone
+(``orchestrator.outside_mode``, ``approvals_hold``): on Careful every reply
+waits on a card, since any outside read waits there; on Balanced and
+Hands-off a reply goes on its own unless one of the checks below holds it;
+below Hands-off that includes a reply to someone they don't know
+(``stranger``). On every level the last look (``injection_check``) holds
+anything it flags. ``delegation_handle_it`` (one row per person) is kept
+for what was sent, not read as a switch any more.
 
 Every other email waits on a card for the person to tap Send, as it did
 before. Only the person turns it on, from a session the API knows is theirs
@@ -23,8 +26,9 @@ with the reason recorded.
 
 **What it refuses.** Every one of these keeps the reply on a card:
 
-- it's off, or Approvals is on Careful, or signed sign-ins are off on a
-  server (nothing would tie the switch to the person);
+- Act as me doesn't write replies to their inbox, or Approvals is on
+  Careful, or signed sign-ins are off on a server (nothing would tie the
+  sends to the person);
 - Gmail couldn't authenticate the sender;
 - the classifier wasn't sure enough (``MIN_CONFIDENCE``), or the email
   isn't one of the kinds that need a reply;
@@ -69,7 +73,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from openexecutive.delegation.schema import HANDLE_IT_TABLE, HANDLED_TABLE, ensure_schema
+from openexecutive.delegation.schema import HANDLED_TABLE, ensure_schema
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +133,8 @@ _AMOUNT_RE = re.compile(
 # What each refusal tells the person on the card.
 REASONS: dict[str, str] = {
     "level": "Approvals is on Careful, so what it would send as you waits for you.",
+    # In training (delegation.training): only people they allowed.
+    "training": "In training: you haven't let it send to them on its own yet.",
     "off": "Handle it for me is off.",
     "signing_off": "Sending on its own needs signed sign-ins on this server.",
     "sender_unverified": "Your mail service couldn't confirm who sent it.",
@@ -185,6 +191,28 @@ def content_hold(*texts: str, link_texts: tuple[str, ...] = (), db_path: Path | 
     return None
 
 
+def in_training(person_id: int, *, db_path: Path | None = None) -> bool:
+    """Whether the person's As you is in training (``delegation.training``):
+    then nothing goes on its own but to people they allowed."""
+    from openexecutive.delegation import training
+
+    return training.in_training(person_id, db_path=db_path)
+
+
+def training_hold(person_id: int, addresses: list[str], *, db_path: Path | None = None) -> str | None:
+    """``"training"`` when As you is in training and any of ``addresses``
+    isn't allowed yet; None when it may go (not in training, or every one
+    allowed)."""
+    from openexecutive.delegation import training
+
+    if not training.in_training(person_id, db_path=db_path):
+        return None
+    going = [a for a in addresses if a]
+    if training.all_allowed(person_id, going, db_path=db_path) is None:
+        return "training"
+    return None
+
+
 def approvals_hold(*, db_path: Path | None = None) -> bool:
     """Whether Approvals holds what it would send as someone on its own:
     Careful does (any outside read waits there). Never raises: unreadable
@@ -225,47 +253,18 @@ def _connect(db_path: Path | None = None) -> sqlite3.Connection:
 
 
 def get(person_id: int, *, db_path: Path | None = None) -> HandleIt:
-    """``person_id``'s switch. Never raises: unreadable is off."""
+    """Whether replies may go on their own for ``person_id``: Act as me is
+    on and it writes replies to their inbox. No row of its own. Never
+    raises: unreadable is off."""
     try:
-        conn = _connect(db_path)
-        try:
-            row = conn.execute(
-                f"SELECT enabled FROM {HANDLE_IT_TABLE} WHERE person_id = ?",  # noqa: S608 — constant table name
-                (person_id,),
-            ).fetchone()
-        finally:
-            conn.close()
+        from openexecutive.delegation import inbox
+        from openexecutive.delegation.settings import is_enabled
+
+        enabled = is_enabled(person_id, db_path=db_path) and inbox.get_watch(person_id, db_path=db_path).enabled
     except Exception:
-        logger.warning("delegation.handle_it: couldn't read the switch — treating it as off", exc_info=True)
+        logger.warning("delegation.handle_it: couldn't read the inbox settings — treating it as off", exc_info=True)
         return HandleIt(person_id=person_id)
-    if row is None:
-        return HandleIt(person_id=person_id)
-    return HandleIt(person_id=person_id, enabled=bool(row["enabled"]))
-
-
-def set_(
-    person_id: int,
-    *,
-    enabled: bool | None = None,
-    updated_by: str,
-    db_path: Path | None = None,
-) -> HandleIt:
-    """Change ``person_id``'s switch (callers authorize first)."""
-    current = get(person_id, db_path=db_path)
-    new_enabled = current.enabled if enabled is None else enabled
-    now = datetime.now(UTC).isoformat()
-    conn = _connect(db_path)
-    try:
-        conn.execute(
-            f"INSERT INTO {HANDLE_IT_TABLE} (person_id, enabled, mode, updated_at, updated_by) "  # noqa: S608
-            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(person_id) DO UPDATE SET enabled = excluded.enabled, "
-            "updated_at = excluded.updated_at, updated_by = excluded.updated_by",
-            (person_id, 1 if new_enabled else 0, DEFAULT_MODE, now, updated_by),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    return get(person_id, db_path=db_path)
+    return HandleIt(person_id=person_id, enabled=enabled)
 
 
 def record_handled(
@@ -366,9 +365,15 @@ def _refusal(
         return "off"
     if approvals_hold(db_path=db_path):
         return "level"
-    # Below Hands-off, a reply to someone they don't know waits on a card, as
+    # In training, only a sender they allowed, whoever they are; otherwise,
+    # below Hands-off, a reply to someone they don't know waits on a card, as
     # an invite from one does (delegation.invites).
-    if kind_for(relation) != KIND_REPLY_KNOWN and not hands_off(db_path=db_path):
+    held = training_hold(person_id, [message.from_addr], db_path=db_path)
+    if held is not None:
+        return held
+    if not in_training(person_id, db_path=db_path) and kind_for(relation) != KIND_REPLY_KNOWN and not hands_off(
+        db_path=db_path
+    ):
         return "stranger"
     if not signing_ok():
         return "signing_off"
@@ -443,9 +448,15 @@ def _follow_up_refusal(
         return "off"
     if approvals_hold(db_path=db_path):
         return "level"
-    # Below Hands-off, a follow-up to someone they don't know waits on a card,
-    # as a reply to one does.
-    if kind_for(relation) != KIND_REPLY_KNOWN and not hands_off(db_path=db_path):
+    # In training, only follow-ups to people they allowed, every one of them;
+    # otherwise, below Hands-off, one to someone they don't know waits on a
+    # card, as a reply to one does.
+    held = training_hold(person_id, [*reply.to, *reply.cc], db_path=db_path)
+    if held is not None:
+        return held
+    if not in_training(person_id, db_path=db_path) and kind_for(relation) != KIND_REPLY_KNOWN and not hands_off(
+        db_path=db_path
+    ):
         return "stranger"
     if not signing_ok():
         return "signing_off"
