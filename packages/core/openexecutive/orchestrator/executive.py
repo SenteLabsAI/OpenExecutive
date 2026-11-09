@@ -1601,6 +1601,7 @@ class Executive:
                 user_message=user_message,
                 attachment_blocks=attachment_blocks,
                 retrieved_context=retrieved_context,
+                own_words=memory_text,
             )
             consulted: list[str] = []
             turn_calls: list[tuple[str, str]] = []
@@ -2012,6 +2013,7 @@ class Executive:
             user_message=user_message,
             attachment_blocks=attachment_blocks,
             retrieved_context=retrieved_context,
+            own_words=memory_text,
         )
         turn_calls: list[tuple[str, str]] = []
         try:

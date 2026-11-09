@@ -526,20 +526,14 @@ def decline_watchlist_suggestion(slug: str, body: DeclineBody | None = None) -> 
         # The principal kept the source but objected to the shape of the
         # guess — that is a decline for calibration, not an approval.
         watch_policy.record_outcome_for(item, watch_policy.OUTCOME_DECLINED)
-        result = "kept_high_floor"
-    else:
-        if not ms.delete_pending_suggestion(item.id):
-            raise HTTPException(status_code=409, detail=f"{slug!r} is not a pending research suggestion")
-        try:
-            _record_decline(item, reason)
-        except Exception:
-            logger.exception("watchlist.decline: decline record failed slug=%s", slug)
-        result = "removed"
-    audit_log(
-        watch_policy.EVENT_SUGGESTION_DECLINED,
-        f"Declined watching {slug} ({reason}) — {result}",
-        actor=_API_ACTOR,
-        details={"slug": slug, "watchlist_id": item.id, "target": item.target,
-                 "signal_type": item.signal_type, "reason": reason, "result": result},
-    )
-    return DeclineResponse(slug=slug, reason=reason, result=result)
+        audit_log(
+            watch_policy.EVENT_SUGGESTION_DECLINED,
+            f"Declined watching {slug} ({reason}) — kept_high_floor",
+            actor=_API_ACTOR,
+            details={"slug": slug, "watchlist_id": item.id, "target": item.target,
+                     "signal_type": item.signal_type, "reason": reason, "result": "kept_high_floor"},
+        )
+        return DeclineResponse(slug=slug, reason=reason, result="kept_high_floor")
+    if not watch_policy.decline_suggestion(item, reason, actor=_API_ACTOR):
+        raise HTTPException(status_code=409, detail=f"{slug!r} is not a pending research suggestion")
+    return DeclineResponse(slug=slug, reason=reason, result="removed")

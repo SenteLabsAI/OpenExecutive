@@ -58,11 +58,11 @@ def _alert(**kw: Any) -> int:
 
 
 @contextmanager
-def _turn(person_id: int, message: str) -> Iterator[Session]:
+def _turn(person_id: int, message: str, own_words: str | None = None) -> Iterator[Session]:
     s = Session(from_web_chat=True, caller_person_id=person_id)
     render_and_trust(s)
     token = current_session.set(s)
-    state = outside_content.begin_turn(s, user_message=message)
+    state = outside_content.begin_turn(s, user_message=message, own_words=own_words)
     try:
         yield s
     finally:
@@ -143,6 +143,16 @@ def test_dismiss_declines_the_card(people: SimpleNamespace) -> None:
         out = _call(alert_id=alert_id, reply="dismiss")
     assert out["status"] == "dismissed"
     assert alert_store.get_alert(alert_id).status == "dismissed"
+
+
+def test_only_their_own_words_answer_when_the_message_wraps_them(people: SimpleNamespace) -> None:
+    # A 1:1 sends "No, I don't." inside the call's apps list and notes, whose
+    # "later" and "ok" would otherwise read as keep-it or yes (11-09).
+    alert_id = _alert()
+    wrapped = "[Tools listed for this call: run a read, ok, then later steps]\n\nNo, I don't."
+    with _turn(people.principal, wrapped, own_words="No, I don't."):
+        out = _call(alert_id=alert_id, reply="dismiss")
+    assert out["status"] == "dismissed"
 
 
 def test_a_teammate_answers_their_own_card(people: SimpleNamespace) -> None:

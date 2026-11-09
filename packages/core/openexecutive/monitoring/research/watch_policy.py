@@ -48,8 +48,10 @@ from openexecutive.audit import log_event as audit_log
 from openexecutive.monitoring import store as ms
 from openexecutive.monitoring.models import (
     DECLINE_KIND_EXPIRED,
+    DECLINE_KIND_EXPLICIT,
     DECLINE_REASON_EXPIRED,
     DECLINE_REASON_NOT_RELEVANT,
+    DECLINE_REASON_WRONG_SOURCE,
     MODE_ACTIVE,
     MODE_DRY_RUN,
     ORIGIN_RESEARCH,
@@ -1559,6 +1561,70 @@ def nudge_body(pending: list[WatchlistItem]) -> str:
     if more > 0:
         lines.append(f"• and {more} more on the Watch list")
     return "I'd like to keep an eye on these:\n" + "\n".join(lines)
+
+
+def decline_suggestion(
+    item: WatchlistItem, reason: str, *, actor: str = "principal", db_path: Path | None = None,
+) -> bool:
+    """Remove a pending suggestion and remember the no, so the research
+    pass never proposes that source again under a new slug. False when it
+    was approved, declined or removed meanwhile."""
+    if item.id is None or not ms.delete_pending_suggestion(item.id, db_path=db_path):
+        return False
+    try:
+        ms.insert_decline(
+            normalized_target=normalize_target(item.signal_type, item.target),
+            kind=DECLINE_KIND_EXPLICIT,
+            reason=reason,
+            entity=str(policy_stamp_of(item).get("entity", "")),
+            signal_type=item.signal_type,
+            slug=item.slug,
+            db_path=db_path,
+        )
+        record_outcome_for(item, OUTCOME_DECLINED, db_path=db_path)
+    except Exception:
+        logger.exception("watch_policy: decline record failed slug=%s", item.slug)
+    audit_log(
+        EVENT_SUGGESTION_DECLINED,
+        f"Declined watching {item.slug} ({reason}) — removed",
+        actor=actor,
+        details={"slug": item.slug, "watchlist_id": item.id, "target": item.target,
+                 "signal_type": item.signal_type, "reason": reason, "result": "removed"},
+    )
+    return True
+
+
+def suggestions_on_card(alert: Any, *, db_path: Path | None = None) -> list[WatchlistItem] | None:
+    """The pending suggestions a Needs you card lists, or None when it isn't
+    a watch suggestions card: the principal's pile (``_nudge_if_piled_up``)
+    or a department head's (``Watch suggestions for <Department>``)."""
+    from openexecutive.departments.authority import PROPOSAL_ALERT_SOURCE
+
+    tags = list(getattr(alert, "topic_tags", None) or [])
+    source = getattr(alert, "source", "")
+    if source == NUDGE_ALERT_SOURCE:
+        return [i for i in ms.list_pending_suggestions(db_path=db_path) if i.route_to_person_id is None]
+    if source == PROPOSAL_ALERT_SOURCE and "watchlist" in tags:
+        slugs = {t.split(":", 1)[1] for t in tags if t.startswith("department:")}
+        if slugs:
+            return [i for i in ms.list_pending_suggestions(db_path=db_path) if i.route_to_department in slugs]
+    return None
+
+
+def decline_card_suggestions(alert: Any, *, db_path: Path | None = None) -> int:
+    """A no to a watch suggestions card is a no to what it lists: each
+    pending suggestion on it is declined (that source only), so the Watch
+    list stops asking. Other cards: nothing. Never raises."""
+    try:
+        items = suggestions_on_card(alert, db_path=db_path)
+        if not items:
+            return 0
+        return sum(
+            decline_suggestion(i, DECLINE_REASON_WRONG_SOURCE, actor="executive", db_path=db_path) for i in items
+        )
+    except Exception:
+        logger.exception("watch_policy: declining the card's suggestions failed")
+        return 0
 
 
 def _nudge_if_piled_up(now: datetime, db_path: Path | None) -> int:

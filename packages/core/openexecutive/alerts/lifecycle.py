@@ -307,6 +307,13 @@ def record_ack_feedback(alert: Alert, status: str) -> None:
 
     resolve_alert_outreach(alert, status)
 
+    if status == "dismissed":
+        # A no to the watch suggestions card is a no to the suggestions on
+        # it: otherwise the Watch list keeps asking after the card is gone.
+        from openexecutive.monitoring.research.watch_policy import decline_card_suggestions
+
+        decline_card_suggestions(alert)
+
     slug = watch_slug_from_tags(list(alert.topic_tags or []))
     if slug is None:
         return

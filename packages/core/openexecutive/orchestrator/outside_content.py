@@ -260,6 +260,10 @@ class TurnOutside:
     # The person's own message this turn, as they sent it: what
     # ``card_answers`` reads for their yes.
     user_message: str = ""
+    # Only the words they said, when the caller wrapped them in more (a 1:1
+    # call's apps list and notes, ``Executive.chat``'s ``memory_text``).
+    # Empty means ``user_message`` is theirs as it stands.
+    own_words: str = ""
     # Whether this turn approved or answered a Needs you card
     # (``card_answers``): one per message.
     card_answered: bool = False
@@ -292,6 +296,7 @@ def begin_turn(
     user_message: str = "",
     attachment_blocks: list[dict[str, Any]] | None = None,
     retrieved_context: str = "",
+    own_words: str | None = None,
 ) -> TurnOutside:
     """Start a fresh record for a NEW turn: never the previous turn's.
 
@@ -308,6 +313,7 @@ def begin_turn(
         web=getattr(session, "from_web_chat", False) is True,
         previous=_TURN.get(),
         user_message=user_message or "",
+        own_words=own_words or "",
     )
     from openexecutive.orchestrator import outside_mode
 

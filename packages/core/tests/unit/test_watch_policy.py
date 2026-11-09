@@ -940,6 +940,58 @@ def test_nudge_counts_only_suggestions_no_head_received(db: Path) -> None:
     assert wp.sweep(datetime.now(UTC), db_path=db)["nudged"] == 1
 
 
+def test_a_no_to_the_card_declines_what_it_lists(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Rufus's 11-09 1:1: "No, I don't" cleared the card, but the Watch list
+    # still asked about all five.
+    from openexecutive.alerts import lifecycle
+    from openexecutive.alerts.store import get_alert, list_alerts
+
+    for i in range(3):
+        ms.insert_watchlist_item(
+            slug=f"rss-p{i}", signal_type="rss", target=f"https://p{i}.com/feed",
+            mode=MODE_DRY_RUN, origin=ORIGIN_RESEARCH_PROPOSED, db_path=db,
+        )
+        _backdate(db, f"rss-p{i}", 8)
+    # A department head's suggestion isn't on the principal's card.
+    ms.insert_watchlist_item(
+        slug="rss-head", signal_type="rss", target="https://head.com/feed",
+        mode=MODE_DRY_RUN, origin=ORIGIN_RESEARCH_PROPOSED, route_to_department="finance",
+        route_to_person_id=7, db_path=db,
+    )
+    assert wp.sweep(datetime.now(UTC), db_path=db)["nudged"] == 1
+    card = next(a for a in list_alerts(limit=10, db_path=db) if a.source == wp.NUDGE_ALERT_SOURCE)
+    assert wp.decline_card_suggestions(card, db_path=db) == 3
+    assert [i.slug for i in ms.list_pending_suggestions(db_path=db)] == ["rss-head"]
+    # Remembered: the research pass won't propose them again.
+    assert ms.is_declined("https://p0.com/feed", db_path=db)
+    # Any other card: nothing.
+    other = get_alert(card.id, db_path=db).model_copy(update={"source": "alert_review"})
+    assert wp.decline_card_suggestions(other, db_path=db) == 0
+    # Dismissing a card, by its button, ack_alert or answer_card, runs it.
+    seen: list[Any] = []
+    monkeypatch.setattr(wp, "decline_card_suggestions", lambda alert, **_k: seen.append(alert) or 0)
+    lifecycle.record_ack_feedback(card, "acknowledged")
+    lifecycle.record_ack_feedback(card, "dismissed")
+    assert seen == [card]
+
+
+def test_a_no_to_a_department_card_declines_only_that_departments(db: Path) -> None:
+    for slug, dept in (("rss-f", "finance"), ("rss-o", "ops")):
+        ms.insert_watchlist_item(
+            slug=slug, signal_type="rss", target=f"https://{slug}.com/feed",
+            mode=MODE_DRY_RUN, origin=ORIGIN_RESEARCH_PROPOSED, route_to_department=dept,
+            route_to_person_id=7, db_path=db,
+        )
+    from openexecutive.departments.authority import PROPOSAL_ALERT_SOURCE
+
+    card = SimpleNamespace(source=PROPOSAL_ALERT_SOURCE, topic_tags=["department:finance", "watchlist"])
+    assert wp.decline_card_suggestions(card, db_path=db) == 1
+    assert [i.slug for i in ms.list_pending_suggestions(db_path=db)] == ["rss-o"]
+    # A department's card that isn't about watches: nothing.
+    other = SimpleNamespace(source=PROPOSAL_ALERT_SOURCE, topic_tags=["department:ops"])
+    assert wp.decline_card_suggestions(other, db_path=db) == 0
+
+
 # --------------------------------------------------------------------- #
 # Profile entry parsing, short names, finding auto-link
 # --------------------------------------------------------------------- #

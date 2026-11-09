@@ -362,7 +362,9 @@ async def handle_answer_card(tool_input: dict[str, Any]) -> str:
     reply = str(tool_input.get("reply") or "").strip().lower()
     state = getattr(session, "turn_outside", None)
     full_message = getattr(state, "user_message", "") if state is not None else ""
-    message = _own_words(full_message)
+    # A 1:1 wraps their words in the call's apps list and notes, whose words
+    # ("later", "ok") would read as their answer: only what they said counts.
+    message = _own_words(str(getattr(state, "own_words", "") or "") or full_message)
     why = refusal(session, alert_id, reply, message)
     if why is not None:
         logger.warning("answer_card: refused alert_id=%s reply=%s: %s", alert_id, reply, why[:80])
