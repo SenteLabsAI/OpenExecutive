@@ -568,7 +568,8 @@ def bulk_ack_alerts(body: BulkAckBody, request: Request) -> BulkAckResponse:
     for alert_id in updated_ids:
         alert = targets.get(alert_id) or store.get_alert(alert_id)
         if alert is not None:
-            lifecycle.record_ack_feedback(alert, body.status)
+            # A sweep is housekeeping, not a no to the suggestions a card lists.
+            lifecycle.record_ack_feedback(alert, body.status, decline_suggestions=False)
     if count:
         from openexecutive.audit import log_event as audit_log
 

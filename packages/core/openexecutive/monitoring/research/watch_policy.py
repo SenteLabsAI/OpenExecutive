@@ -1595,7 +1595,7 @@ def decline_suggestion(
 
 
 def suggestions_on_card(alert: Any, *, db_path: Path | None = None) -> list[WatchlistItem] | None:
-    """The pending suggestions a Needs you card lists, or None when it isn't
+    """The pending suggestions a Needs you card names, or None when it isn't
     a watch suggestions card: the principal's pile (``_nudge_if_piled_up``)
     or a department head's (``Watch suggestions for <Department>``)."""
     from openexecutive.departments.authority import PROPOSAL_ALERT_SOURCE
@@ -1603,12 +1603,18 @@ def suggestions_on_card(alert: Any, *, db_path: Path | None = None) -> list[Watc
     tags = list(getattr(alert, "topic_tags", None) or [])
     source = getattr(alert, "source", "")
     if source == NUDGE_ALERT_SOURCE:
-        return [i for i in ms.list_pending_suggestions(db_path=db_path) if i.route_to_person_id is None]
-    if source == PROPOSAL_ALERT_SOURCE and "watchlist" in tags:
+        pile = [i for i in ms.list_pending_suggestions(db_path=db_path) if i.route_to_person_id is None]
+    elif source == PROPOSAL_ALERT_SOURCE and "watchlist" in tags:
         slugs = {t.split(":", 1)[1] for t in tags if t.startswith("department:")}
-        if slugs:
-            return [i for i in ms.list_pending_suggestions(db_path=db_path) if i.route_to_department in slugs]
-    return None
+        if not slugs:
+            return None
+        pile = [i for i in ms.list_pending_suggestions(db_path=db_path) if i.route_to_department in slugs]
+    else:
+        return None
+    # Only what the card shows by name: a suggestion filed after its body
+    # was written, or folded into "and N more", was never in front of them.
+    shown = {line.strip() for line in str(getattr(alert, "body", "") or "").splitlines()}
+    return [i for i in pile if f"• {card_line(i)}" in shown]
 
 
 def decline_card_suggestions(alert: Any, *, db_path: Path | None = None) -> int:

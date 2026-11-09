@@ -960,8 +960,14 @@ def test_a_no_to_the_card_declines_what_it_lists(db: Path, monkeypatch: pytest.M
     )
     assert wp.sweep(datetime.now(UTC), db_path=db)["nudged"] == 1
     card = next(a for a in list_alerts(limit=10, db_path=db) if a.source == wp.NUDGE_ALERT_SOURCE)
+    # Filed after the card was written: never in front of them, so it stays.
+    ms.insert_watchlist_item(
+        slug="rss-new", signal_type="rss", target="https://new.com/feed",
+        mode=MODE_DRY_RUN, origin=ORIGIN_RESEARCH_PROPOSED, db_path=db,
+    )
     assert wp.decline_card_suggestions(card, db_path=db) == 3
-    assert [i.slug for i in ms.list_pending_suggestions(db_path=db)] == ["rss-head"]
+    assert {i.slug for i in ms.list_pending_suggestions(db_path=db)} == {"rss-head", "rss-new"}
+    assert not ms.is_declined("https://new.com/feed", db_path=db)
     # Remembered: the research pass won't propose them again.
     assert ms.is_declined("https://p0.com/feed", db_path=db)
     # Any other card: nothing.
@@ -972,6 +978,8 @@ def test_a_no_to_the_card_declines_what_it_lists(db: Path, monkeypatch: pytest.M
     monkeypatch.setattr(wp, "decline_card_suggestions", lambda alert, **_k: seen.append(alert) or 0)
     lifecycle.record_ack_feedback(card, "acknowledged")
     lifecycle.record_ack_feedback(card, "dismissed")
+    # A bulk sweep is housekeeping, not a no.
+    lifecycle.record_ack_feedback(card, "dismissed", decline_suggestions=False)
     assert seen == [card]
 
 
@@ -984,11 +992,19 @@ def test_a_no_to_a_department_card_declines_only_that_departments(db: Path) -> N
         )
     from openexecutive.departments.authority import PROPOSAL_ALERT_SOURCE
 
-    card = SimpleNamespace(source=PROPOSAL_ALERT_SOURCE, topic_tags=["department:finance", "watchlist"])
+    shown = next(i for i in ms.list_pending_suggestions(db_path=db) if i.slug == "rss-f")
+    body = f"I'd like to keep an eye on these for Finance.\n• {wp.card_line(shown)}"
+    ms.insert_watchlist_item(
+        slug="rss-f2", signal_type="rss", target="https://rss-f2.com/feed",
+        mode=MODE_DRY_RUN, origin=ORIGIN_RESEARCH_PROPOSED, route_to_department="finance",
+        route_to_person_id=7, db_path=db,
+    )
+    card = SimpleNamespace(source=PROPOSAL_ALERT_SOURCE, topic_tags=["department:finance", "watchlist"], body=body)
     assert wp.decline_card_suggestions(card, db_path=db) == 1
-    assert [i.slug for i in ms.list_pending_suggestions(db_path=db)] == ["rss-o"]
+    # Only the one the card names: rss-f2 came later, rss-o is another department's.
+    assert {i.slug for i in ms.list_pending_suggestions(db_path=db)} == {"rss-o", "rss-f2"}
     # A department's card that isn't about watches: nothing.
-    other = SimpleNamespace(source=PROPOSAL_ALERT_SOURCE, topic_tags=["department:ops"])
+    other = SimpleNamespace(source=PROPOSAL_ALERT_SOURCE, topic_tags=["department:ops"], body=body)
     assert wp.decline_card_suggestions(other, db_path=db) == 0
 
 
