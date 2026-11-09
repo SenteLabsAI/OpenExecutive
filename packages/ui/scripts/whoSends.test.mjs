@@ -18,14 +18,14 @@ test("every option has its own scene, named as its button", () => {
 });
 
 test("the levels use the names Approvals shows", () => {
-  const levels = SEND_OPTIONS.filter((o) => o.value !== "off").map((o) => o.label);
+  const levels = SEND_OPTIONS.map((o) => o.label);
   assert.deepEqual(levels, Object.values(APPROVALS_SENDS).map((l) => l.label));
 });
 
 test("Careful sends nothing, each level after sends more, and a new recipient always waits", () => {
   const counts = SEND_OPTIONS.map((o) => sceneFor(sceneKey("handle", o.value)).sends);
-  assert.deepEqual(counts.slice(0, 2), [0, 0]);
-  for (let i = 2; i < counts.length; i++) assert.ok(counts[i] > counts[i - 1], `level ${i}`);
+  assert.equal(counts[0], 0);
+  for (let i = 1; i < counts.length; i++) assert.ok(counts[i] > counts[i - 1], `level ${i}`);
   assert.ok(counts.at(-1) < MAILS.length);
   assert.match(MAILS.at(-1).why, /always waits/);
 });

@@ -560,3 +560,32 @@ def test_a_failure_to_start_noting_never_touches_the_send(
     monkeypatch.setattr(history, "person_settings", broken)
     mailbox, card = _card(owner)
     assert _send(card, mailbox, owner) == "sent-d1"
+
+
+# ── "Send to them on its own next time" (In training) ────────────────────────
+
+
+def test_send_with_allow_lets_that_sender_go_on_its_own(owner: Any, models: dict[str, Any]) -> None:
+    from openexecutive.delegation import training
+
+    training.set_(owner.id, {training.TRAINING: True}, updated_by="test")
+    mailbox, card = _card(owner)
+    asyncio.run(send_approved_reply(
+        card, caller=LOCAL, resolver=owner.id, allow=True, gmail=mailbox, now=NOW + timedelta(minutes=30),
+    ))
+    assert mailbox.sent == ["d1"] and _status(card) != ledger.STATUS_PROPOSED
+    allowed = training.allowed_person(owner.id, DANA)
+    assert allowed is not None and allowed.person_id == owner.id
+    assert [training.setting_of(a.key) for a in training.learned(owner.id)] == [training.TRAINING]
+
+
+def test_allow_is_refused_out_of_training_before_anything_is_sent(owner: Any, models: dict[str, Any]) -> None:
+    from openexecutive.delegation import training
+
+    mailbox, card = _card(owner)
+    with pytest.raises(SendRefused) as err:
+        asyncio.run(send_approved_reply(
+            card, caller=LOCAL, resolver=owner.id, allow=True, gmail=mailbox, now=NOW + timedelta(minutes=30),
+        ))
+    assert err.value.code == "cant_allow" and mailbox.sent == []
+    assert training.allowed_person(owner.id, DANA) is None and _status(card) == ledger.STATUS_PROPOSED

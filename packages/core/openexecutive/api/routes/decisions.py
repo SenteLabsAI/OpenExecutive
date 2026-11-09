@@ -545,12 +545,12 @@ async def _send_reply(
     # training). The rest is the second yes.
     confirm = dict(body.edits or {})
     example = confirm.pop("example", None)
-    # An older page's training "allow" means nothing now.
-    confirm.pop("allow", None)
+    # ``edits.allow``: "on its own next time", In training (delegation.training).
+    allow = confirm.pop("allow", None)
     try:
         await send_approved_reply(
             instance, caller=api_caller.caller(request), resolver=resolver, confirm=confirm,
-            example=example is True,
+            allow=allow is True, example=example is True,
         )
     except SendRefused as refused:
         raise HTTPException(
@@ -724,13 +724,14 @@ async def _carry_out_actions(
 ) -> DecisionInstance:
     """Do an action card's actions, exactly as stored, on its person's tap
     (``delegation.action_cards``, which checks the caller and each action
-    again first). ``edits.only`` picks which of them."""
+    again first). ``edits.only`` picks which of them; ``edits.allow``, In
+    training, also allows everyone they reach."""
     from openexecutive.delegation.action_cards import ApproveRefused, approve
 
     try:
         await approve(
             instance, caller=api_caller.caller(request), resolver=resolver,
-            only=(body.edits or {}).get("only"),
+            only=(body.edits or {}).get("only"), allow=(body.edits or {}).get("allow") is True,
         )
     except ApproveRefused as refused:
         raise HTTPException(
@@ -762,14 +763,15 @@ async def _answer_invite(
 ) -> DecisionInstance:
     """Accept or decline a meeting invite in its person's own calendar, on
     their tap (``delegation.invites``, which checks the caller and the card
-    again first). ``edits.answer``: accept (the default) or decline."""
+    again first). ``edits.answer``: accept (the default) or decline;
+    ``edits.allow`` with accept, In training, also allows that sender."""
     from openexecutive.delegation.invites import AnswerRefused, answer
 
     edits = body.edits or {}
     try:
         await answer(
             instance, caller=api_caller.caller(request), resolver=resolver,
-            answer=edits.get("answer", "accept"),
+            answer=edits.get("answer", "accept"), allow=edits.get("allow") is True,
         )
     except AnswerRefused as refused:
         raise HTTPException(
@@ -1029,12 +1031,15 @@ class _ChatTapRequest:
         self.client = None
 
 
-async def resolve_in_chat(instance_id: int, person: Any, *, approve: bool) -> DecisionInstance:
+async def resolve_in_chat(
+    instance_id: int, person: Any, *, approve: bool, allow: bool = False,
+) -> DecisionInstance:
     """Approve or skip a card tapped in a chat app, for ``person``: the one the
     adapter proved tapped it. The rule is the web chat's (``_resolver``): a
     card of actions is its person's alone; a meeting is the principal's, or
-    its approver's unless it is the principal's private booking. Raises
-    HTTPException, as the routes do."""
+    its approver's unless it is the principal's private booking. ``allow``
+    is the "on its own next time" button (In training): the same as the web
+    card's tick. Raises HTTPException, as the routes do."""
     from openexecutive.delegation.action_cards import ApproveRefused
     from openexecutive.delegation.action_cards import approve as approve_actions
     from openexecutive.delegation.gmail import normalize_email
@@ -1069,36 +1074,58 @@ async def resolve_in_chat(instance_id: int, person: Any, *, approve: bool) -> De
     if instance.decision_class == _APP_ACTION.name:
         return await _carry_out_app_action(instance, ApproveBody(), _ChatTapRequest(tap), person.id)  # type: ignore[arg-type]
     if instance.decision_class == _DELEGATED_REPLY.name:
-        return await _send_reply_from_chat(instance, tap, person.id)
+        return await _send_reply_from_chat(instance, tap, person.id, allow=allow)
     if instance.decision_class == _DELEGATED_INVITE.name:
         from openexecutive.delegation.invites import AnswerRefused, answer
 
         try:
-            await answer(instance, caller=tap, resolver=person.id, answer="accept")
+            await answer(instance, caller=tap, resolver=person.id, answer="accept", allow=allow)
         except AnswerRefused as refused:
             raise HTTPException(status_code=refused.status, detail=refused.message) from None
         return _refresh(instance.id)
     if instance.decision_class == _TAKE_THE_LEAD.name:
-        # As it stands: changing it or allowing it from now on is the web
-        # card's.
-        return await _run_lead(instance, _parse_payload(instance), person.id, by_principal=is_principal)
+        # As it stands (changing it is the web card's); "next time" allows
+        # it from now on, the owner's alone, as the web card's tick does.
+        # The web card's checks, in its order: a training card with a grant,
+        # the owner's own tap (a ChatTap naming their address is as proven as
+        # a signed sign-in, ``verified.caller_refusal``), and room on the
+        # allowed list before anything is done.
+        from openexecutive.delegation.verified import caller_refusal
+        from openexecutive.orchestrator import take_the_lead
+
+        payload = _parse_payload(instance)
+        grant = payload.get("allow") if isinstance(payload.get("allow"), dict) else None
+        if allow:
+            if grant is None or payload.get("kind") != take_the_lead.TRAINING:
+                raise HTTPException(status_code=422, detail="This one can't be allowed from its card.")
+            if principal is None or not is_principal or caller_refusal(tap, normalize_email(principal.email or "")) is not None:
+                raise HTTPException(status_code=403, detail="Only the account owner can allow this.")
+            if not take_the_lead.room_for(str(grant.get("key"))):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"It can learn at most {take_the_lead.ALLOWED_MAX} things. Remove one in Settings first.",
+                )
+        return await _run_lead(instance, payload, person.id, by_principal=is_principal, grant=grant if allow else None)
     if instance.decision_class == _DEPARTMENT_ACTION.name:
         return await _run_department_action(instance, person.id, by_principal=is_principal)
     try:
-        await approve_actions(instance, caller=tap, resolver=person.id)
+        await approve_actions(instance, caller=tap, resolver=person.id, allow=allow)
     except ApproveRefused as refused:
         raise HTTPException(status_code=refused.status, detail=refused.message) from None
     return _refresh(instance.id)
 
 
-async def _send_reply_from_chat(instance: DecisionInstance, tap: Any, resolver: int) -> DecisionInstance:
+async def _send_reply_from_chat(
+    instance: DecisionInstance, tap: Any, resolver: int, *, allow: bool = False,
+) -> DecisionInstance:
     """Send a reply card's draft on a tap in a chat app, as written. What
     would ask a second yes on the web card (recipients changed, newer mail)
-    is turned down here with what to do instead."""
+    is turned down here with what to do instead. ``allow``: the "next time"
+    button."""
     from openexecutive.delegation.reply_send import SendRefused, send_approved_reply
 
     try:
-        await send_approved_reply(instance, caller=tap, resolver=resolver, confirm={})
+        await send_approved_reply(instance, caller=tap, resolver=resolver, confirm={}, allow=allow)
     except SendRefused as refused:
         message = refused.message
         if refused.code == "confirm":

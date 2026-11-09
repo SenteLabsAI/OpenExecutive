@@ -4,13 +4,14 @@ import {
   answeredLine,
   clashLine,
   handledLine,
+  inviteNextTimeLabel,
   inviterFirstName,
 } from "../src/lib/inviteCards.ts";
 
 const dana = { from_name: "Dana Park", from_email: "dana@northpeak.example" };
 
-test("inviterFirstName falls back to the address", () => {
-  assert.equal(inviterFirstName(dana), "Dana");
+test("the training tick names who invited you by first name", () => {
+  assert.equal(inviteNextTimeLabel(dana), "Accept from Dana on its own next time");
   assert.equal(inviterFirstName({ from_name: " ", from_email: "pat@elsewhere.example" }), "pat@elsewhere.example");
 });
 

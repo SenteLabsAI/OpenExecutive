@@ -119,6 +119,8 @@ class ActionCard:
     created_at: str
     why: str
     actions: list[CardAction] = field(default_factory=list)
+    # In training: "Do this on its own next time" (delegation.training).
+    can_allow: bool = False
 
 
 def _one_line(value: Any, limit: int) -> str:
@@ -544,6 +546,9 @@ def propose(
 
 def cards(person: Any) -> list[ActionCard]:
     """``person``'s waiting cards, for ``GET /delegation/actions``."""
+    from openexecutive.delegation import training
+
+    trained = training.in_training(person.id)
     out: list[ActionCard] = []
     for card in open_cards(person.id):
         payload = _payload(card)
@@ -557,7 +562,24 @@ def cards(person: Any) -> list[ActionCard]:
                            text=str(a.get("text") or ""))
                 for i, a in enumerate(actions) if isinstance(a, dict)
             ],
+            can_allow=trained and bool(_addresses(actions))
+            and training.all_allowed(person.id, _addresses(actions)) is None,
         ))
+    return out
+
+
+def _addresses(actions: list[Any]) -> list[str]:
+    """The email addresses of everyone a card's messages and invites reach
+    (what one "on its own next time" allows); "" for anyone without one."""
+    from openexecutive.people.store import get_person
+
+    out: list[str] = []
+    for person_id in _recipients([a for a in actions if isinstance(a, dict)]):
+        try:
+            person = get_person(int(person_id))
+        except (TypeError, ValueError):
+            person = None
+        out.append(str(person.email or "").strip().lower() if person is not None else "")
     return out
 
 
@@ -651,7 +673,12 @@ def _on_its_own_refusal(person: Any, actions: list[dict[str, Any]], now: datetim
         return "not_allowed"
     if any(a.get("kind") in ("drive_files", "save_files") for a in actions):
         return "tap_only"
-    if not hands_off():
+    # In training, only people they allowed, every one on the card;
+    # otherwise, below Hands-off, nobody new.
+    held = handle_it.training_hold(person.id, _addresses(actions) or [""])
+    if held is not None:
+        return held
+    if not handle_it.in_training(person.id) and not hands_off():
         refused = _known_people_refusal(person, actions, now)
         if refused is not None:
             return refused
@@ -817,10 +844,12 @@ async def _do_save_files(stored: dict[str, Any], *, tapped: bool) -> dict[str, s
 
 
 async def approve(
-    instance: Any, *, caller: Any, resolver: int | None, only: Any = None,
+    instance: Any, *, caller: Any, resolver: int | None, only: Any = None, allow: bool = False,
 ) -> list[dict[str, Any]]:
     """Carry out ``instance``'s actions (those in ``only`` when given) for
-    its person, once. Raises ``ApproveRefused``."""
+    its person, once. ``allow`` is "on its own next time" (in training):
+    everyone the chosen actions reach is allowed from now on
+    (``training.allow_person``). Raises ``ApproveRefused``."""
     from openexecutive.delegation.gmail import normalize_email
     from openexecutive.delegation.settings import can_delegate, is_enabled
     from openexecutive.delegation.verified import NOT_YOURS, caller_refusal
@@ -857,6 +886,16 @@ async def approve(
         chosen &= set(only)
         if not chosen:
             raise ApproveRefused(422, "bad_selection", "Pick at least one action.")
+    if allow:
+        from openexecutive.delegation import training
+
+        if not training.in_training(person.id):
+            raise ApproveRefused(422, "cant_allow", "Doing this on its own next time is for cards while In training is on.")
+        addresses = [a for a in _addresses([actions[i] for i in sorted(chosen)]) if a]
+        if not addresses:
+            raise ApproveRefused(422, "cant_allow", "Nothing on this card can be allowed.")
+        if not training.room_for_all(person.id, addresses):
+            raise ApproveRefused(409, "learned_full", "It has learned as much as it can hold. Remove something first.")
     if not claim_for_execution(instance.id, resolver_person_id=resolver):
         raise ApproveRefused(409, "already_handled", "This card was already handled.")
     results = await _carry_out(person, actions, chosen, tapped=True)
@@ -868,7 +907,36 @@ async def approve(
         "outcomes": [f"{actions[r['index']].get('kind')}:{r['status']}" for r in results],
         **_via(payload),
     })
+    if allow:
+        _allow_done(person.id, actions, results, decision_id=instance.id)
     return results
+
+
+def _allow_done(person_id: int, actions: list[dict[str, Any]], results: list[dict[str, Any]], *, decision_id: int) -> None:
+    """"On its own next time", once the actions ran: everyone an action that
+    happened (or went to whoever approves meetings) reaches is allowed. A
+    failure never undoes them."""
+    from openexecutive.delegation import training
+    from openexecutive.people.store import get_person
+
+    allowed: list[int] = []
+    done = [actions[r["index"]] for r in results if r["status"] in ("done", "waiting")]
+    for target in _recipients(done):
+        try:
+            person = get_person(int(target))
+            found = training.allow_person(
+                person_id, str(person.email or "") if person else "", str(person.full_name or "") if person else "",
+                decision_id=decision_id,
+            )
+        except Exception:
+            logger.warning("action_cards: the actions ran, but allowing someone failed", exc_info=True)
+            continue
+        if found is not None:
+            allowed.append(found.id)
+    if allowed:
+        audit("delegation_actions_allowed", f"Person {person_id} allowed people in training", {
+            "person_id": person_id, "decision_id": decision_id, "allowed_ids": allowed,
+        })
 
 
 async def _carry_out(

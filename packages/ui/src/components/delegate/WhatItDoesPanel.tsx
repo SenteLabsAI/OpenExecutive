@@ -6,7 +6,7 @@ import Icon from "@/components/Icon";
 import WhatItDoes from "@/components/delegate/WhatItDoes";
 import WhoSendsCard from "@/components/delegate/WhoSendsCard";
 
-// What it does for you, beside each Delegate tab. On a wide screen it sits
+// What it does for you, beside the Delegate page. On a wide screen it sits
 // to the right of the settings, so a change shows there as it's saved;
 // closing it is remembered in this browser. On a narrow one it opens as a
 // sheet from the bottom. "Compare" holds Who writes and who sends.
@@ -71,7 +71,7 @@ function Body() {
       <WhatItDoes />
       <details className="group mt-5 rounded-xl border border-line">
         <summary className="cursor-pointer list-none px-3.5 py-3 text-sm font-medium text-fg">
-          Compare Act as me, Handle it for me and Take the lead
+          Watch how: as you, and as me
         </summary>
         <div className="px-2 pb-2 [&>section]:mt-0">
           <WhoSendsCard />

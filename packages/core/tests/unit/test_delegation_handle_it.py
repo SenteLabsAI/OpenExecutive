@@ -56,7 +56,9 @@ def _careful(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _on(person: Any) -> None:
-    handle_it.set_(person.id, enabled=True, updated_by="test")
+    """Replies may go on their own: Act as me writes replies to the inbox
+    (the owner fixture's default; there is no switch of its own)."""
+    inbox.set_watch(person.id, True, updated_by="test")
 
 
 def _scan_one(owner: Any, *messages: Any) -> tuple[FakeInbox, inbox.ScanResult]:
@@ -79,9 +81,11 @@ def test_off_by_default() -> None:
     assert stored.enabled is False
 
 
-def test_the_switch_and_approvals_decide(monkeypatch: pytest.MonkeyPatch) -> None:
-    after = handle_it.set_(7, enabled=True, updated_by="t")
-    assert after.enabled is True and handle_it.approvals_hold() is False
+def test_it_follows_the_inbox_watcher_and_approvals_decide(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert handle_it.get(owner.id).enabled is True and handle_it.approvals_hold() is False
+    inbox.set_watch(owner.id, False, updated_by="t")
+    assert handle_it.get(owner.id).enabled is False
+    inbox.set_watch(owner.id, True, updated_by="t")
     _careful(monkeypatch)
     assert handle_it.approvals_hold() is True  # Careful holds it
 
@@ -103,20 +107,52 @@ def test_a_table_from_before_keeps_the_switch(tmp_path: Path) -> None:
     ensure_schema(conn)
     ensure_schema(conn)  # idempotent
     conn.close()
-    assert handle_it.get(1, db_path=db).enabled
-    # Nothing went on its own for them before, so nothing does now.
-    assert not handle_it.get(4, db_path=db).enabled
-    handle_it.set_(1, enabled=False, updated_by="t", db_path=db)
+    # The old row is no switch any more: without Act as me and the inbox
+    # watcher in that file, nothing goes on its own.
     assert not handle_it.get(1, db_path=db).enabled
+    assert not handle_it.get(4, db_path=db).enabled
 
 
-def test_off_it_leaves_a_card_as_before(owner: Any, models: dict[str, Any]) -> None:
-    mailbox, result = _scan_one(owner)
-    assert result.drafted == 1 and result.handled == 0
-    assert mailbox.sent == []
-    card = _only_card(owner)
-    assert card.status == "proposed" and card.gate_mode == "propose"
-    assert "handle_it_reason" not in inbox.card_payload(card)
+def test_someone_who_never_turned_it_on_starts_in_training(tmp_path: Path) -> None:
+    """Handle it for me was off until the person turned it on. Now that
+    Approvals decides, anyone whose switch was off is put in training, so
+    nothing goes out as them until they allow it; turning training off
+    afterwards sticks."""
+    from openexecutive.delegation import training
+    from openexecutive.delegation.schema import ensure_schema
+
+    db = tmp_path / "old.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE delegation_handle_it (person_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0, "
+        "levels TEXT NOT NULL DEFAULT '{}', updated_at TEXT, updated_by TEXT)"
+    )
+    conn.execute("INSERT INTO delegation_handle_it VALUES (1, 1, '{}', '', 't')")  # had turned it on
+    conn.execute("INSERT INTO delegation_handle_it VALUES (4, 0, '{}', '', 't')")  # never did
+    conn.commit()
+    conn.close()
+    # Person 6 had the inbox watcher on and never touched Handle it for me.
+    # Everything above is a file from before the upgrade, so the marker that
+    # says it ran is taken away again.
+    inbox.set_watch(6, True, updated_by="t", db_path=db)
+    conn = sqlite3.connect(str(db))
+    conn.execute("DELETE FROM delegation_upgrades")
+    conn.execute("DELETE FROM delegation_training")
+    conn.commit()
+    ensure_schema(conn)
+    conn.close()
+    assert not training.get(1, db_path=db).training
+    assert training.get(4, db_path=db).training
+    assert training.get(6, db_path=db).training
+    # Turning it off sticks, and someone who sets Act as me up after the
+    # upgrade gets the new default: Approvals decides.
+    training.set_(4, {"training": False}, updated_by="t", db_path=db)
+    inbox.set_watch(9, True, updated_by="t", db_path=db)
+    conn = sqlite3.connect(str(db))
+    ensure_schema(conn)
+    conn.close()
+    assert not training.get(4, db_path=db).training
+    assert not training.get(9, db_path=db).training
 
 
 # ── sending on its own ────────────────────────────────────────────────────────
@@ -142,6 +178,7 @@ def test_a_reply_waiting_for_them_has_no_ai_line_unless_they_asked(
     from openexecutive.delegation import disclosure
 
     monkeypatch.delenv("AI_DISCLOSURE", raising=False)
+    _careful(monkeypatch)  # every reply waits for them
     mailbox, _ = _scan_one(owner)
     assert disclosure.LINE not in mailbox.specs[0].body
     disclosure.set_(owner.id, approved_sends=True, updated_by="test")
@@ -323,21 +360,30 @@ def test_the_daily_limit_holds(owner: Any, models: dict[str, Any], monkeypatch: 
     assert len(mailbox.sent) == 1
 
 
-def test_turning_it_off_before_the_send_leaves_the_card(owner: Any, models: dict[str, Any]) -> None:
+def test_turning_it_off_before_the_send_leaves_the_card(
+    owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _careful(monkeypatch)
     mailbox, _ = _scan_one(owner)
     card = _only_card(owner)
-    # A card made as auto_execute, then the switch goes off.
+    # A card made as auto_execute, then the inbox watcher goes off.
     with sqlite3.connect(_inbox_tests.episodic.DB_PATH) as conn:
         conn.execute("UPDATE decision_instances SET gate_mode = 'auto_execute' WHERE id = ?", (card.id,))
+    inbox.set_watch(owner.id, False, updated_by="t")
     fresh = ledger.get_decision_instance(card.id)
     with pytest.raises(SendRefused) as err:
         asyncio.run(send_on_its_own(fresh, gmail=mailbox, now=NOW))
     assert err.value.code == "handle_it_off" and mailbox.sent == []
 
 
-def test_a_card_made_to_ask_is_never_sent_on_its_own(owner: Any, models: dict[str, Any]) -> None:
-    mailbox, _ = _scan_one(owner)  # switch off: a propose card
-    _on(owner)
+def test_a_card_made_to_ask_is_never_sent_on_its_own(
+    owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.orchestrator import outside_mode
+
+    _careful(monkeypatch)
+    mailbox, _ = _scan_one(owner)  # Careful: a propose card
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.OUTSIDERS)
     with pytest.raises(SendRefused) as err:
         asyncio.run(send_on_its_own(_only_card(owner), gmail=mailbox, now=NOW))
     assert err.value.code == "handle_it_off" and mailbox.sent == []
@@ -530,53 +576,36 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     return TestClient(app)
 
 
-def test_get_shows_the_switch(client: TestClient, owner: Any) -> None:
+def test_get_shows_it_following_the_inbox_watcher(client: TestClient, owner: Any) -> None:
     body = client.get("/delegation", headers=HEADERS).json()
-    assert body["handle_it"] == {"enabled": False, "available": True, "sent_today": 0}
-    assert body["training"] == {"drafts": False, "learned": []}
-
-
-def test_turning_it_on_needs_the_inbox_watcher(client: TestClient, owner: Any) -> None:
+    assert body["handle_it"] == {"enabled": True, "available": True, "sent_today": 0}
+    assert body["training"] == {"training": False, "drafts": False, "learned": []}
     inbox.set_watch(owner.id, False, updated_by="t")
+    body = client.get("/delegation", headers=HEADERS).json()
+    assert body["handle_it"]["enabled"] is False
+
+
+def test_there_is_no_switch_route_of_its_own(client: TestClient, owner: Any) -> None:
     resp = client.put("/delegation/handle-it", json={"enabled": True}, headers=HEADERS)
-    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "inbox_off"
-    inbox.set_watch(owner.id, True, updated_by="t")
-    resp = client.put("/delegation/handle-it", json={"enabled": True}, headers=HEADERS)
-    assert resp.status_code == 200 and resp.json()["handle_it"]["enabled"] is True
+    assert resp.status_code == 404
 
 
-def test_only_the_switch_is_taken(client: TestClient, owner: Any) -> None:
-    for body in ({"mode": "bold"}, {"levels": {"reply_stranger": "handle"}}, {}):
-        resp = client.put("/delegation/handle-it", json=body, headers=HEADERS)
-        assert resp.status_code == 422
-
-
-def test_it_needs_a_caller_the_api_can_vouch_for(
+def test_the_inbox_watcher_can_still_be_turned_off_without_signed_sign_ins(
     client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("OE_LOCAL_LOGIN", raising=False)
-    resp = client.put("/delegation/handle-it", json={"enabled": True}, headers=HEADERS)
-    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "caller_signing_required"
-    assert handle_it.get(owner.id).enabled is False
-
-
-def test_it_can_still_be_turned_off_without_signed_sign_ins(
-    client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _on(owner)
-    monkeypatch.delenv("OE_LOCAL_LOGIN", raising=False)
-    resp = client.put("/delegation/handle-it", json={"enabled": False}, headers=HEADERS)
+    resp = client.put("/delegation/inbox", json={"enabled": False}, headers=HEADERS)
     assert resp.status_code == 200
     assert handle_it.get(owner.id).enabled is False
 
 
-def test_nobody_else_can_change_it(client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_nobody_else_turns_the_inbox_watcher_on(client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     from openexecutive.delegation import verified
 
+    inbox.set_watch(owner.id, False, updated_by="t")
     monkeypatch.setattr(verified, "caller_refusal", lambda caller, email: verified.NOT_YOURS)
-    for body in ({"enabled": True}, {"enabled": False}):
-        resp = client.put("/delegation/handle-it", json=body, headers=HEADERS)
-        assert resp.status_code == 403 and resp.json()["detail"]["code"] == "not_yours"
+    resp = client.put("/delegation/inbox", json={"enabled": True}, headers=HEADERS)
+    assert resp.status_code == 403 and resp.json()["detail"]["code"] == "not_yours"
     assert handle_it.get(owner.id).enabled is False
 
 
@@ -605,7 +634,6 @@ def test_only_a_caller_the_api_knows_is_them(
 
 
 def test_turning_the_inbox_watcher_off_turns_it_off(client: TestClient, owner: Any) -> None:
-    _on(owner)
     resp = client.put("/delegation/inbox", json={"enabled": False}, headers=HEADERS)
     assert resp.status_code == 200
     assert handle_it.get(owner.id).enabled is False
@@ -647,7 +675,124 @@ def test_a_check_that_fails_holds_the_reply(owner: Any, models: dict[str, Any], 
     assert inbox.card_payload(_only_card(owner))["handle_it_reason"] == "suspicious"
 
 
-def test_the_check_runs_only_when_a_reply_would_go(owner: Any, models: dict[str, Any]) -> None:
-    # Handle it for me off: every reply waits anyway, so nothing is checked.
+def test_the_check_runs_only_when_a_reply_would_go(
+    owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Careful: every reply waits anyway, so nothing is checked.
+    _careful(monkeypatch)
     _scan_one(owner)
     assert models["checked"] == []
+
+
+# ── In training: nothing goes as them until they allow the person ────────────
+
+
+def _in_training(owner: Any) -> None:
+    from openexecutive.delegation import training
+
+    training.set_(owner.id, {training.TRAINING: True}, updated_by="test")
+
+
+@pytest.mark.parametrize("level", ["balanced", "hands_off"])
+def test_in_training_every_reply_waits_on_any_level(
+    owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch, level: str,
+) -> None:
+    _on(owner)
+    _in_training(owner)
+    if level == "hands_off":
+        _hands_off(monkeypatch)
+    mailbox, result = _scan_one(owner)
+    assert result.handled == 0 and mailbox.sent == []
+    payload = inbox.card_payload(_only_card(owner))
+    assert payload["handle_it_reason"] == "training"
+    assert handle_it.REASONS["training"].startswith("In training")
+
+
+def test_once_they_allow_the_person_replies_to_them_go(owner: Any, models: dict[str, Any]) -> None:
+    from openexecutive.delegation import training
+
+    _on(owner)
+    _in_training(owner)
+    allowed = training.allow_person(owner.id, DANA, "Dana Park", decision_id=None)
+    assert allowed is not None and allowed.label == "Send to Dana Park (dana@northpeak.example) on its own"
+    mailbox, result = _scan_one(owner)
+    assert result.handled == 1 and mailbox.sent == ["d1"]
+    # Anyone else still gets a card, even someone they know.
+    other = _msg("m2", "t2", sender="sam@co.example", name="Sam")
+    mailbox, result = _scan_one(owner, other)
+    assert result.handled == 0 and mailbox.sent == []
+    (card,) = inbox.open_cards(owner.id)
+    assert inbox.card_payload(card)["handle_it_reason"] == "training"
+
+
+def test_everyone_the_reply_reaches_must_be_allowed(owner: Any, models: dict[str, Any]) -> None:
+    """In training, a reply to an allowed sender that also goes to someone
+    on the email they haven't allowed waits; allowing them too lets it go."""
+    from openexecutive.delegation import training
+
+    _on(owner)
+    _in_training(owner)
+    training.allow_person(owner.id, DANA, "Dana Park", decision_id=None)
+    ben = "ben@northpeak.example"
+    mailbox, result = _scan_one(owner, _msg("m1", "t1", cc=(ben,)))
+    assert result.handled == 0 and mailbox.sent == []
+    card = _only_card(owner)
+    payload = inbox.card_payload(card)
+    assert payload["handle_it_reason"] == "training"
+    assert sorted(training.reply_goes_to(payload)) == sorted([DANA, ben])
+    training.allow_person(owner.id, ben, "Ben", decision_id=None)
+    mailbox, result = _scan_one(owner, _msg("m2", "t2", cc=(ben,)))
+    assert result.handled == 1 and mailbox.sent == ["d1"]
+
+
+def test_someone_with_no_address_on_file_is_never_allowed_by_omission(owner: Any, models: dict[str, Any]) -> None:
+    """A card reaching an allowed person and someone with no email on file
+    (``action_cards._addresses`` gives "" for them) still waits in training."""
+    from openexecutive.delegation import training
+
+    _on(owner)
+    _in_training(owner)
+    training.allow_person(owner.id, DANA, "Dana Park", decision_id=None)
+    assert handle_it.training_hold(owner.id, [DANA]) is None
+    assert handle_it.training_hold(owner.id, [DANA, ""]) == "training"
+    assert handle_it.training_hold(owner.id, [""]) == "training"
+
+
+def test_a_card_reaching_several_people_is_allowed_whole_or_not_at_all(
+    owner: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With room for one more, a card to two new people is refused up front
+    instead of running and then allowing only the first of them."""
+    from openexecutive.delegation import training
+    from openexecutive.orchestrator import take_the_lead
+
+    monkeypatch.setattr(take_the_lead, "ALLOWED_MAX", 2)
+    training.allow_person(owner.id, DANA, "Dana Park", decision_id=None)
+    sam = "sam@co.example"
+    assert training.room_for_all(owner.id, [DANA, sam])
+    assert not training.room_for_all(owner.id, [sam, "lee@co.example"])
+    # The same address twice is one allowance; one already allowed costs nothing.
+    assert training.room_for_all(owner.id, [sam, "Sam@co.example", DANA])
+    assert training.room_for_all(owner.id, [])
+
+
+def test_an_unreadable_training_setting_holds(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.delegation import training
+
+    def broken(*a: Any, **k: Any) -> Any:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(training, "_connect", broken)
+    assert handle_it.training_hold(owner.id, [DANA]) == "training"
+
+
+def test_careful_holds_an_allowed_person_too(owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.delegation import training
+
+    _on(owner)
+    _in_training(owner)
+    _careful(monkeypatch)
+    training.allow_person(owner.id, DANA, "Dana Park", decision_id=None)
+    mailbox, result = _scan_one(owner)
+    assert result.handled == 0 and mailbox.sent == []
+    assert inbox.card_payload(_only_card(owner))["handle_it_reason"] == "level"

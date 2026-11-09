@@ -134,19 +134,23 @@ async def send_approved_reply(
     caller: Any,
     resolver: int | None,
     confirm: dict[str, Any] | None = None,
+    allow: bool = False,
     example: bool = False,
     gmail: Any = None,
     now: datetime | None = None,
 ) -> str:
     """Send the draft on ``instance``, a ``delegation_reply`` card the caller
-    approved. ``example`` keeps an edited draft as how they write to them. Returns the sent message's id; raises ``SendRefused``."""
+    approved. ``allow`` is "on its own next time" (In training): this sender
+    (a follow-up's people) is allowed from now on; ``example`` keeps an
+    edited draft as how they write to them. Returns the sent message's id;
+    raises ``SendRefused``."""
     from openexecutive.audit import rows_for_person
 
     owner = getattr(instance, "approver_person_id", None)
     with rows_for_person(owner if isinstance(owner, int) else None):
         return await _send(
             instance, caller=caller, resolver=resolver, confirm=confirm or {},
-            gmail=gmail, now=now or datetime.now(UTC), example=example,
+            gmail=gmail, now=now or datetime.now(UTC), allow=allow, example=example,
         )
 
 
@@ -175,7 +179,7 @@ def _addresses(value: Any) -> list[str] | None:
 
 async def _send(
     instance: Any, *, caller: Any, resolver: int | None, confirm: dict[str, Any], gmail: Any, now: datetime,
-    on_its_own: bool = False, example: bool = False,
+    on_its_own: bool = False, allow: bool = False, example: bool = False,
 ) -> str:
     """``_send_checked``, and for a reply kept on its card alone
     (``card_drafts``): the draft it made is taken back out of the mailbox
@@ -186,7 +190,7 @@ async def _send(
     try:
         return await _send_checked(
             instance, caller=caller, resolver=resolver, confirm=confirm, gmail=gmail, now=now,
-            on_its_own=on_its_own, example=example, made=made,
+            on_its_own=on_its_own, allow=allow, example=example, made=made,
         )
     except SendRefused as refused:
         if made and refused.code != "send_unconfirmed":
@@ -196,10 +200,10 @@ async def _send(
 
 async def _send_checked(
     instance: Any, *, caller: Any, resolver: int | None, confirm: dict[str, Any], gmail: Any, now: datetime,
-    on_its_own: bool = False, example: bool = False, made: dict[str, Any],
+    on_its_own: bool = False, allow: bool = False, example: bool = False, made: dict[str, Any],
 ) -> str:
     from openexecutive.config import get_settings
-    from openexecutive.delegation import card_drafts, drafts, handle_it
+    from openexecutive.delegation import card_drafts, drafts, handle_it, training
     from openexecutive.delegation.answers import CAUGHT_UP_KEY
     from openexecutive.delegation.gmail import (
         BLOCKING_CODES,
@@ -255,8 +259,17 @@ async def _send_checked(
             raise SendRefused(409, "handle_it_off", "Handle it for me is off for this reply.")
         if handle_it.approvals_hold():
             raise SendRefused(409, "level", handle_it.REASONS["level"])
+        # In training, only people they allowed (one removed since the card
+        # was made holds it); otherwise, below Hands-off, only people they know.
+        held = handle_it.training_hold(person.id, _going(payload))
+        if held is not None:
+            raise SendRefused(409, held, handle_it.REASONS[held])
         relation = str(payload.get("handled_as") or "stranger")
-        if handle_it.kind_for(relation) != handle_it.KIND_REPLY_KNOWN and not handle_it.hands_off():
+        if (
+            not handle_it.in_training(person.id)
+            and handle_it.kind_for(relation) != handle_it.KIND_REPLY_KNOWN
+            and not handle_it.hands_off()
+        ):
             raise SendRefused(409, "stranger", handle_it.REASONS["stranger"])
         if not handle_it.signing_ok():
             raise SendRefused(409, "caller_signing_required", handle_it.REASONS["signing_off"])
@@ -265,6 +278,16 @@ async def _send_checked(
             raise SendRefused(409, counted, handle_it.REASONS[counted])
     else:
         _check_caller(caller, email)
+        if allow:
+            going = _going(payload)
+            if not going or not training.in_training(person.id):
+                raise SendRefused(
+                    422, "cant_allow", "Sending on its own next time is for replies and follow-ups while In training is on.",
+                )
+            if not training.room_for_all(person.id, going):
+                raise SendRefused(
+                    409, "learned_full", "It has learned as much as it can hold. Remove something first.",
+                )
     if not is_enabled(person.id) or not get_watch(person.id).enabled:
         raise SendRefused(
             409, "inbox_off",
@@ -432,6 +455,9 @@ async def _send_checked(
             if sent.id:
                 drafts.mark_sent(person.id, draft.draft_id, sent.id)
             if on_its_own:
+                for allowance in training.all_allowed(person.id, _going(payload)) or []:
+                    training.used(allowance)
+            if on_its_own:
                 _audit("delegation_reply_handled", f"Sent a reply as person {person.id}, on its own", {
                     "person_id": person.id, "decision_id": instance.id, "thread_id": thread_id,
                     "sent_message_id": sent.id, "recipient_count": len(recipients),
@@ -443,6 +469,8 @@ async def _send_checked(
                 })
         except Exception as exc:
             logger.warning("delegation.reply_send: recording a sent reply failed (%s)", type(exc).__name__)
+        if allow:
+            _learn(person.id, payload, decision_id=instance.id)
         if example and edited:
             _keep_example(person.id, payload, current.message, decision_id=instance.id)
         if not on_its_own:
@@ -452,6 +480,43 @@ async def _send_checked(
         return sent.id
     finally:
         SENDING.discard(instance.id)
+
+
+def _going(payload: dict[str, Any]) -> list[str]:
+    """Who an allowance on this card covers, and who an In-training send
+    must have been allowed for: everyone the draft goes to (``draft_to``,
+    which Send checks the mailbox draft against), else the sender it
+    answers."""
+    going = _addresses(payload.get("draft_to"))
+    if going:
+        return going
+    sender = str(payload.get("from_email") or "").strip().lower()
+    return [sender] if sender else []
+
+
+def _learn(person_id: int, payload: dict[str, Any], *, decision_id: int) -> None:
+    """"On its own next time", once the reply went: its sender (a
+    follow-up's people) may be written to on its own from now on. A failure
+    here never undoes the send."""
+    from openexecutive.delegation import training
+    from openexecutive.delegation.inbox import _audit
+
+    follow_up = payload.get("source") == "follow_up"
+    allowed: list[int] = []
+    for address in _going(payload):
+        try:
+            found = training.allow_person(
+                person_id, address, "" if follow_up else str(payload.get("from_name") or ""), decision_id=decision_id,
+            )
+        except Exception:
+            logger.warning("delegation.reply_send: the reply went, but allowing someone failed", exc_info=True)
+            continue
+        if found is not None:
+            allowed.append(found.id)
+    if allowed:
+        _audit("delegation_reply_allowed", f"Person {person_id} allowed someone in training", {
+            "person_id": person_id, "decision_id": decision_id, "allowed_ids": allowed, "follow_up": follow_up,
+        })
 
 
 def _keep_example(person_id: int, payload: dict[str, Any], message: Any, *, decision_id: int) -> None:

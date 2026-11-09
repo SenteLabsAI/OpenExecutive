@@ -32,7 +32,7 @@ TABLE = "delegation_sign_in_notices"
 MESSAGE = (
     "Your mailbox stopped accepting the sign-in I use, so I can't read your mail "
     "or calendar, or save drafts in it, until you connect it again. You can do "
-    "that in Delegate → Act as me."
+    "that in Delegate → As you."
 )
 # Notices being sent now, held so nothing collects one before it ends.
 _tasks: set[asyncio.Task[bool]] = set()

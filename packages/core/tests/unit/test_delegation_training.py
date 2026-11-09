@@ -118,7 +118,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
 def test_the_switch_and_the_list_through_the_api(client: TestClient, owner: Any) -> None:
     resp = client.put("/delegation/training", json={"drafts": True}, headers=HEADERS)
     assert resp.status_code == 200
-    assert resp.json()["training"] == {"drafts": True, "learned": []}
+    assert resp.json()["training"] == {"training": False, "drafts": True, "learned": []}
     kept = training.keep_style(owner.id, DANA, "Dana Park", "Hi Dana", decision_id=None)
     assert kept is not None
     body = client.get("/delegation", headers=HEADERS).json()["training"]

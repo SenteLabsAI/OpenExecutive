@@ -24,7 +24,7 @@ def chat_apps(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, Any, bool]]:
     monkeypatch.setattr("openexecutive.audit.log_event", lambda *_a, **_k: None)
     resolved: list[tuple[int, Any, bool]] = []
 
-    async def resolve(decision_id: int, person: Any, *, approve: bool) -> str:
+    async def resolve(decision_id: int, person: Any, *, approve: bool, allow: bool = False) -> str:
         resolved.append((decision_id, person, approve))
         return "Approved." if approve else "Skipped."
 

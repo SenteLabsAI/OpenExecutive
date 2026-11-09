@@ -124,7 +124,8 @@ def test_an_invite_from_a_contact_becomes_a_card_with_no_model_call(
     assert card.status == "proposed" and card.gate_mode == "propose" and card.approver_person_id == person.id
     payload = json.loads(card.proposed_payload_json)
     assert payload["private"] is True and payload["event_id"] == "ev1" and payload["title"] == "Pilot review"
-    assert payload["clashes"] == [] and payload["can_answer"] is True and "handle_it_reason" not in payload
+    # Careful (pinned by conftest) is why it waits.
+    assert payload["clashes"] == [] and payload["can_answer"] is True and payload["handle_it_reason"] == "level"
     (shown,) = invites.cards(person)
     assert shown.when == "Thu 1 Oct, 14:00–14:30" and shown.from_email == DANA and shown.relation == "contact"
     assert _ledger(db)["i1"] == (invites.CARDED, None)
@@ -191,7 +192,7 @@ def _on(person: Any, monkeypatch: pytest.MonkeyPatch | None = None, *, level: st
     said): Careful, pinned by conftest, holds everything."""
     from openexecutive.orchestrator import outside_mode
 
-    handle_it.set_(person.id, enabled=True, updated_by="test")
+    inbox.set_watch(person.id, True, updated_by="test")
     patch = monkeypatch or pytest.MonkeyPatch()
     patch.setattr(outside_mode, "get_mode", lambda **_: level)
     if monkeypatch is None:
@@ -406,3 +407,37 @@ def test_today_says_what_it_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
     )])
     (item,) = today._sent_as_caller(object())  # type: ignore[arg-type]
     assert item.kind == "sent_as_you" and item.summary == "Accepted Dana's Pilot review, Thu 1 Oct, 14:00"
+
+
+# ── In training ───────────────────────────────────────────────────────────────
+
+
+def test_in_training_an_invite_waits_and_accepting_with_allow_teaches_it(
+    db: Path, client: TestClient, person: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.delegation import training
+
+    _on(person, monkeypatch, level="trust")
+    training.set_(person.id, {training.TRAINING: True}, updated_by="test")
+    mailbox = _mailbox()
+    assert _scan(person, mailbox).handled == 0 and mailbox.answers == []
+    (card,) = invites.cards(person)
+    assert card.waited_because == handle_it.REASONS["training"] and card.can_allow is True
+    monkeypatch.setattr("openexecutive.delegation.gmail.gmail_for", lambda email: mailbox)
+    resp = client.post(f"/decisions/{card.decision_id}/approve", json={"edits": {"answer": "accept", "allow": True}},
+                       headers={"x-caller-email": OWNER})
+    assert resp.status_code == 200, resp.text
+    assert mailbox.answers == [("ev1", True)] and training.allowed_person(person.id, DANA) is not None
+    # Dana's next invite is accepted on its own.
+    second = _mailbox(_invite("i2", "ti2"), event=_event("ev2"))
+    assert _scan(person, second).handled == 1 and second.answers == [("ev2", True)]
+
+
+def test_allow_needs_in_training_and_an_accept(
+    client: TestClient, person: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mailbox, card_id = _carded(person, monkeypatch)
+    resp = client.post(f"/decisions/{card_id}/approve", json={"edits": {"answer": "accept", "allow": True}},
+                       headers={"x-caller-email": OWNER})
+    assert resp.status_code == 422 and resp.json()["detail"]["code"] == "cant_allow"
+    assert mailbox.answers == []

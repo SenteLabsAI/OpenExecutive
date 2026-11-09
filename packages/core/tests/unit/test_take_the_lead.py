@@ -757,9 +757,11 @@ def _wakes() -> list[Any]:
         ).fetchall()
 
 
-def test_below_hands_off_nothing_wakes(no_last_wake: None) -> None:
-    assert ttl.wake("a message on slack", now=NOW) is None
-    assert _wakes() == []
+def test_below_hands_off_new_messages_wake_it_too(no_last_wake: None) -> None:
+    # Each step waits on a card there, but the card comes the same hour.
+    assert ttl.wake("a message on slack", now=NOW) is not None
+    [row] = _wakes()
+    assert row["run_at"] == (NOW + ttl.WAKE_AFTER).isoformat()
 
 
 def test_hands_off_new_messages_wake_the_reflection_once_in_a_while(
@@ -1046,9 +1048,13 @@ def test_the_three_positions(client: TestClient, owner: Any, monkeypatch: pytest
     assert client.put("/take-the-lead", json={"training": True}).status_code == 200
 
 
-def test_learned_note_is_empty_while_off() -> None:
+def test_learned_note_quotes_examples_without_a_switch() -> None:
+    # There is no switch any more: the owner's examples always count.
     ttl.allow("take_the_lead|workflow|x", "Start the x workflow", example={"text": "y"}, created_by="t")
-    assert ttl.learned_note() == ""
+    assert "Start the x workflow" in ttl.learned_note()
+    assert "in training" not in ttl.learned_note()
+    ttl.set_(ttl.SCOPE_EXECUTIVE, training=True, updated_by="t")
+    assert "in training" in ttl.learned_note()
 
 
 def test_an_older_switch_table_gains_training(db: Path) -> None:
@@ -1198,3 +1204,74 @@ def test_mail_sends_are_known_without_their_addresses() -> None:
     assert ttl.is_mail_send("google_workspace__send_gmail_message")
     assert ttl.is_mail_send("microsoft_365__send-mail")
     assert not ttl.is_mail_send("google_workspace__create_spreadsheet")
+
+
+# ── In training sits above Approvals ─────────────────────────────────────────
+
+
+def _balanced(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import outside_mode
+
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.OUTSIDERS)
+
+
+def _gated_message(sam: int, text: str) -> tuple[dict[str, Any], list[Any]]:
+    calls: list[Any] = []
+    gated = ttl.gated_handlers(_handlers(calls), source="reflection")
+    result = json.loads(asyncio.run(gated["message_person"]({"person_id": sam, "text": text})))
+    return result, calls
+
+
+@pytest.mark.parametrize("level", ["balanced", "hands_off"])
+def test_in_training_nothing_goes_on_any_level(owner: Any, monkeypatch: pytest.MonkeyPatch, level: str) -> None:
+    (_balanced if level == "balanced" else _hands_off)(monkeypatch)
+    _training()
+    result, calls = _gated_message(_teammate(), "Are we on for Thursday?")
+    assert result["status"] == "waiting_for_approval" and calls == []
+    [decision] = ledger.list_instances(ttl.DECISION_CLASS)
+    payload = json.loads(decision.proposed_payload_json)
+    assert payload["kind"] == ttl.TRAINING and payload["allow"]["label"] == "Message Sam Teammate"
+
+
+def test_once_allowed_it_goes_where_approvals_lets_it(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    _training()
+    sam = _teammate()
+    key, label = ttl.allowance("message_person", {"person_id": sam})  # type: ignore[misc]
+    ttl.allow(key, label, created_by="t")
+    # Careful still holds everything, allowed or not.
+    result, calls = _gated_message(sam, "Are we on for Thursday?")
+    assert result["status"] == "waiting_for_approval" and calls == []
+    assert json.loads(ledger.list_instances(ttl.DECISION_CLASS)[0].proposed_payload_json)["kind"] == "level"
+    _balanced(monkeypatch)
+    result, calls = _gated_message(sam, "Are we on for Friday?")
+    assert result["status"] == "sent" and len(calls) == 1
+    # Someone not allowed yet still gets a card.
+    pat = people_store.upsert_person(full_name="Pat Other", email="pat@co.example")
+    people_registry.invalidate()
+    result, calls = _gated_message(pat, "Hello")
+    assert result["status"] == "waiting_for_approval" and calls == []
+
+
+def test_out_of_training_balanced_holds_the_kinds_and_hands_off_runs(
+    owner: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _balanced(monkeypatch)
+    sam = _teammate()
+    result, calls = _gated_message(sam, "Are we on for Thursday?")
+    assert result["status"] == "sent" and len(calls) == 1
+    result, calls = _gated_message(sam, "Pay the invoice, $4,000.")
+    assert result["status"] == "waiting_for_approval" and calls == []
+    [decision] = ledger.list_instances(ttl.DECISION_CLASS)
+    assert json.loads(decision.proposed_payload_json)["kind"] == "money"
+    _hands_off(monkeypatch)
+    result, calls = _gated_message(sam, "Pay the invoice, $4,000.")
+    assert result["status"] == "sent" and len(calls) == 1
+
+
+def test_the_owners_rules_hold_even_on_hands_off(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    _hands_off(monkeypatch)
+    rule = ttl.add_rule(ttl.SCOPE_COMPANY, "words", "acquisition", created_by="t")
+    result, calls = _gated_message(_teammate(), "The acquisition closes Friday.")
+    assert result["status"] == "waiting_for_approval" and calls == []
+    [decision] = ledger.list_instances(ttl.DECISION_CLASS)
+    assert json.loads(decision.proposed_payload_json)["rule_id"] == rule.id

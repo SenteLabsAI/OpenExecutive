@@ -41,6 +41,9 @@ class ReplyCard:
     # "follow_up" when the draft chases the person's own unanswered email
     # (delegation.follow_ups); "" for a reply to someone else's.
     source: str = ""
+    # In training: "Send to them on its own next time" (this sender, or a
+    # follow-up's people, aren't allowed yet; delegation.training).
+    can_allow: bool = False
     # Drafts is in training: "Do it like this next time" keeps a draft they
     # changed as how they write to this person.
     learns_style: bool = False
@@ -119,6 +122,7 @@ def cards(person: Any) -> list[ReplyCard]:
             ),
             waited_because=REASONS.get(str(payload.get("handle_it_reason") or ""), ""),
             source="follow_up" if payload.get("source") == "follow_up" else "",
+            can_allow=training.can_allow_reply(person.id, payload, trained),
             learns_style=trained.drafts,
             in_mailbox=bool(draft_id),
             mailbox=mailbox,

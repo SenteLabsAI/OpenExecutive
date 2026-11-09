@@ -55,8 +55,8 @@ export default function ExecutiveSettingsPage() {
       </SettingsCard>
 
       <p className="text-[15px] text-fg-muted">
-        Take the lead, booking meetings and what it sends as you are under{" "}
-        <Link href="/delegate/take-the-lead" className="font-medium text-accent underline-offset-2 hover:underline">
+        What it does as you and as itself, In training and your rules are under{" "}
+        <Link href="/delegate" className="font-medium text-accent underline-offset-2 hover:underline">
           Delegate
         </Link>
         .

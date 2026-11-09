@@ -57,7 +57,7 @@ def _asked(mid: str = "s1", thread: str = "t9", *, to: str = DANA, days: float =
 def _on(person: Any, level: str) -> None:
     """Handle it for me on, with Approvals at ``level``."""
     _PICKED[0] = _LEVEL[level]
-    handle_it.set_(person.id, enabled=True, updated_by="test")
+    inbox.set_watch(person.id, True, updated_by="test")
 
 
 def _cards() -> list[Any]:
@@ -114,6 +114,7 @@ def test_someone_on_cc_gets_it_too(owner: Any, models: dict[str, Any]) -> None:
 
 
 def test_off_it_never_looks(owner: Any, models: dict[str, Any]) -> None:
+    inbox.set_watch(owner.id, False, updated_by="test")
     mailbox = FakeInbox()
     mailbox.add(_asked())
     _scan(owner, mailbox)

@@ -1,24 +1,26 @@
 import type { DelegationSettings, OutsideContentMode, ReachStep } from "@/lib/api";
 
-// What it writes and sends as you, from your own mailbox. One setting on the
-// server (PUT /delegation/reach), shown as two pickers: What it writes as
-// you on Delegate → Act as me (Off, When I ask, Draft replies automatically) and What it
-// sends on its own on Delegate → Handle it for me (Off or On). What goes on
-// its own is the Approvals level's call (Settings → Your Executive), not a
-// step of its own. Handle it for me builds on the inbox replies Act as me
-// writes, so its switch opens once the first one is at Draft replies automatically.
+// Delegate is one page (app/delegate/page.tsx) in three blocks. How far it
+// goes as you is one setting on the server (PUT /delegation/reach), shown as
+// one picker in the As you block: Off, When you ask, Your inbox. What goes on
+// its own from the inbox is the Approvals level's call (the Before anything
+// goes out block, and Settings → Your Executive), held back by In training;
+// there is no switch for it.
 
-// Where each picker sits, for links from the other tabs.
-export const WRITES_ANCHOR = "writes";
-export const SENDS_ANCHOR = "sends";
-export const WRITES_HREF = `/delegate/act-as-me#${WRITES_ANCHOR}`;
-export const SENDS_HREF = `/delegate/handle-it#${SENDS_ANCHOR}`;
+// Where each block sits, for links from Home, What it does for you and the
+// older tabs' addresses.
+export const AS_YOU_ANCHOR = "as-you";
+export const AS_ME_ANCHOR = "as-me";
+export const APPROVALS_ANCHOR = "before-anything-goes-out";
+export const AS_YOU_HREF = `/delegate#${AS_YOU_ANCHOR}`;
+export const AS_ME_HREF = `/delegate#${AS_ME_ANCHOR}`;
+export const APPROVALS_HREF = `/delegate#${APPROVALS_ANCHOR}`;
 
-export type WriteStep = "off" | "when_asked" | "inbox";
-export type SendStep = "off" | "on";
+export const REACH_ORDER: ReachStep[] = ["off", "when_asked", "inbox"];
 
-// What Handle it for me sends at each Approvals level (delegation/handle_it.py,
-// invites.py, action_cards.py).
+// What goes on its own from your inbox at each Approvals level
+// (delegation/handle_it.py, invites.py, action_cards.py), once In training
+// lets it.
 export const APPROVALS_SENDS: Record<OutsideContentMode, { label: string; line: string }> = {
   ask: {
     label: "Careful",
@@ -34,28 +36,25 @@ export const APPROVALS_SENDS: Record<OutsideContentMode, { label: string; line: 
   },
 };
 
+// What the Executive does in its own name at each level (orchestrator/take_the_lead.py).
+export const APPROVALS_LEADS: Record<OutsideContentMode, string> = {
+  ask: "Every action waits for your yes.",
+  outsiders: "Your team and contacts go. Someone new, money, contracts, people decisions, deleting or sharing, and sends to more than five people wait.",
+  trust: "Everything goes. Only your rules still wait.",
+};
+
 export function reachOf(settings: DelegationSettings): ReachStep {
   if (!settings.enabled) return "off";
-  if (!settings.inbox?.enabled) return "when_asked";
-  if (!settings.handle_it?.enabled) return "inbox";
-  return "handle_it";
+  return settings.inbox?.enabled ? "inbox" : "when_asked";
 }
 
-// Act as me's picker: a sending step writes for the inbox too.
-export function writeOf(settings: DelegationSettings): WriteStep {
-  const step = reachOf(settings);
-  return step === "off" || step === "when_asked" ? step : "inbox";
-}
-
-// Handle it for me's picker: off below the sending steps.
-export function sendOf(settings: DelegationSettings): SendStep {
-  const step = reachOf(settings);
-  return step === "handle_it" ? "on" : "off";
-}
-
-// The reach step a pick on Handle it for me saves: Off keeps the inbox replies.
-export function reachForSend(step: SendStep): ReachStep {
-  return step === "off" ? "inbox" : "handle_it";
+// The "Now:" line under the As you picker.
+export function reachLine(step: ReachStep, inTraining: boolean, level: OutsideContentMode | null): string {
+  if (step === "off") return "It never writes as you.";
+  if (step === "when_asked") return "Ask in chat and the draft waits in your Drafts. You send it.";
+  if (inTraining) return "It drafts replies to your inbox. In training, every one waits for you until you allow that person.";
+  if (level === "ask" || level === null) return "It drafts replies to your inbox. On Careful, every one waits for you.";
+  return `It drafts replies to your inbox, and on ${APPROVALS_SENDS[level].label} sends the sure ones itself.`;
 }
 
 export function sentTodayLine(n: number): string {

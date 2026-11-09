@@ -511,13 +511,22 @@ def test_the_dial_climbs_one_switch_at_a_time(
     pid = ids["principal"]
     gmail["status"] = "connected"
     assert route.reach_of(pid) == "off"
+    assert _reach(client, "when_asked").status_code == 200
+    assert is_enabled(pid) and not inbox.get_watch(pid).enabled and not handle_it.get(pid).enabled
     assert _reach(client, "inbox").status_code == 200
-    assert is_enabled(pid) and inbox.get_watch(pid).enabled and not handle_it.get(pid).enabled
+    assert inbox.get_watch(pid).enabled and handle_it.get(pid).enabled
     assert route.reach_of(pid) == "inbox"
-    _reach(client, "handle_it")
-    assert handle_it.get(pid).enabled and route.reach_of(pid) == "handle_it"
-    for gone in ("bold", "everything"):
+    for gone in ("bold", "everything", "careful"):
         assert _reach(client, gone).status_code == 422
+
+
+def test_an_older_app_s_handle_it_step_means_inbox(
+    client: TestClient, ids: dict[str, int], gmail: dict[str, str], signed: None
+) -> None:
+    pid = ids["principal"]
+    gmail["status"] = "connected"
+    assert _reach(client, "handle_it").status_code == 200
+    assert route.reach_of(pid) == "inbox"
 
 
 def test_moving_down_turns_everything_above_off(
@@ -527,7 +536,7 @@ def test_moving_down_turns_everything_above_off(
 
     pid = ids["principal"]
     gmail["status"] = "connected"
-    _reach(client, "handle_it")
+    _reach(client, "inbox")
     assert _reach(client, "when_asked").status_code == 200
     assert is_enabled(pid) and not inbox.get_watch(pid).enabled
     assert not handle_it.get(pid).enabled
@@ -541,7 +550,7 @@ def test_without_a_mailbox_the_dial_stays_off(client: TestClient, ids: dict[str,
     assert route.reach_of(ids["principal"]) == "off"
 
 
-def test_sending_needs_a_signed_sign_in_but_holding_back_doesnt(
+def test_holding_back_needs_no_signed_sign_in(
     client: TestClient, ids: dict[str, int], gmail: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pid = ids["principal"]
@@ -549,10 +558,6 @@ def test_sending_needs_a_signed_sign_in_but_holding_back_doesnt(
     monkeypatch.setenv("OE_LOCAL_LOGIN", "1")
     _reach(client, "inbox")
     monkeypatch.delenv("OE_LOCAL_LOGIN")
-    # Without signed sign-ins it can't start sending...
-    assert _reach(client, "handle_it").status_code == 409
-    assert route.reach_of(pid) == "inbox"
-    # ...but holding back is always possible.
     assert _reach(client, "when_asked").status_code == 200 and route.reach_of(pid) == "when_asked"
 
 

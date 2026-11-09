@@ -504,12 +504,13 @@ async def _read_shared_files(
 # card's id and choice in the button's value.
 _CARD_ACTION_APPROVE = "oe_card_approve"
 _CARD_ACTION_SKIP = "oe_card_skip"
-_CARD_ACTION_RE = re.compile(rf"^({_CARD_ACTION_APPROVE}|{_CARD_ACTION_SKIP})$")
+_CARD_ACTION_ALLOW = "oe_card_allow"
+_CARD_ACTION_RE = re.compile(rf"^({_CARD_ACTION_APPROVE}|{_CARD_ACTION_SKIP}|{_CARD_ACTION_ALLOW})$")
 _MAX_CARD_TEXT = 2900
 
 
 def _card_blocks(
-    text: str, decision_id: int | None = None, labels: tuple[str, str] = ("Approve", "Skip"),
+    text: str, decision_id: int | None = None, labels: tuple[str, ...] = ("Approve", "Skip"),
 ) -> list[dict[str, Any]]:
     """A card as Slack blocks: its text as plain text (it may quote what
     someone else wrote, so never mrkdwn), with the two buttons while it waits."""
@@ -526,6 +527,9 @@ def _card_blocks(
             {"type": "button", "action_id": _CARD_ACTION_SKIP,
              "text": {"type": "plain_text", "text": labels[1]},
              "value": channel_cards.callback_data(decision_id, channel_cards.SKIP)},
+            *([{"type": "button", "action_id": _CARD_ACTION_ALLOW,
+                "text": {"type": "plain_text", "text": labels[2]},
+                "value": channel_cards.callback_data(decision_id, channel_cards.ALLOW)}] if len(labels) > 2 else []),
         ]})
     return blocks
 
@@ -549,7 +553,7 @@ async def _send_cards(client: Any, channel: str, cards: list[int]) -> None:
             logger.exception("Slack: couldn't send card %d", decision_id)
 
 
-async def send_dm_card(slack_user_id: str, decision_id: int, text: str, labels: tuple[str, str]) -> None:
+async def send_dm_card(slack_user_id: str, decision_id: int, text: str, labels: tuple[str, ...]) -> None:
     """Post a card waiting outside any chat to ``slack_user_id``'s DM with the
     bot (``channel_cards.push_waiting``). Raises when it couldn't."""
     from slack_sdk.web.async_client import AsyncWebClient
@@ -661,6 +665,7 @@ async def handle_card_tap(body: dict[str, Any], client: Any) -> None:
     ts = str((body.get("container") or {}).get("message_ts") or message.get("ts") or "")
     actions = body.get("actions") or []
     parsed = channel_cards.parse_callback(actions[0].get("value") if actions else None)
+    allow = channel_cards.tapped_allow(actions[0].get("value") if actions else None)
     person = await asyncio.to_thread(find_person_by_slack_id, user_id) if user_id else None
     if parsed is None or person is None or not await _is_own_dm(client, user_id, channel_id):
         logger.warning("Slack: ignored a card tap that isn't from its own DM")
@@ -672,8 +677,8 @@ async def handle_card_tap(body: dict[str, Any], client: Any) -> None:
                 logger.warning("Slack: couldn't answer an ignored card tap", exc_info=True)
         return
     decision_id, approve = parsed
-    line = await channel_cards.resolve(decision_id, person, approve=approve)
-    choice = "approve" if approve else "skip"
+    line = await channel_cards.resolve(decision_id, person, approve=approve, allow=allow)
+    choice = "allow" if allow else "approve" if approve else "skip"
     await asyncio.to_thread(
         audit_log,
         "integration_inbound",

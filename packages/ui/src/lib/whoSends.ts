@@ -1,11 +1,10 @@
-// The "Who writes and who sends" card in What it does for you: one
-// short scene per option of What it writes as you (Act as me), Handle it for
-// me at each Approvals level, and Take the lead at each Approvals level.
-// Tapping an option plays its scene; it changes no setting. Pure data; a
-// test holds the option labels to the ones the settings cards use
-// (lib/reach.ts).
+// The "Watch how" card in What it does for you: one short scene per step of
+// How far it goes as you, per Approvals level for what goes on its own from
+// your inbox, and per Approvals level for what it does as itself. Tapping
+// an option plays its scene; it changes no setting. Pure data; a test holds
+// the option labels to the ones the Delegate page uses (lib/reach.ts).
 
-import type { WriteStep } from "@/lib/reach";
+import type { ReachStep } from "@/lib/api";
 
 export type Tab = "act" | "handle" | "lead";
 // The Approvals levels (Settings → Your Executive).
@@ -36,10 +35,10 @@ export type Scene = {
   sends?: number;
 };
 
-export const WRITE_OPTIONS: { value: WriteStep; label: string }[] = [
+export const WRITE_OPTIONS: { value: ReachStep; label: string }[] = [
   { value: "off", label: "Off" },
-  { value: "when_asked", label: "When I ask" },
-  { value: "inbox", label: "Draft replies automatically" },
+  { value: "when_asked", label: "When you ask" },
+  { value: "inbox", label: "Your inbox" },
 ];
 
 export const LEVEL_OPTIONS: { value: LevelStep; label: string }[] = [
@@ -48,19 +47,17 @@ export const LEVEL_OPTIONS: { value: LevelStep; label: string }[] = [
   { value: "hands_off", label: "Hands-off" },
 ];
 
-// Handle it for me: Off, then on at each Approvals level.
-export const SEND_OPTIONS: { value: "off" | LevelStep; label: string }[] = [
-  { value: "off", label: "Off" },
-  ...LEVEL_OPTIONS,
-];
+// What goes on its own from your inbox, at each Approvals level: no switch
+// of its own.
+export const SEND_OPTIONS: { value: LevelStep; label: string }[] = LEVEL_OPTIONS;
 
-// Take the lead has no switch: Approvals decides each step.
+// As me has no switch either: Approvals decides each step.
 export const LEAD_OPTIONS = LEVEL_OPTIONS;
 
 export const TAB_NAMES: Record<Tab, string> = {
-  act: "Act as me",
-  handle: "Handle it for me",
-  lead: "Take the lead",
+  act: "As you writes",
+  handle: "As you sends",
+  lead: "As me",
 };
 
 export const OPTIONS: Record<Tab, { value: string; label: string }[]> = {
@@ -72,7 +69,7 @@ export const OPTIONS: Record<Tab, { value: string; label: string }[]> = {
 // The option a tab opens on.
 export const FIRST: Record<Tab, string> = { act: "when_asked", handle: "balanced", lead: "balanced" };
 
-// Handle it for me: the same five emails at every level, so the levels
+// As you sends: the same five emails at every level, so the levels
 // compare. Ordered from the easiest to send to the one that always waits.
 export const MAILS: { from: string; text: string; why: string }[] = [
   { from: "Dana, a contact", text: "See you Tuesday?", why: "Short reply" },
@@ -104,7 +101,7 @@ export const SCENES: Scene[] = [
     ],
   },
   {
-    key: "writes:when_asked", tab: "act", option: "When I ask", answers: yours("The Executive"),
+    key: "writes:when_asked", tab: "act", option: "When you ask", answers: yours("The Executive"),
     line: "It writes as you only when you ask in chat.",
     steps: [
       dana,
@@ -114,8 +111,8 @@ export const SCENES: Scene[] = [
     ],
   },
   {
-    key: "writes:inbox", tab: "act", option: "Draft replies automatically", answers: yours("The Executive"),
-    line: "It also drafts replies to mail that needs you, without being asked.",
+    key: "writes:inbox", tab: "act", option: "Your inbox", answers: yours("The Executive"),
+    line: "It also drafts replies to mail that needs you, without being asked. Approvals decides which go on their own.",
     steps: [
       dana,
       { who: "exec", name: "The Executive", does: "Writes a reply in your voice", mail: { from: "Draft, from you", text: yes, as: "you" } },
@@ -124,12 +121,8 @@ export const SCENES: Scene[] = [
     ],
   },
   {
-    key: "sends:off", tab: "handle", option: "Off", answers: yours("The Executive"), sends: 0,
-    line: "Every reply waits on Home for you to send.",
-  },
-  {
     key: "sends:careful", tab: "handle", option: "Careful", answers: yours("The Executive"), sends: 0,
-    line: "Handle it for me is on, and Approvals is on Careful: every reply waits for you.",
+    line: "Approvals is on Careful: every reply waits on Home for you to send. In training holds them all too, on any level.",
   },
   {
     key: "sends:balanced", tab: "handle", option: "Balanced", sends: 3,
@@ -149,9 +142,9 @@ export const SCENES: Scene[] = [
   },
   {
     key: "lead:balanced", tab: "lead", option: "Balanced",
-    answers: { writes: "The Executive", name: "The Executive's", sends: "You, with Approve on Home" },
-    line: "The same as Careful for what it does on its own: each message waits for you to approve it.",
-    steps: [notices, writesToSam, { who: "you", name: "You", does: "Tap Approve on Home" }, { who: "them", name: "Sam", does: "Gets it from the Executive" }],
+    answers: { writes: "The Executive", name: "The Executive's", sends: "The Executive, or you for the kinds that wait" },
+    line: "A plain message to your team or a contact goes on its own. Money, contracts, people decisions, someone new, deleting or sharing, and big sends wait for your Approve.",
+    steps: [notices, writesToSam, { who: "them", name: "Sam", does: "Gets it from the Executive" }],
   },
   {
     key: "lead:hands_off", tab: "lead", option: "Hands-off",

@@ -17,7 +17,7 @@ import pytest
 from openexecutive.audit import logger as audit_logger
 from openexecutive.audit import unscoped_audit_rows, via_app
 from openexecutive.audit.logger import log_event
-from openexecutive.delegation import action_cards, handle_it
+from openexecutive.delegation import action_cards, handle_it, inbox
 from openexecutive.delegation.settings import pin_turn_delegation, set_enabled
 from openexecutive.mcp_server import server as mcp_server
 from openexecutive.memory.decision_ledger import get_decision_instance
@@ -256,7 +256,7 @@ def test_a_card_waits_when_handle_it_is_off(act_as_me: SimpleNamespace, sends: l
 
 
 def test_a_card_goes_on_its_own_under_handle_it(act_as_me: SimpleNamespace, sends: list[Any]) -> None:
-    handle_it.set_(act_as_me.principal, enabled=True, updated_by="t")
+    inbox.set_watch(act_as_me.principal, True, updated_by="test")
     result = _ai_propose(act_as_me.principal, {"why": "x", "actions": [
         _message(act_as_me.teammate), _invite(act_as_me.principal, act_as_me.teammate),
     ]})
@@ -273,7 +273,7 @@ def test_a_card_goes_on_its_own_under_handle_it(act_as_me: SimpleNamespace, send
 
 def test_a_new_contact_still_waits_under_handle_it(act_as_me: SimpleNamespace, sends: list[Any]) -> None:
     roster = act_as_me
-    handle_it.set_(roster.principal, enabled=True, updated_by="t")
+    inbox.set_watch(roster.principal, True, updated_by="test")
     proposed = {"kind": "add_contact", "full_name": "Sam Lee", "email": "sam@northpeak.example"}
     person = people_store.get_person(roster.principal)
     checked = action_cards.check([proposed], person, now=datetime.now(UTC))
@@ -285,13 +285,13 @@ def test_a_new_contact_still_waits_under_handle_it(act_as_me: SimpleNamespace, s
 
 def test_the_last_check_uses_the_cards_own_rule(act_as_me: SimpleNamespace, sends: list[Any]) -> None:
     roster = act_as_me
-    handle_it.set_(roster.principal, enabled=True, updated_by="t")
+    inbox.set_watch(roster.principal, True, updated_by="test")
     person = people_store.get_person(roster.principal)
     checked = action_cards.check([_message(roster.teammate)], person, now=datetime.now(UTC))
     assert not isinstance(checked, str)
     decision_id = action_cards.propose(person, checked, "y", session_id=None, on_its_own=True)
     # Turned off in between: held, waiting on a tap.
-    handle_it.set_(roster.principal, enabled=False, updated_by="t")
+    inbox.set_watch(roster.principal, False, updated_by="test")
     assert asyncio.run(action_cards.run_on_its_own(decision_id, person)) is None
     card = get_decision_instance(decision_id)
     assert card is not None and card.status == "proposed" and sends == []
@@ -405,7 +405,7 @@ def test_ask_executive_plumbs_may_act_and_the_app(
 def test_a_turn_that_read_outside_text_waits(act_as_me: SimpleNamespace, sends: list[Any]) -> None:
     from openexecutive.orchestrator import outside_content
 
-    handle_it.set_(act_as_me.principal, enabled=True, updated_by="t")
+    inbox.set_watch(act_as_me.principal, True, updated_by="test")
     with patch.object(outside_content, "read_outside", return_value=True):
         result = _ai_propose(act_as_me.principal, {"why": "x", "actions": [_message(act_as_me.teammate)]})
     assert result["status"] == "waiting_for_approval" and sends == []
@@ -417,7 +417,7 @@ def test_on_hands_off_a_turn_that_read_outside_text_goes(
     from openexecutive.orchestrator import outside_content, outside_mode
 
     monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.TRUST)
-    handle_it.set_(act_as_me.principal, enabled=True, updated_by="t")
+    inbox.set_watch(act_as_me.principal, True, updated_by="test")
     with patch.object(outside_content, "read_outside", return_value=True):
         result = _ai_propose(act_as_me.principal, {"why": "x", "actions": [_message(act_as_me.teammate)]})
     assert result["status"] == "done_on_its_own" and len(sends) == 1
@@ -428,7 +428,7 @@ def test_no_one_added_lately_is_reached_on_its_own(
     act_as_me: SimpleNamespace, sends: list[Any], days: int, expected: str | None
 ) -> None:
     roster = act_as_me
-    handle_it.set_(roster.principal, enabled=True, updated_by="t")
+    inbox.set_watch(roster.principal, True, updated_by="test")
     newcomer = people_store.upsert_person(full_name="Nia New", email="nia@co.example")
     _settle(newcomer, days=days)
     person = people_store.get_person(roster.principal)
@@ -446,7 +446,7 @@ def test_planting_someone_then_messaging_them_never_sends_on_its_own(
     from openexecutive.orchestrator import executive as executive_module
 
     roster = act_as_me
-    handle_it.set_(roster.principal, enabled=True, updated_by="t")
+    inbox.set_watch(roster.principal, True, updated_by="test")
     upsert = AsyncMock(return_value=json.dumps({"status": "saved"}))
     tool_use = SimpleNamespace(
         type="tool_use", id="tu-1", name="upsert_person",
