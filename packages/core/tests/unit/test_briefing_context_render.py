@@ -332,3 +332,20 @@ def test_research_found_is_empty_when_the_runs_cant_be_read(monkeypatch) -> None
 
     monkeypatch.setattr(wf_persistence, "list_runs", boom)
     assert end_of_day_digest._research_found(datetime.now(UTC)) == []
+
+
+def test_no_empty_still_open_block_when_every_older_item_was_rewritten(monkeypatch) -> None:
+    from openexecutive.alerts import card_refs
+
+    monkeypatch.setattr(card_refs, "_base", lambda: "https://app.example.com")
+    since = datetime.now(UTC) - timedelta(hours=24)
+    today = {"departments": [], "people": [], "proposals": [_proposal(
+        4, hours_ago=70, review_verdict="changed", review_note="now due Friday",
+        last_reviewed_at=(datetime.now(UTC) - timedelta(hours=3)).isoformat(),
+    )]}
+    for text in (
+        render_briefing_context(period_label="p", today_data=today, activity=[], since=since),
+        _render_eod_context(period_label="p", today_data=today, activity=[], since=since),
+    ):
+        assert "STILL OPEN FROM BEFORE" not in text
+        assert "- item 4 — now due Friday — link: https://app.example.com/?card=4" in text

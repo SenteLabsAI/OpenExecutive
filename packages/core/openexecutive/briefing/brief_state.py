@@ -365,7 +365,8 @@ def rewritten_lines(
     proposal): ``- <headline> — <review note>``. Shared by the morning brief
     and the end-of-day digest so the two never drift."""
     return [
-        f"- {str(p.get('headline', ''))[:160]} — {str(p.get('review_note', ''))[:120]}"
+        f"- {quoted(p.get('headline'), 160)} — {quoted(p.get('review_note'), 120)}"
+        + card_link(p)
         for p in rewritten_since(proposals, since)[:limit]
     ]
 
