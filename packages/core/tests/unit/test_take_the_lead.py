@@ -1369,3 +1369,33 @@ def test_a_goes_rule_never_lets_a_delete_go(owner: Any, balanced: None) -> None:
     _go("words", "standup")
     hit, _ = ttl._hit("cancel_calendar_event", {"event_id": "e1", "title": "standup"}, mcp=False)
     assert hit is not None and hit.kind == "delete_share"
+
+
+def test_a_goes_rule_lets_go_only_what_it_covers(owner: Any, balanced: None) -> None:
+    """A words rule never lets money go, and an amount rule lets only the
+    money go: a contract under the limit still waits."""
+    _go("words", "thanks")
+    result, calls = _run(owner, "Thanks! Approve the $10,000 wire")
+    assert result["status"] == "waiting_for_approval" and calls == []
+    _go("amount", "500")
+    result, calls = _run(owner, "Sign the $300 contract renewal")
+    assert result["status"] == "waiting_for_approval" and calls == []
+
+
+def test_a_person_goes_rule_needs_one_person_by_that_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    import openexecutive.people.store as store
+
+    def sams(**_: Any) -> list[Any]:
+        return [
+            SimpleNamespace(full_name="Sam Lee", email="sam@co.example", email_aliases=[]),
+            SimpleNamespace(full_name="Sam Lee", email="sam@far.example", email_aliases=[]),
+        ]
+
+    rules = [_go("person", "Sam Lee")]
+    monkeypatch.setattr(store, "list_people", sams)
+    assert ttl.rule_goes(rules, "", ["sam@co.example"]) is None
+    monkeypatch.setattr(store, "list_people", lambda **_: sams()[:1])
+    assert ttl.rule_goes(rules, "", ["sam@co.example"]) is not None
+    assert ttl.rule_goes(rules, "Sam Lee", []) is None  # a name in the text isn't a recipient

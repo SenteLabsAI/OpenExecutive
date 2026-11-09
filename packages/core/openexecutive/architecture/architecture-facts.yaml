@@ -11842,8 +11842,11 @@ delegation:
     rules (take_the_lead_rules, company scope) apply here too, inside
     content_hold: a Waits rule (take_the_lead.rule_waits, against the texts
     and the reply's recipients) holds as reason "rule" on every level; below
-    Hands-off a Goes rule (take_the_lead.rule_goes) releases sensitive and
-    amount, never link. Unreadable rules hold. The per-mode limits are gone.
+    Hands-off Goes rules (take_the_lead.goes_rules, words and amounts read
+    in the reply only, link_texts) release by kind: person/domain all
+    topic holds, amount the money words and amounts, words the other
+    sensitive topics; never link or credentials (CREDENTIALS). Unreadable
+    rules hold, on Hands-off too. The per-mode limits are gone.
     Only when it passes, a last look (delegation.injection_check.held_back:
     one tool-less classifier-model call reading the sender's new words as
     plain text in an <email> block, up to 20,000 chars) asks whether they
@@ -12088,19 +12091,21 @@ delegation:
     leaving it needs a provable owner; back 2026-11-09) sits above the
     level: _hit order is the owner's Waits rules, Careful, training (a Hit
     of kind TRAINING unless allowance()/find_allowed covers it; hold()
-    stores allow {key, label}), Hands-off runs, a Goes rule runs it
-    (rule_goes; _gated records "Your rule: <rule_text>" as the log's why),
+    stores allow {key, label}), Hands-off runs, Goes rules let go the KINDS
+    they cover (goes_rules / goes_kinds: person and domain all but
+    DELETE_SHARE, amount MONEY, words CONTRACTS / PEOPLE_DECISIONS /
+    BIG_SEND) and the rest still waits (_gated records "Your rule: <rule_text>" as the log's why),
     Balanced holds the six KINDS.
     Rules (take_the_lead_rules: kind person / domain / words / amount,
     effect wait (default, the column added 2026-11-09) or go; POST
     /take-the-lead/rules {kind, value, effect}, a Goes rule needs
     _provably_theirs like DELETE). Waits matches loosely (any recipient, a
     name anywhere, an amount at or over the limit). Goes is strict, since
-    it lets something go: every recipient is that address, that People
-    name's addresses, or at that domain (a name with no recipients matches
-    by name); words appear; an amount rule needs at least one amount and
-    every amount under the limit. A delete or share (DELETE_SHARE) still
-    waits under a Goes rule. Goes only lifts the level's topic holds:
+    it lets something go: there are recipients and every one is that
+    address, the one People entry by that name (several: none), or at that
+    domain; words appear as whole words; an amount rule needs an amount in
+    what it sends and every amount under the limit. A delete or share
+    (DELETE_SHARE) always waits under a Goes rule. Goes only lifts the level's topic holds:
     levels.decide's always-card reasons (STRANGER, outside content giving
     orders, NOT_OWNER, SHARED) are decided before and never see it.
     In training stays the last check: nothing goes out on its own while it

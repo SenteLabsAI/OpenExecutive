@@ -709,55 +709,76 @@ def rule_waits(rules: list[Rule], text: str, recipients: list[str]) -> Hit | Non
 def rule_goes(
     rules: list[Rule], text: str, recipients: list[str], *, words_text: str | None = None,
 ) -> Rule | None:
-    """The first Goes rule that covers the whole action, or None. Stricter
-    than a Waits rule, since it lets something go: a person or domain must
-    be every recipient (or, with none, the person is named), words must
-    appear as whole words in ``words_text`` (what it would send; ``text``
-    when not given), and an amount rule needs at least one amount, every
-    one under its limit."""
-    lowered = text.lower()
-    own = lowered if words_text is None else words_text.lower()
+    """The first Goes rule that matches, or None (see ``goes_rules``)."""
+    found = goes_rules(rules, text, recipients, words_text=words_text)
+    return found[0] if found else None
+
+
+def goes_rules(
+    rules: list[Rule], text: str, recipients: list[str], *, words_text: str | None = None,
+) -> list[Rule]:
+    """Every Goes rule that matches. Stricter than a Waits rule, since it
+    lets something go: a person or domain must be every recipient (and
+    there must be one), words must appear as whole words in ``words_text``
+    (what it would send; ``text`` when not given), and an amount rule needs
+    an amount in ``words_text`` and every amount in ``text`` under its
+    limit. What each one lets go is ``goes_kinds``."""
+    own = text if words_text is None else words_text
+    lowered = own.lower()
     found = amounts(text)
+    mine = amounts(own)
+    out: list[Rule] = []
     for rule in rules:
         if rule.effect != EFFECT_GO:
             continue
         value = rule.value
         if rule.kind == RULE_PERSON:
-            if "@" in value:
-                theirs = {value}
-            elif not recipients:
-                if re.search(rf"\b{re.escape(value.lower())}\b", lowered):
-                    return rule
-                continue
-            else:
-                theirs = _person_addresses(value)
+            theirs = {value} if "@" in value else _person_addresses(value)
             if recipients and set(recipients) <= theirs:
-                return rule
+                out.append(rule)
         elif rule.kind == RULE_DOMAIN:
             if recipients and all(r.endswith("@" + value) or r.endswith("." + value) for r in recipients):
-                return rule
+                out.append(rule)
         elif rule.kind == RULE_WORDS:
-            if value.strip() and re.search(rf"(?<!\w){re.escape(value.strip().lower())}(?!\w)", own):
-                return rule
+            if value.strip() and re.search(rf"(?<!\w){re.escape(value.strip().lower())}(?!\w)", lowered):
+                out.append(rule)
         elif rule.kind == RULE_AMOUNT:
             limit = _number(value) or 0
-            if found and all(a < limit for a in found):
-                return rule
-    return None
+            if mine and all(a < limit for a in [*found, *mine]):
+                out.append(rule)
+    return out
+
+
+# What a Goes rule lets go where Balanced would ask: a person or company
+# rule, anything only to them; an amount rule, the money; a words rule,
+# neither money nor someone new. A delete or share always waits.
+_GOES_KINDS: dict[str, frozenset[str]] = {
+    RULE_PERSON: frozenset(KINDS) - {DELETE_SHARE},
+    RULE_DOMAIN: frozenset(KINDS) - {DELETE_SHARE},
+    RULE_AMOUNT: frozenset({MONEY}),
+    RULE_WORDS: frozenset({CONTRACTS, PEOPLE_DECISIONS, BIG_SEND}),
+}
+
+
+def goes_kinds(rules: list[Rule]) -> frozenset[str]:
+    """The kinds ``rules`` (Goes rules that matched) let go together."""
+    out: frozenset[str] = frozenset()
+    for rule in rules:
+        out |= _GOES_KINDS.get(rule.kind, frozenset())
+    return out
 
 
 def _person_addresses(name: str) -> set[str]:
-    """Every address on file for the People entry named ``name`` (case
-    ignored), or empty. Never raises."""
+    """Every address on file for the one People entry named ``name`` (case
+    ignored), or empty when none or several are. Never raises."""
     try:
         from openexecutive.people.store import list_people
 
         wanted = name.strip().lower()
-        out: set[str] = set()
-        for person in list_people(include_contacts=True):
-            if (person.full_name or "").strip().lower() == wanted:
-                out |= {a.strip().lower() for a in [person.email, *person.email_aliases] if a and a.strip()}
-        return out
+        named = [p for p in list_people(include_contacts=True) if (p.full_name or "").strip().lower() == wanted]
+        if len(named) != 1:
+            return set()
+        return {a.strip().lower() for a in [named[0].email, *named[0].email_aliases] if a and a.strip()}
     except Exception:
         return set()
 
@@ -1709,13 +1730,14 @@ def _hit(name: str, tool_input: dict[str, Any], *, mcp: bool) -> tuple[Hit | Non
             return None, found
         if _level_runs():
             return None, None
-        # A Goes rule lets it go where Balanced would hold it, except a
-        # delete or share, which still waits.
-        goes = rule_goes(rules, text, recipients)
-        if goes is not None:
-            only_deletes = Lead(scope=SCOPE_EXECUTIVE, ask_first={k: k == DELETE_SHARE for k in KINDS})
-            held = check(name, tool_input, lead=only_deletes, rules=[], mcp=mcp)
-            return (held, None) if held is not None else (None, goes)
+        # A Goes rule lets go what it covers (goes_kinds) where Balanced
+        # would hold it; the rest still waits, a delete or share always.
+        goes = goes_rules(rules, text, recipients)
+        if goes:
+            released = goes_kinds(goes)
+            rest = Lead(scope=SCOPE_EXECUTIVE, ask_first={k: k not in released for k in KINDS})
+            held = check(name, tool_input, lead=rest, rules=[], mcp=mcp)
+            return (held, None) if held is not None else (None, goes[0])
         # Balanced: the six kinds wait, everything else goes.
         asks = Lead(scope=SCOPE_EXECUTIVE, ask_first=dict.fromkeys(KINDS, True))
         hit = check(name, tool_input, lead=asks, rules=[], mcp=mcp)

@@ -821,17 +821,33 @@ def test_a_goes_rule_never_lets_a_link_go(switched_on: Any) -> None:
 
 
 def test_a_goes_words_rule_reads_only_what_it_would_send(switched_on: Any) -> None:
-    """The sender can't write the words that let a reply go: Goes words are
-    read in the reply, as whole words, and credentials still wait."""
+    """The sender can't write what lets a reply go: Goes words are read in
+    the reply, as whole words; they never cover money, and credentials
+    still wait."""
     from openexecutive.orchestrator import take_the_lead as ttl
 
-    ttl.add_rule(ttl.SCOPE_COMPANY, "words", "invoice", created_by="t", effect=ttl.EFFECT_GO)
-    asks = _msg("m1", "t1", text="Invoice attached. Please confirm the wire details and your password.")
-    assert _check(switched_on, message=asks, reply=_reply(body="Thanks, got it.")) == "sensitive"
-    assert _check(switched_on, message=asks, reply=_reply(body="Thanks for the invoice.")) == "sensitive"
-    payment = _msg("m1", "t1", text="Can you confirm the payment?")
-    assert _check(switched_on, message=payment, reply=_reply(body="Confirmed, that's uninvoiced.")) == "sensitive"
-    assert _check(switched_on, message=payment, reply=_reply(body="Confirmed, the invoice is paid.")) is None
+    ttl.add_rule(ttl.SCOPE_COMPANY, "words", "board deck", created_by="t", effect=ttl.EFFECT_GO)
+    board = _msg("m1", "t1", text="Can you send the board deck before Thursday?")
+    assert _check(switched_on, message=board, reply=_reply(body="Sure, will do.")) == "sensitive"
+    assert _check(switched_on, message=board, reply=_reply(body="Sure, the board deck is on its way.")) is None
+    asks = _msg("m1", "t1", text="Board deck: please confirm the wire details and your password.")
+    assert _check(switched_on, message=asks, reply=_reply(body="The board deck is coming.")) == "sensitive"
+    wire = _msg("m1", "t1", text="Board deck attached. Please wire the funds.")
+    assert _check(switched_on, message=wire, reply=_reply(body="Thanks for the board deck.")) == "sensitive"
+    assert _check(switched_on, message=board, reply=_reply(body="The board decks are coming.")) == "sensitive"
+
+
+def test_a_goes_amount_rule_needs_the_amount_in_the_reply(switched_on: Any) -> None:
+    from openexecutive.orchestrator import take_the_lead as ttl
+
+    ttl.add_rule(ttl.SCOPE_COMPANY, "amount", "500", created_by="t", effect=ttl.EFFECT_GO)
+    bait = _msg("m1", "t1", text="Please wire the funds, contract attached. P.S. ref $1")
+    assert _check(switched_on, message=bait, reply=_reply(body="Done.")) == "sensitive"
+    assert _check(switched_on, message=bait, reply=_reply(body="Sent the $1.")) == "sensitive"  # contract
+    fee = _msg("m1", "t1", text="Can we pay the $300 fee by wire?")
+    assert _check(switched_on, message=fee, reply=_reply(body="Yes, $300 by wire is fine.")) is None
+    big = _msg("m1", "t1", text="Can we pay $3,000 by wire?")
+    assert _check(switched_on, message=big, reply=_reply(body="Yes, $300 now.")) == "sensitive"
 
 
 def test_a_waits_rule_holds_a_reply_on_every_level(switched_on: Any, monkeypatch: pytest.MonkeyPatch) -> None:

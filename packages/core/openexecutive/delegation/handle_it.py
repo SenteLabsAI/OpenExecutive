@@ -118,6 +118,11 @@ SENSITIVE = (
     "resignation", "salary", "secret", "secrets", "settlement", "social security", "ssn",
     "subpoena", "term sheet", "terminate", "termination", "token", "tokens", "wire",
 )
+# The money words: an amount Goes rule covers them, a words one doesn't.
+MONEY_WORDS = frozenset({
+    "bank", "budget", "discount", "invoice", "invoices", "paid", "pay", "payment", "payments", "payroll",
+    "price", "prices", "pricing", "quote", "refund", "wire",
+})
 # Never sent on its own below Hands-off, whatever a Goes rule says.
 CREDENTIALS = (
     "access token", "api key", "credentials", "login", "passcode", "password", "passwords", "secret",
@@ -192,11 +197,13 @@ def content_hold(
     """Why what it would send on its own must wait, or None: a Waits rule
     (``rule``) on every level; then, below Hands-off, money, contracts,
     credentials and the like (``sensitive``), a link (``link``) or an amount
-    (``amount``), unless a Goes rule covers it (a link or credentials still
-    wait). ``texts`` are read for rules, topics and amounts, ``link_texts``
-    (what it would send) for links and Goes words, so a sender can't write
-    the words that let a reply go, ``recipients`` for person and domain
-    rules. Unreadable rules hold."""
+    (``amount``), unless a Goes rule covers it: a person or company rule
+    covers all of them, an amount rule the money, a words rule the rest
+    (a link or credentials always wait). ``texts`` are read for rules,
+    topics and amounts, ``link_texts`` (what it would send) for links and
+    Goes words and amounts, so a sender can't write what lets a reply go,
+    ``recipients`` for person and domain rules. Unreadable rules hold, on
+    Hands-off too."""
     from openexecutive.orchestrator import take_the_lead
 
     going = [r.strip().lower() for r in recipients if r and r.strip()]
@@ -215,11 +222,17 @@ def content_hold(
     if any(_CREDENTIALS_RE.search(t or "") for t in texts):
         return "sensitive"
     own = "\n".join(t or "" for t in link_texts)
-    if take_the_lead.rule_goes(rules, joined, going, words_text=own) is not None:
+    goes = take_the_lead.goes_rules(rules, joined, going, words_text=own)
+    kinds = {r.kind for r in goes}
+    if kinds & {take_the_lead.RULE_PERSON, take_the_lead.RULE_DOMAIN}:
         return None
-    if any(_SENSITIVE_RE.search(t or "") for t in texts):
+    topics = {m.group(0).lower() for t in texts for m in _SENSITIVE_RE.finditer(t or "")}
+    money = {t for t in topics if re.sub(r"\s+", " ", t) in MONEY_WORDS}
+    if take_the_lead.RULE_AMOUNT not in kinds and money:
         return "sensitive"
-    if any(_AMOUNT_RE.search(t or "") for t in texts):
+    if take_the_lead.RULE_WORDS not in kinds and topics - money:
+        return "sensitive"
+    if take_the_lead.RULE_AMOUNT not in kinds and any(_AMOUNT_RE.search(t or "") for t in texts):
         return "amount"
     return None
 
