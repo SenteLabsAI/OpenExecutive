@@ -27,6 +27,7 @@ from openexecutive.memory.episodic import (
 from openexecutive.memory.replay import CHAT_REPLAY_KIND
 from openexecutive.orchestrator.mcp_gateway import MCPGateway
 from openexecutive.scheduler.pause import is_paused
+from openexecutive.workflows import run_control
 from openexecutive.workflows.gate import ensure_workflow_event
 
 if TYPE_CHECKING:
@@ -687,7 +688,10 @@ async def _execute_action(
             )
             workflow = DepartmentCheckInWorkflow()
             artifact = ""
-            async for event in workflow.run(inputs=wf_inputs, store=store):
+            # Stop run ends it quietly: no artifact, the cadence carries on.
+            async for event in run_control.watch(
+                run_id, workflow.run(inputs=wf_inputs, store=store), quiet=True
+            ):
                 event = ensure_workflow_event(event, site="scheduler.dept_cadence")
                 if event.type == "artifact" and event.content:
                     artifact = event.content
@@ -2530,7 +2534,7 @@ async def _run_dynamic_workflow(action: ScheduledAction, now: datetime) -> None:
             paused = False
             as_owner = pinned_viewer(viewer_for_person(owner)) if owner is not None else contextlib.nullcontext()
             with as_owner:
-                async for event in workflow.run(inputs=wf_inputs, store=store):
+                async for event in run_control.watch(run_id, workflow.run(inputs=wf_inputs, store=store)):
                     # The pauses a scheduled run CAN take: an action step held
                     # writes (or a call its tool held for an OK), or its tool waits
                     # for something it needs. Nothing waits in-process — the run is
@@ -2564,6 +2568,9 @@ async def _run_dynamic_workflow(action: ScheduledAction, now: datetime) -> None:
                 artifact = ""  # the resumer delivers it once the owner answers
             else:
                 complete_run(run_id, artifact or "(no artifact)")
+        except run_control.RunStopped:
+            # Someone pressed Stop: the run is marked stopped, nothing to file.
+            artifact = ""
         except Exception as exc:
             logger.exception("scheduler: dynamic_workflow %r (action %d) failed", name, action.id)
             with contextlib.suppress(Exception):
@@ -2678,7 +2685,9 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
 
         delivery_token = PRINCIPAL_DELIVERY.set(True)
         try:
-            async for event in workflow.run(inputs=wf_inputs, store=store):
+            async for event in run_control.watch(
+                run_id, workflow.run(inputs=wf_inputs, store=store), quiet=True
+            ):
                 event = ensure_workflow_event(event, site="scheduler.principal_brief")
                 if event.type == "artifact" and event.content:
                     artifact = event.content
@@ -2983,7 +2992,9 @@ async def _reflect(now: datetime, *, kind: str) -> None:
         )
         store = ChromaDBStore(persist_directory=get_settings().vector_store_path)
         artifact = ""
-        async for event in workflow.run(inputs=wf_inputs, store=store):
+        async for event in run_control.watch(
+            run_id, workflow.run(inputs=wf_inputs, store=store), quiet=True
+        ):
             event = ensure_workflow_event(event, site="scheduler.executive_reflection")
             if event.type == "artifact" and event.content:
                 artifact = event.content

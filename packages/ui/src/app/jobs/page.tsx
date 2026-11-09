@@ -20,6 +20,7 @@ import {
   listCustomWorkflows,
   listWorkflowRuns,
   listWorkflows,
+  stopWorkflowRun,
 } from "@/lib/api";
 import StartHere from "@/components/jobs/StartHere";
 import { buttonClass } from "@/components/ui/Button";
@@ -28,6 +29,7 @@ import SidePanel from "@/components/ui/SidePanel";
 import { formatRelativeTime } from "@/lib/relativeTime";
 import {
   RunBucket,
+  runIsStoppable,
   runStatusBadgeColor,
   runStatusBucket,
   runStatusLabel,
@@ -225,6 +227,18 @@ function JobsPageInner() {
     [refresh]
   );
 
+  const handleStop = useCallback(
+    async (runId: string) => {
+      try {
+        await stopWorkflowRun(runId);
+      } catch {
+        // already finished: the refresh shows where it ended up
+      }
+      refresh();
+    },
+    [refresh]
+  );
+
   const handleDeleteCustom = useCallback(
     async (name: string) => {
       if (!confirm(`Delete the custom workflow “${name}”? This cannot be undone.`))
@@ -309,6 +323,7 @@ function JobsPageInner() {
           expanded={expanded}
           onExpand={(key) => setExpanded((c) => ({ ...c, [key]: true }))}
           onDelete={handleDelete}
+          onStop={handleStop}
         />
       )}
 
@@ -687,6 +702,7 @@ function RunsView({
   expanded,
   onExpand,
   onDelete,
+  onStop,
 }: {
   runs: WorkflowRunSummary[];
   counts: Record<RunStatus, number>;
@@ -700,6 +716,7 @@ function RunsView({
   expanded: Record<string, boolean>;
   onExpand: (key: string) => void;
   onDelete: (runId: string) => void;
+  onStop: (runId: string) => void;
 }) {
   const visible = runs.filter(
     (r) =>
@@ -811,6 +828,9 @@ function RunsView({
                         <OverflowMenu
                           label={`More for ${r.title}`}
                           items={[
+                            ...(runIsStoppable(r.status)
+                              ? [{ label: "Stop run", onSelect: () => onStop(r.run_id) }]
+                              : []),
                             { label: "Delete run", danger: true, onSelect: () => onDelete(r.run_id) },
                           ]}
                         />

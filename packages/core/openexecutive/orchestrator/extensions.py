@@ -132,6 +132,11 @@ class ExtraTool:
     private_row: bool = False
     # The chat's activity line while it runs ("Checking the draft…").
     activity_label: str | None = None
+    # Each call counts toward a workflow step's own call limit, even one a
+    # step script makes (scripts otherwise get a larger allowance of their
+    # own): for a tool whose every call is slow or acts somewhere, like the
+    # browser.
+    step_budget: bool = False
 
     @property
     def name(self) -> str:
@@ -300,6 +305,15 @@ def private_row(tool_name: str) -> bool:
     load()
     tool = _tools.get(tool_name)
     return tool is not None and tool.private_row
+
+
+def counts_on_step_budget(tool_name: str) -> bool:
+    """Whether ``tool_name`` (``oe__`` prefix or not) is marked
+    ``step_budget``: a script's call to it counts toward the step's own
+    call limit."""
+    load()
+    tool = _tools.get(tool_name.removeprefix("oe__"))
+    return tool is not None and tool.step_budget
 
 
 def activity_label(tool_name: str) -> str | None:
@@ -497,6 +511,7 @@ __all__ = [
     "collect_workflow_signals",
     "collection_for_tags",
     "collection_tag",
+    "counts_on_step_budget",
     "get_collection",
     "has_chip",
     "in_workflow_step",

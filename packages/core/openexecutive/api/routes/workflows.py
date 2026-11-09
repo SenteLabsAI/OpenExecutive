@@ -26,6 +26,7 @@ from openexecutive.api import caller as api_caller
 from openexecutive.workflows import (
     get_workflow,
     list_workflows,
+    run_control,
 )
 from openexecutive.workflows.dynamic_models import (
     TOOL_NAME_RE,
@@ -135,6 +136,35 @@ async def delete_workflow_run(run_id: str, request: Request) -> dict[str, str]:
     if not delete_run(run_id):
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
     return {"status": "deleted", "run_id": run_id}
+
+
+@router.post("/workflows/runs/{run_id}/stop")
+async def stop_workflow_run(run_id: str, request: Request) -> dict[str, str]:
+    """Stop a run that hasn't finished (Stop run on its page, Stop in Runs).
+
+    Nothing more runs; what it already did stays done. Who may stop it is
+    the principal, or a teammate for a run they started.
+    """
+    from openexecutive.api.routes.people import caller_is_principal
+    from openexecutive.workflows.persistence import stop_run
+
+    run = _visible_run(run_id, request)
+    if not caller_is_principal(request):
+        caller = _caller_person_id(request)
+        if caller is None or run.get("owner_person_id") != caller:
+            raise HTTPException(status_code=403, detail="Only the owner can stop the team's runs.")
+    if not stop_run(run_id):
+        raise HTTPException(status_code=409, detail="This run has already finished.")
+    run_control.stop(run_id)
+    from openexecutive.audit import log_event as audit_log
+
+    audit_log(
+        "workflow_run_stopped",
+        f"Stopped: {run.get('title') or run.get('workflow_name')}",
+        actor="user",
+        details={"run_id": run_id},
+    )
+    return {"status": "stopped", "run_id": run_id}
 
 
 @router.post("/workflows/runs/{run_id}/rerun")
@@ -695,7 +725,7 @@ async def start_workflow_run(name: str, request: Request) -> StreamingResponse:
                 "steps": [s.model_dump() for s in workflow.steps()],
             })
 
-            async for event in workflow.run(inputs=inputs, store=store):
+            async for event in run_control.watch(run_id, workflow.run(inputs=inputs, store=store)):
                 # An approval-gate step yields a WaitForHumanEvent (not a
                 # WorkflowEvent): checkpoint the run, tell the client it is
                 # paused, and stop. The resumer applies the timeout policy;
@@ -757,6 +787,9 @@ async def start_workflow_run(name: str, request: Request) -> StreamingResponse:
                     "run_id": run_id,
                     "message": "Workflow finished without producing an artifact",
                 })
+        except run_control.RunStopped:
+            # Marked stopped by the Stop route; nothing to write.
+            yield _sse({"type": "stopped", "run_id": run_id, "terminal": True})
         except Exception as exc:  # noqa: BLE001 — must report any failure to the client
             logger.exception("workflow.run_failed run_id=%s workflow=%s", run_id, workflow.name)
             # NOT after a successful checkpoint. `fail_run` has no status

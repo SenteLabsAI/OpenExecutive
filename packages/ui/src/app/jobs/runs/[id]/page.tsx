@@ -12,11 +12,12 @@ import {
   decideWorkflowRun,
   getWorkflowRun,
   rerunWorkflowRun,
+  stopWorkflowRun,
   artifactDownloadUrl,
 } from "@/lib/api";
 import Button from "@/components/ui/Button";
 import OverflowMenu from "@/components/ui/OverflowMenu";
-import { runStatusLabel, runStatusTextColor } from "@/lib/runStatus";
+import { runIsStoppable, runStatusLabel, runStatusTextColor } from "@/lib/runStatus";
 import { Spinner } from "@/components/ui/Spinner";
 
 // A paused run is resumed by a background worker, so this page has to notice
@@ -62,6 +63,28 @@ export default function RunDetailPage() {
       setRerunMsg(e instanceof Error ? e.message : "Couldn't run it again.");
     } finally {
       setRerunBusy(false);
+    }
+  }, [run]);
+
+  // Stop run: nothing more runs; what it already did stays done.
+  const [stopBusy, setStopBusy] = useState(false);
+  const [stopMsg, setStopMsg] = useState<string | null>(null);
+  const handleStop = useCallback(async () => {
+    if (!run) return;
+    setStopBusy(true);
+    setStopMsg(null);
+    try {
+      await stopWorkflowRun(run.run_id);
+      setRun(await getWorkflowRun(run.run_id));
+    } catch (e) {
+      setStopMsg(e instanceof Error ? e.message : "Couldn't stop the run.");
+      try {
+        setRun(await getWorkflowRun(run.run_id));
+      } catch {
+        // keep what is on screen
+      }
+    } finally {
+      setStopBusy(false);
     }
   }, [run]);
 
@@ -184,6 +207,13 @@ export default function RunDetailPage() {
                 status <StatusPill status={run.status} />
               </div>
             </div>
+            {runIsStoppable(run.status) && (
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <Button variant="secondary" onClick={handleStop} disabled={stopBusy}>
+                  {stopBusy ? "Stopping…" : "Stop run"}
+                </Button>
+              </div>
+            )}
             {run.artifact && (
               <div className="flex items-center gap-2 flex-shrink-0">
                 <Button variant="primary" onClick={handleCopy}>
@@ -204,6 +234,21 @@ export default function RunDetailPage() {
           {error && (
             <div className="rounded-xl border border-red-500/30 bg-red-500/5 px-4 py-3 text-xs text-red-300">
               Couldn&apos;t refresh just now ({error}). Still retrying.
+            </div>
+          )}
+
+          {stopMsg && (
+            <div className="rounded-xl border border-red-500/30 bg-red-500/5 px-4 py-3 text-xs text-red-300">
+              {stopMsg}
+            </div>
+          )}
+
+          {run.status === "stopped" && (
+            <div className="rounded-xl border border-border bg-surface-elevated px-4 py-3 text-sm text-fg-muted">
+              <div className="font-medium mb-1 text-fg">Stopped</div>
+              <div className="text-xs">
+                Nothing more runs. What it already did stays done.
+              </div>
             </div>
           )}
 

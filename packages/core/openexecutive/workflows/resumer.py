@@ -49,6 +49,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import openexecutive.workflows.persistence as _wf_persistence
+from openexecutive.workflows import run_control
 from openexecutive.workflows.wait_for_human import (
     CONTINUE_DECISIONS,
     DECISION_VERBS,
@@ -311,6 +312,8 @@ def _kick_resume(run_id: str, db_path: Path | None = None) -> None:
                 row = _load_resumable_row(run_id, db_path=db_path)
                 if row is not None:
                     await _execute_resume(row, claim, db_path=db_path)
+            except run_control.RunStopped:
+                logger.info("resumer: run %s was stopped", run_id)
             except Exception:
                 logger.exception("resumer: kicked resume failed for run_id=%s", run_id)
                 _abandon_resume(run_id, "resume failed unexpectedly", db_path=db_path)
@@ -389,6 +392,8 @@ async def _process_resumable(now: datetime, db_path: Path | None = None) -> int:
         try:
             if await _execute_resume(row, claim, db_path=db_path):
                 executed += 1
+        except run_control.RunStopped:
+            logger.info("resumer: run %s was stopped", run_id)
         except Exception:
             logger.exception("resumer: resume failed for run_id=%s", run_id)
             _abandon_resume(run_id, "resume failed unexpectedly", db_path=db_path)
@@ -499,9 +504,10 @@ async def _drive_resume(
     last_heartbeat = datetime.now(UTC)
     # No handler here: a crash propagates to the caller, which routes it
     # through `_abandon_resume` — the one failure path both entry points share.
-    async for event in workflow.resume(
+    # A Stop raises RunStopped out of here; both callers let it end quietly.
+    async for event in run_control.watch(run_id, workflow.resume(
         inputs=inputs, state=state, resolution=resolution, store=store
-    ):
+    )):
         if isinstance(event, WaitForHumanEvent):
             # A SECOND gate. Re-checkpoint through the same helper the
             # other runners use: that flips running -> awaiting_human,

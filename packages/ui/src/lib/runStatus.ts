@@ -16,6 +16,7 @@ export const RUN_STATUS_LABELS: Record<string, string> = {
   awaiting_human: "awaiting sign-off",
   resolved: "resuming",
   timed_out: "no reply",
+  stopped: "stopped",
 };
 
 export function runStatusLabel(status: string): string {
@@ -27,6 +28,7 @@ export function runStatusLabel(status: string): string {
  *  the error colour rather than looking like it is still going. */
 export function runStatusTextColor(status: string): string {
   if (status === "done") return "text-emerald-400";
+  if (status === "stopped") return "text-fg-muted";
   if (status === "error" || status === "timed_out") return "text-red-400";
   if (status === "resolved") return "text-indigo-400";
   return "text-amber-400";
@@ -36,11 +38,17 @@ export function runStatusTextColor(status: string): string {
 export function runStatusBadgeColor(status: string): string {
   if (status === "done")
     return "bg-emerald-500/10 text-emerald-400 ring-emerald-500/30";
+  if (status === "stopped") return "bg-zinc-500/10 text-fg-muted ring-zinc-500/30";
   if (status === "error" || status === "timed_out")
     return "bg-red-500/10 text-red-400 ring-red-500/30";
   if (status === "resolved")
     return "bg-indigo-500/10 text-indigo-400 ring-indigo-500/30";
   return "bg-amber-500/10 text-amber-400 ring-amber-500/30";
+}
+
+/** Whether Stop can still end a run: it hasn't finished. */
+export function runIsStoppable(s: string): boolean {
+  return s === "running" || s === "awaiting_human" || s === "resolved";
 }
 
 /** Coarse bucket for the runs sub-tabs.
@@ -56,7 +64,7 @@ export function runStatusBucket(s: WorkflowRunStatus): RunBucket {
   if (s === "running" || s === "resolved") return "active";
   if (s === "awaiting_human") return "awaiting";
   if (s === "error" || s === "timed_out") return "error";
-  if (s === "done") return "done";
+  if (s === "done" || s === "stopped") return "done";
   // Defensive: unknown future statuses surface under Active so they're not lost.
   return "active";
 }

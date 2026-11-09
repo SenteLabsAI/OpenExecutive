@@ -97,6 +97,13 @@ async def checkpoint_gate(
     `ClaimSupersededError` if that claim has been taken over. Callers that are
     not resuming omit it, and for them the fence can never fire.
     """
+    from openexecutive.workflows import run_control
+    from openexecutive.workflows.persistence import get_run
+
+    # Stopped while this step was finishing: ask nobody.
+    row = get_run(run_id, db_path=db_path)
+    if row is not None and row.get("status") == "stopped":
+        raise run_control.RunStopped
     until = (now or datetime.now(UTC)) + timedelta(hours=event.timeout_hours)
     # Module-qualified, not a from-import: tests patch
     # `gate_delivery.deliver_gate_question` at its source, and a name bound

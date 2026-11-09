@@ -3408,7 +3408,8 @@ export type WorkflowRunStatus =
   | "error"
   | "awaiting_human"
   | "resolved"
-  | "timed_out";
+  | "timed_out"
+  | "stopped";
 
 /** Statuses the run will not move on from by itself. Anything else means a
  *  poll is worth repeating: `running` is working, `awaiting_human` is waiting
@@ -3417,6 +3418,7 @@ export const TERMINAL_RUN_STATUSES: ReadonlySet<WorkflowRunStatus> = new Set([
   "done",
   "error",
   "timed_out",
+  "stopped",
 ]);
 
 /** How the gate's question actually reached the approver. Anything other than
@@ -3478,7 +3480,9 @@ export interface WorkflowEvent {
     | "artifact"
     | "done"
     | "error"
-    | "awaiting_human";
+    | "awaiting_human"
+    // Someone pressed Stop run; the stream ends here.
+    | "stopped";
   run_id?: string;
   title?: string;
   workflow?: string;
@@ -3549,6 +3553,17 @@ export async function getWorkflowRun(runId: string): Promise<WorkflowRunDetail> 
   const res = await fetch(`${API_BASE}/workflows/runs/${encodeURIComponent(runId)}`);
   if (!res.ok) throw new Error("Failed to load workflow run");
   return res.json();
+}
+
+/** Stop a run that hasn't finished. Nothing more runs; what it did stays done. */
+export async function stopWorkflowRun(runId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/workflows/runs/${encodeURIComponent(runId)}/stop`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(typeof body?.detail === "string" ? body.detail : "Couldn't stop the run.");
+  }
 }
 
 export async function deleteWorkflowRun(runId: string): Promise<void> {
