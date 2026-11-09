@@ -9,6 +9,7 @@ import AsMeCard, { useTakeTheLead } from "@/components/settings/AsMeCard";
 import BeforeAnythingCard from "@/components/settings/BeforeAnythingCard";
 import { AsYouTrainingCard, useJumpTo } from "@/components/settings/ReachCard";
 import ReplyDisclosureCard from "@/components/settings/ReplyDisclosureCard";
+import SentCard from "@/components/settings/SentCard";
 import SettingsCard from "@/components/settings/SettingsCard";
 import { LearnedCard } from "@/components/settings/TrainingCard";
 import { useDelegation } from "@/components/settings/useDelegation";
@@ -104,6 +105,7 @@ export default function DelegatePage() {
                       <AsYouTrainingCard settings={settings} onSettings={delegation.setSettings} />
                     )}
                     {settings.training && <LearnedCard training={settings.training} onSettings={delegation.setSettings} />}
+                    {settings.handle_it?.enabled && <SentCard handleIt={settings.handle_it} />}
                   </ActAsMeCard>
                 )}
               </Block>

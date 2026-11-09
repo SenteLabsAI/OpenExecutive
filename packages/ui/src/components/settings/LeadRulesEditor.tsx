@@ -3,17 +3,11 @@
 import { useState } from "react";
 
 import type { LeadRule, LeadRuleKind } from "@/lib/api";
+import { RULE_KINDS } from "@/lib/leadRules";
 
 // Your rules (orchestrator/take_the_lead.py): anything the Executive would
 // do in its own name that matches one always waits for a yes, on every
 // Approvals level. The owner's, on Delegate → Before anything goes out.
-export const RULE_KINDS: { kind: LeadRuleKind; label: string; placeholder: string; describe: (v: string) => string }[] = [
-  { kind: "person", label: "A person", placeholder: "Name or email", describe: (v) => `Anything to or about ${v}` },
-  { kind: "domain", label: "A company", placeholder: "example.com", describe: (v) => `Anything to someone at ${v}` },
-  { kind: "words", label: "Words", placeholder: "acquisition", describe: (v) => `Anything that mentions “${v}”` },
-  { kind: "amount", label: "An amount", placeholder: "500", describe: (v) => `Any amount of ${v} or more, written with a currency ($, €, USD…)` },
-];
-
 export default function LeadRulesEditor({
   rules,
   onAdd,

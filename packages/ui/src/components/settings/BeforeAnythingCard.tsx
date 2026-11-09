@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 
-import LeadRulesEditor, { RULE_KINDS } from "@/components/settings/LeadRulesEditor";
+import LeadRulesEditor from "@/components/settings/LeadRulesEditor";
 import OutsideContentCard from "@/components/settings/OutsideContentCard";
 import SettingsCard from "@/components/settings/SettingsCard";
 import {
@@ -13,6 +13,7 @@ import {
   type OutsideContentSetting,
   type TakeTheLead,
 } from "@/lib/api";
+import { rulesSummary } from "@/lib/leadRules";
 import { APPROVALS_LEADS, APPROVALS_SENDS } from "@/lib/reach";
 
 // Delegate → Before anything goes out: the one setting for both sides.
@@ -33,8 +34,6 @@ export default function BeforeAnythingCard({
 }) {
   const [editing, setEditing] = useState(false);
   const rules = lead?.rules ?? [];
-  const first = rules[0];
-  const firstLine = first ? (RULE_KINDS.find((r) => r.kind === first.kind)?.describe(first.value) ?? first.value) : null;
 
   return (
     <>
@@ -80,17 +79,13 @@ export default function BeforeAnythingCard({
           description={
             editing
               ? "Anything the Executive would do in its own name that matches one of these always waits for your yes, on every level."
-              : rules.length === 0
-                ? "None yet. A rule makes something always wait for your yes, on every level."
-                : rules.length === 1
-                  ? `${firstLine}. Always waits for your yes.`
-                  : `${firstLine}, and ${rules.length - 1} more. Always wait for your yes.`
+              : rulesSummary(rules)
           }
           action={
             <button
               type="button"
               aria-expanded={editing}
-              aria-controls="rules-editor"
+              aria-controls={editing ? "rules-editor" : undefined}
               onClick={() => setEditing((v) => !v)}
               className="text-sm font-medium text-accent hover:underline cursor-pointer"
             >
