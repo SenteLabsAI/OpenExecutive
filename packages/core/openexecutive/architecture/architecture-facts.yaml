@@ -11838,8 +11838,12 @@ delegation:
     default 20). Below Hands-off also stranger (not team, contact or past
     correspondent), sensitive (SENSITIVE topics in the email, its subject or
     the reply), link and amount (handle_it.content_hold, also on follow-ups
-    and, topic only, invite titles); Hands-off sends them. The per-mode
-    limits are gone.
+    and, topic only, invite titles); Hands-off sends them. The owner's
+    rules (take_the_lead_rules, company scope) apply here too, inside
+    content_hold: a Waits rule (take_the_lead.rule_waits, against the texts
+    and the reply's recipients) holds as reason "rule" on every level; below
+    Hands-off a Goes rule (take_the_lead.rule_goes) releases sensitive and
+    amount, never link. Unreadable rules hold. The per-mode limits are gone.
     Only when it passes, a last look (delegation.injection_check.held_back:
     one tool-less classifier-model call reading the sender's new words as
     plain text in an <email> block, up to 20,000 chars) asks whether they
@@ -12013,7 +12017,8 @@ delegation:
     a "Now:" line from lib/reach.ts reachLine naming the level or In
     training, the inbox watcher's status under Your inbox), in the As you
     tab of the one Delegate page (app/delegate/page.tsx, three tabs named by
-    the anchors as-you / as-me / before-anything-goes-out, picked by the
+    the anchors as-you / as-me / approvals (the old
+    #before-anything-goes-out still opens Approvals), picked by the
     link's #hash via components/delegate/useDelegateTab.ts; the old tab routes and
     /settings/act-as-me redirect to them). What it does for you links
     act_as_me rows to it and handle_it rows to Approvals.
@@ -12035,11 +12040,15 @@ delegation:
     the voice. Delegate → As me (AsMeCard): On or paused (the same
     ExecutiveRunSwitch, a Now line for the level), In training (the owner's
     switch) with What it's learned (allowed items with Remove, suggestions
-    with Allow). Delegate → Before anything goes out (BeforeAnythingCard):
-    OutsideContentCard (the level, read-only for anyone but the owner),
+    with Allow). Delegate → Approvals (BeforeAnythingCard):
+    OutsideContentCard (the level, read-only for anyone but the owner; its
+    note shows "Your rules change this: N go on their own, N always wait"
+    only once there are rules, lib/leadRules.ts rulesChangeLine),
     What each level means here (APPROVALS_SENDS / APPROVALS_LEADS in
     lib/reach.ts, one card per level for both sides), Your rules
-    (LeadRulesEditor on POST/DELETE /take-the-lead/rules) and a link to
+    (LeadRulesEditor on POST/DELETE /take-the-lead/rules: the list with a
+    Waits / Goes badge and the order they're read in, Add a rule opening
+    Always wait for me / Goes on its own, the kind and the value) and a link to
     Settings → Your Executive. Say it was written with AI (both switches)
     is a card on the As you tab. Setup
     status light your_gmail (amber while the inbox watcher is erroring,
@@ -12077,9 +12086,24 @@ delegation:
     always True; Lead.enabled / ask_first are stored but unread). In
     training (Lead.training, PUT /take-the-lead {training}, the owner's,
     leaving it needs a provable owner; back 2026-11-09) sits above the
-    level: _hit order is the owner's rules, Careful, training (a Hit of
-    kind TRAINING unless allowance()/find_allowed covers it; hold() stores
-    allow {key, label}), Hands-off runs, Balanced holds the six KINDS.
+    level: _hit order is the owner's Waits rules, Careful, training (a Hit
+    of kind TRAINING unless allowance()/find_allowed covers it; hold()
+    stores allow {key, label}), Hands-off runs, a Goes rule runs it
+    (rule_goes; _gated records "Your rule: <rule_text>" as the log's why),
+    Balanced holds the six KINDS.
+    Rules (take_the_lead_rules: kind person / domain / words / amount,
+    effect wait (default, the column added 2026-11-09) or go; POST
+    /take-the-lead/rules {kind, value, effect}, a Goes rule needs
+    _provably_theirs like DELETE). Waits matches loosely (any recipient, a
+    name anywhere, an amount at or over the limit). Goes is strict, since
+    it lets something go: every recipient is that address, that People
+    name's addresses, or at that domain (a name with no recipients matches
+    by name); words appear; an amount rule needs at least one amount and
+    every amount under the limit. Goes only lifts the level's topic holds:
+    levels.decide's always-card reasons (STRANGER, outside content giving
+    orders, NOT_OWNER, SHARED) are decided before and never see it.
+    In training stays the last check: nothing goes out on its own while it
+    is on, Goes rules included.
     Approve with edits.allow true calls take_the_lead.allow (feature
     take_the_lead); SUGGEST_AFTER unchanged approvals suggest it (POST
     /take-the-lead/learned {key}); DELETE /take-the-lead/learned/{id}

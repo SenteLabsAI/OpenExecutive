@@ -6675,11 +6675,15 @@ export async function updateClientMeta(
 // ── Take the lead (Delegate → Take the lead) ────────────────
 
 export type LeadRuleKind = "person" | "domain" | "words" | "amount";
+// "wait": always waits for your yes; "go": goes on its own where the level
+// would hold it (never past Careful or In training).
+export type LeadRuleEffect = "wait" | "go";
 
 export interface LeadRule {
   id: number;
   kind: LeadRuleKind;
   value: string;
+  effect: LeadRuleEffect;
 }
 
 // An action it was allowed in training, and the edit it keeps as an example.
@@ -6745,11 +6749,15 @@ export async function setTakeTheLead(update: {
   return res.json();
 }
 
-export async function addCompanyLeadRule(kind: LeadRuleKind, value: string): Promise<TakeTheLead> {
+export async function addCompanyLeadRule(
+  kind: LeadRuleKind,
+  value: string,
+  effect: LeadRuleEffect = "wait",
+): Promise<TakeTheLead> {
   const res = await fetch(`${API_BASE}/take-the-lead/rules`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ kind, value }),
+    body: JSON.stringify({ kind, value, effect }),
   });
   if (!res.ok) throw await leadError(res, "Couldn't add the rule.");
   delegationChanged();

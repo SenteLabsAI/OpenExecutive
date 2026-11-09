@@ -184,7 +184,7 @@ const WORK_TABS: NavItem[] = [
 ];
 
 // Delegate: one page (app/delegate/page.tsx) in three blocks: As you (Act
-// as me), As me (Take the lead) and Before anything goes out (Approvals).
+// as me), As me (Take the lead) and Approvals.
 // The older tabs' addresses land on their block.
 export const DELEGATE_NAV_ITEM: NavItem = {
   href: "/delegate",

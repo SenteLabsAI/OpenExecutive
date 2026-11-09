@@ -11,7 +11,9 @@ import type { DelegationSettings, OutsideContentMode, ReachStep } from "@/lib/ap
 // older tabs' addresses.
 export const AS_YOU_ANCHOR = "as-you";
 export const AS_ME_ANCHOR = "as-me";
-export const APPROVALS_ANCHOR = "before-anything-goes-out";
+export const APPROVALS_ANCHOR = "approvals";
+// The Approvals tab's earlier address, still opened by older links.
+const OLD_APPROVALS_ANCHOR = "before-anything-goes-out";
 export const AS_YOU_HREF = `/delegate#${AS_YOU_ANCHOR}`;
 export const AS_ME_HREF = `/delegate#${AS_ME_ANCHOR}`;
 export const APPROVALS_HREF = `/delegate#${APPROVALS_ANCHOR}`;
@@ -28,7 +30,8 @@ export const DELEGATE_TABS: DelegateTab[] = [AS_YOU_ANCHOR, AS_ME_ANCHOR, APPROV
 
 // Which tab a link's #hash opens. Anything else opens As you.
 export function tabFromHash(hash: string): DelegateTab {
-  const id = hash.replace(/^#/, "");
+  const raw = hash.replace(/^#/, "");
+  const id = raw === OLD_APPROVALS_ANCHOR ? APPROVALS_ANCHOR : raw;
   return (DELEGATE_TABS as string[]).includes(id) ? (id as DelegateTab) : AS_YOU_ANCHOR;
 }
 
