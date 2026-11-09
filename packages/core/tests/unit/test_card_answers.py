@@ -155,6 +155,14 @@ def test_only_their_own_words_answer_when_the_message_wraps_them(people: SimpleN
     assert out["status"] == "dismissed"
 
 
+def test_a_turn_they_wrote_nothing_in_answers_no_card(people: SimpleNamespace) -> None:
+    # ``memory_text=""``: an app's own ask. Its "no" is not theirs.
+    alert_id = _alert()
+    with _turn(people.principal, "No, not yet.", own_words=""):
+        out = _call(alert_id=alert_id, reply="dismiss")
+    assert "error" in out
+
+
 def test_a_no_naming_watch_suggestions_dismisses_their_card(people: SimpleNamespace) -> None:
     from openexecutive.monitoring.research.watch_policy import NUDGE_ALERT_SOURCE, nudge_headline
 
