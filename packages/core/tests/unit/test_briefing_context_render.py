@@ -382,3 +382,13 @@ def test_a_brief_strips_reference_and_bare_links(monkeypatch) -> None:
         "(link removed)\n"
         "Home is https://app.example.com/?card=4."
     )
+
+
+def test_an_app_link_cannot_show_another_address_as_its_text(monkeypatch) -> None:
+    from openexecutive.alerts import card_refs
+
+    monkeypatch.setattr(card_refs, "_base", lambda: "https://app.example.com")
+    text = "[https://evil.example/login](https://app.example.com/?card=4) and [Open](https://app.example.com/?card=5)"
+    assert card_refs.keep_app_links(text) == (
+        "[(link removed)](https://app.example.com/?card=4) and [Open](https://app.example.com/?card=5)"
+    )

@@ -99,8 +99,6 @@ def home_url() -> str:
     return f"{base}/" if base else ""
 
 
-# Any Markdown link, whatever its address (scheme-relative, javascript:,
-# mailto:), and an <address> autolink.
 # Every form of link a brief could carry, matched in one pass so an address
 # inside a link is not matched again on its own: an inline Markdown link
 # (any address: scheme-relative, javascript:, mailto:), an <address>
@@ -129,7 +127,12 @@ def keep_app_links(text: str) -> str:
 
     def keep(m: re.Match[str]) -> str:
         if m.group("md") is not None:
-            return m.group(0) if ours(m.group("md_url")) else m.group("md_text")
+            if not ours(m.group("md_url")):
+                return m.group("md_text")
+            # An app link keeps its address; its text is cleaned too, so an
+            # address shown as the text doesn't ride along.
+            text = m.group("md_text")
+            return f"[{_ANY_LINK.sub(keep, text)}]" + m.group(0)[len(text) + 2:]
         if m.group("auto") is not None:
             url = m.group("auto_url")
         elif m.group("ref") is not None:
