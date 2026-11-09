@@ -134,7 +134,7 @@ export default function AppSidebar({
 
       {/* The six places. Everything else is a tab inside one of them, or a
           tool on Settings. */}
-      <nav aria-label="Main" className="flex-1 min-h-0 overflow-y-auto px-3 py-2">
+      <nav aria-label="Main" className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 py-2">
         <div className="space-y-1">
           {destinations.map((d) => {
             const isHome = d.key === "home";
