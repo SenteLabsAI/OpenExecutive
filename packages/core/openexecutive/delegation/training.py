@@ -80,9 +80,10 @@ def _connect(db_path: Path | None) -> sqlite3.Connection:
     return conn
 
 
-def get(person_id: int, *, db_path: Path | None = None) -> Training:
+def get(person_id: int, *, db_path: Path | None = None, strict: bool = False) -> Training:
     """Which of ``person_id``'s settings are in training. Never raises:
-    unreadable is not (nothing kept)."""
+    unreadable is not (nothing kept), unless ``strict``, for a caller that
+    must hold rather than guess."""
     try:
         conn = _connect(db_path)
         try:
@@ -93,6 +94,8 @@ def get(person_id: int, *, db_path: Path | None = None) -> Training:
         finally:
             conn.close()
     except Exception:
+        if strict:
+            raise
         logger.warning("delegation.training: couldn't read the switches", exc_info=True)
         return Training(person_id=person_id)
     on = {setting for setting, enabled in rows if enabled and setting in SETTINGS}
@@ -232,9 +235,9 @@ def can_allow_reply(person_id: int, payload: dict[str, Any], trained: Training, 
     return bool(going) and all_allowed(person_id, going, db_path=db_path) is None
 
 
-def in_training(person_id: int, *, db_path: Path | None = None) -> bool:
-    """Whether ``person_id``'s As you is in training. Never raises."""
-    return get(person_id, db_path=db_path).training
+def in_training(person_id: int, *, db_path: Path | None = None, strict: bool = False) -> bool:
+    """Whether ``person_id``'s As you is in training. Never raises unless ``strict``."""
+    return get(person_id, db_path=db_path, strict=strict).training
 
 
 def room_for(person_id: int, key: str, *, db_path: Path | None = None) -> bool:

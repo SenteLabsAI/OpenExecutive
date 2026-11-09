@@ -202,11 +202,16 @@ def in_training(person_id: int, *, db_path: Path | None = None) -> bool:
 def training_hold(person_id: int, addresses: list[str], *, db_path: Path | None = None) -> str | None:
     """``"training"`` when As you is in training and any of ``addresses``
     isn't allowed yet, someone with no address on file included; None when
-    it may go (not in training, or every one allowed)."""
+    it may go (not in training, or every one allowed). An unreadable
+    setting holds, as Approvals does."""
     from openexecutive.delegation import training
 
-    if not training.in_training(person_id, db_path=db_path):
-        return None
+    try:
+        if not training.in_training(person_id, db_path=db_path, strict=True):
+            return None
+    except Exception:
+        logger.warning("delegation.handle_it: couldn't read In training — holding", exc_info=True)
+        return "training"
     going = [a for a in addresses if a]
     if len(going) != len(addresses) or training.all_allowed(person_id, going, db_path=db_path) is None:
         return "training"

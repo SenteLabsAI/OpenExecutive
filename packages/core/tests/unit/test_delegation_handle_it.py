@@ -738,6 +738,16 @@ def test_someone_with_no_address_on_file_is_never_allowed_by_omission(owner: Any
     assert handle_it.training_hold(owner.id, [""]) == "training"
 
 
+def test_an_unreadable_training_setting_holds(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.delegation import training
+
+    def broken(*a: Any, **k: Any) -> Any:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(training, "_connect", broken)
+    assert handle_it.training_hold(owner.id, [DANA]) == "training"
+
+
 def test_careful_holds_an_allowed_person_too(owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
     from openexecutive.delegation import training
 
