@@ -117,7 +117,7 @@ async def _outside_the_thread(handles: list[str], mailbox: Any, thread_id: str) 
         except file_refs.RefError as exc:
             return str(exc)
         if ref.kind != "mail":
-            continue
+            return f"{ref}: only files from the email's own thread can go with this reply"
         try:
             message = await mailbox.get_message(ref.value)
         except GmailError:

@@ -262,11 +262,25 @@ def test_the_reply_carries_only_the_threads_own_mail_and_what_the_turn_made(
     assert asyncio.run(check(["mail:m1#1"], mailbox, thread)) == ""
     assert "own thread" in asyncio.run(check(["mail:other#1"], mailbox, thread))
     assert "own thread" in asyncio.run(check(["mail:m1#1"], mailbox, ""))
+    assert "own thread" in asyncio.run(check(["drive:abcdefghijklmnop"], mailbox, thread))
+    assert "own thread" in asyncio.run(check(["file:board.pdf"], mailbox, thread))
     began = datetime(2026, 11, 9, 12, 0, tzinfo=UTC)
     assert reply_card_tools._made_since("2026-11-09T12:01:00+00:00", began)
     assert reply_card_tools._made_since("2026-11-09 12:01:00", began)
     assert not reply_card_tools._made_since("2026-11-08T12:01:00+00:00", began)
     assert not reply_card_tools._made_since("2026-11-09T12:01:00+00:00", None)
+
+
+def test_a_note_alone_keeps_the_files_and_a_stale_working_card_isnt_shown_working(
+    db: Path, owner: Any, models: dict[str, Any],
+) -> None:
+    mailbox, card = _card(owner)
+    _apply(card, owner, mailbox, files=[SHEET])
+    changed = _apply(card, owner, mailbox, note="Friday works too.")
+    assert card_work.files_for(card.id) == [SHEET] and changed["files"][0]["name"] == "Tax bills.xlsx"
+    # Left marked working by a restart mid-turn: nothing is running it here.
+    assert card_work._set_work(card.id, card_work.WORKING)
+    assert replies.cards(owner)[0].working is False
 
 
 def test_files_wait_for_the_reply_and_go_back_if_it_isnt_changed(

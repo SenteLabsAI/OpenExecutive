@@ -165,6 +165,12 @@ def keep(work: Any) -> None:
     task.add_done_callback(_TASKS.discard)
 
 
+def running(card_id: int) -> bool:
+    """Whether the work on ``card_id`` is running in this process: a card
+    left marked working by a restart mid-turn is not."""
+    return card_id in _RUNNING
+
+
 def started_at(card_id: int) -> datetime | None:
     """When the work on ``card_id`` began in this process, if it is running."""
     return _STARTED.get(card_id) if card_id in _RUNNING else None
@@ -195,6 +201,7 @@ def start(person: Any, card_id: int, *, gmail: Any = None, ask: str = "") -> boo
         logger.exception("delegation.card_work: couldn't start the work on card %s", card_id)
         _RUNNING.discard(card_id)
         _STARTED.pop(card_id, None)
+        _set_work(card_id, "", only_if=WORKING)
         return False
 
 
@@ -338,13 +345,17 @@ async def apply(
         changed["draft_body"] = words
         changed["gist"] = clean_gist(text)
         changed[card_drafts.QUESTIONS_SETTLED] = True
+    # None given keeps what the reply already carries (card, draft and Send agree).
+    new_files = bool(files)
+    if not new_files:
+        files = files_for(card_id)
     changed[FILES_KEY] = [{"name": n, "mime": m, "size": len(d)} for n, m, d in files]
     # The files go in first, so a Send that sees the new reply finds them;
     # put back as they were when the reply isn't changed after all.
     before = files_for(card_id)
     _store(card_id, files)
     try:
-        await _save(card, payload, changed, person, files, gmail, rewrote=bool(words))
+        await _save(card, payload, changed, person, files, gmail, rewrote=bool(words) or new_files)
     except BaseException:
         _store(card_id, before)
         raise
@@ -362,7 +373,8 @@ async def _save(
 ) -> None:
     """Write ``changed`` over the card (compare-and-set), and when the reply
     is kept in their mailbox too, replace it there with one that carries it
-    all. ``SendRefused`` when the card changed or went meanwhile."""
+    all (when ``rewrote``: new words or new files). ``SendRefused`` when the
+    card changed or went meanwhile."""
     from openexecutive.delegation import card_drafts, drafts
     from openexecutive.delegation.gmail import GmailError, gmail_for, normalize_email
     from openexecutive.delegation.inbox import SENDING
@@ -371,7 +383,7 @@ async def _save(
 
     gone = SendRefused(409, "already_handled", "This reply changed or was sent meanwhile.")
     old_draft = str(payload.get("draft_id") or "")
-    if not (old_draft and (rewrote or files)):
+    if not (old_draft and rewrote):
         if not update_open_payload(card.id, changed, expected_json=card.proposed_payload_json):
             raise gone
         return

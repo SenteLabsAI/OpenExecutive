@@ -137,7 +137,7 @@ def cards(person: Any) -> list[ReplyCard]:
             gist=str(payload.get("gist") or ""),
             conversation=conversation(payload),
             caught_up_at=str(payload.get(CAUGHT_UP_KEY) or ""),
-            working=payload.get(card_work.WORK_KEY) == card_work.WORKING,
+            working=payload.get(card_work.WORK_KEY) == card_work.WORKING and card_work.running(card.id),
             files=[
                 str(f.get("name") or "") for f in payload.get(card_work.FILES_KEY) or []
                 if isinstance(f, dict) and f.get("name")
