@@ -550,7 +550,7 @@ def test_sweep_nudges_once_suggestions_pile_up(db: Path) -> None:
     assert first is not None and first.id is not None and ms.approve_suggestion(first.id, db_path=db)
     assert wp.sweep(datetime.now(UTC), db_path=db)["nudged"] == 0
     alerts = [a for a in list_alerts(limit=10, db_path=db) if a.source == wp.NUDGE_ALERT_SOURCE]
-    assert len(alerts) == 1 and alerts[0].headline == "Things to watch, waiting for your OK"
+    assert len(alerts) == 1 and alerts[0].headline == "Watch suggestions waiting for your OK"
     # In words, never slugs or signal types.
     assert "rss-s" not in alerts[0].body and "(rss)" not in alerts[0].body
     assert "• New posts at s1.com" in alerts[0].body
@@ -940,6 +940,81 @@ def test_nudge_counts_only_suggestions_no_head_received(db: Path) -> None:
     assert wp.sweep(datetime.now(UTC), db_path=db)["nudged"] == 1
 
 
+def test_a_no_to_the_card_declines_what_it_lists(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Rufus's 11-09 1:1: "No, I don't" cleared the card, but the Watch list
+    # still asked about all five.
+    from openexecutive.alerts import lifecycle
+    from openexecutive.alerts.store import get_alert, list_alerts
+
+    for i in range(3):
+        ms.insert_watchlist_item(
+            slug=f"rss-p{i}", signal_type="rss", target=f"https://p{i}.com/feed",
+            config={wp.CARD_LINE_KEY: f"News from P{i}"},
+            mode=MODE_DRY_RUN, origin=ORIGIN_RESEARCH_PROPOSED, db_path=db,
+        )
+        _backdate(db, f"rss-p{i}", 8)
+    # A department head's suggestion isn't on the principal's card.
+    ms.insert_watchlist_item(
+        slug="rss-head", signal_type="rss", target="https://head.com/feed",
+        mode=MODE_DRY_RUN, origin=ORIGIN_RESEARCH_PROPOSED, route_to_department="finance",
+        route_to_person_id=7, db_path=db,
+    )
+    assert wp.sweep(datetime.now(UTC), db_path=db)["nudged"] == 1
+    card = next(a for a in list_alerts(limit=10, db_path=db) if a.source == wp.NUDGE_ALERT_SOURCE)
+    # Filed after the card was written: never in front of them, so it stays.
+    ms.insert_watchlist_item(
+        slug="rss-new", signal_type="rss", target="https://new.com/feed",
+        mode=MODE_DRY_RUN, origin=ORIGIN_RESEARCH_PROPOSED, db_path=db,
+    )
+    # Filed later with the same line as one on the card: still unseen.
+    ms.insert_watchlist_item(
+        slug="rss-p0-blog", signal_type="rss", target="https://p0.com/blog",
+        config={wp.CARD_LINE_KEY: "News from P0"},
+        mode=MODE_DRY_RUN, origin=ORIGIN_RESEARCH_PROPOSED, db_path=db,
+    )
+    assert wp.decline_card_suggestions(card, db_path=db) == 3
+    assert {i.slug for i in ms.list_pending_suggestions(db_path=db)} == {"rss-head", "rss-new", "rss-p0-blog"}
+    assert not ms.is_declined("https://new.com/feed", db_path=db)
+    # Remembered: the research pass won't propose them again.
+    assert ms.is_declined("https://p0.com/feed", db_path=db)
+    # Any other card: nothing.
+    other = get_alert(card.id, db_path=db).model_copy(update={"source": "alert_review"})
+    assert wp.decline_card_suggestions(other, db_path=db) == 0
+    # Dismissing a card, by its button, ack_alert or answer_card, runs it.
+    seen: list[Any] = []
+    monkeypatch.setattr(wp, "decline_card_suggestions", lambda alert, **_k: seen.append(alert) or 0)
+    lifecycle.record_ack_feedback(card, "acknowledged")
+    lifecycle.record_ack_feedback(card, "dismissed")
+    # A bulk sweep is housekeeping, not a no.
+    lifecycle.record_ack_feedback(card, "dismissed", decline_suggestions=False)
+    assert seen == [card]
+
+
+def test_a_no_to_a_department_card_declines_only_that_departments(db: Path) -> None:
+    for slug, dept in (("rss-f", "finance"), ("rss-o", "ops")):
+        ms.insert_watchlist_item(
+            slug=slug, signal_type="rss", target=f"https://{slug}.com/feed",
+            mode=MODE_DRY_RUN, origin=ORIGIN_RESEARCH_PROPOSED, route_to_department=dept,
+            route_to_person_id=7, db_path=db,
+        )
+    from openexecutive.departments.authority import PROPOSAL_ALERT_SOURCE
+
+    shown = next(i for i in ms.list_pending_suggestions(db_path=db) if i.slug == "rss-f")
+    body = f"I'd like to keep an eye on these for Finance.\n• {wp.card_line(shown)}"
+    ms.insert_watchlist_item(
+        slug="rss-f2", signal_type="rss", target="https://rss-f2.com/feed",
+        mode=MODE_DRY_RUN, origin=ORIGIN_RESEARCH_PROPOSED, route_to_department="finance",
+        route_to_person_id=7, db_path=db,
+    )
+    card = SimpleNamespace(source=PROPOSAL_ALERT_SOURCE, topic_tags=["department:finance", "watchlist"], body=body)
+    assert wp.decline_card_suggestions(card, db_path=db) == 1
+    # Only the one the card names: rss-f2 came later, rss-o is another department's.
+    assert {i.slug for i in ms.list_pending_suggestions(db_path=db)} == {"rss-o", "rss-f2"}
+    # A department's card that isn't about watches: nothing.
+    other = SimpleNamespace(source=PROPOSAL_ALERT_SOURCE, topic_tags=["department:ops"], body=body)
+    assert wp.decline_card_suggestions(other, db_path=db) == 0
+
+
 # --------------------------------------------------------------------- #
 # Profile entry parsing, short names, finding auto-link
 # --------------------------------------------------------------------- #
@@ -1267,7 +1342,7 @@ def test_the_card_says_each_suggestion_in_plain_words(db: Path) -> None:
     body = wp.nudge_body(ms.list_pending_suggestions(db_path=db))
     assert "\n• Approve me" not in body and len(body.splitlines()) == 4
     # No count: the open card's body is refreshed in place, its headline not.
-    assert wp.nudge_headline() == "Things to watch, waiting for your OK"
+    assert wp.nudge_headline() == "Watch suggestions waiting for your OK"
 
 
 @pytest.mark.asyncio

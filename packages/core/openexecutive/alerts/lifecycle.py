@@ -296,16 +296,25 @@ def resolve_alert_outreach(alert: Alert | _AlertRef, status: str) -> None:
         logger.debug("resolve_alert_outreach failed", exc_info=True)
 
 
-def record_ack_feedback(alert: Alert, status: str) -> None:
+def record_ack_feedback(alert: Alert, status: str, *, decline_suggestions: bool = True) -> None:
     """Teach the source of an alert from the principal's verdict.
 
     ``dismissed`` on a watch-sourced alert lowers that watch's trust score
     (and bumps its dismiss_count); ``ack`` recovers it a little. Other
-    sources have no feedback sink yet. Never raises.
+    sources have no feedback sink yet. ``decline_suggestions=False`` (a
+    bulk sweep) clears a watch suggestions card without declining what it
+    lists. Never raises.
     """
     from openexecutive.briefing.ranking import watch_slug_from_tags
 
     resolve_alert_outreach(alert, status)
+
+    if status == "dismissed" and decline_suggestions:
+        # A no to the watch suggestions card is a no to the suggestions on
+        # it: otherwise the Watch list keeps asking after the card is gone.
+        from openexecutive.monitoring.research.watch_policy import decline_card_suggestions
+
+        decline_card_suggestions(alert)
 
     slug = watch_slug_from_tags(list(alert.topic_tags or []))
     if slug is None:
