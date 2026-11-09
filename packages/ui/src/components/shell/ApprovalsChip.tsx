@@ -16,6 +16,7 @@ import {
   approvalsTitle,
   type ApprovalsLevel,
 } from "@/lib/approvalsLevel";
+import { APPROVALS_HREF } from "@/lib/reach";
 
 const DOT: Record<ApprovalsLevel, string> = {
   ask: "bg-emerald-500",
@@ -24,7 +25,7 @@ const DOT: Record<ApprovalsLevel, string> = {
 };
 
 // Sidebar: the Approvals level, one tap from any page. Owner only (the same
-// can_change the Settings card reads); hidden when it can't load.
+// can_change the Delegate card reads); hidden when it can't load.
 export default function ApprovalsChip({ onNavigate }: { onNavigate: () => void }) {
   const [setting, setSetting] = useState<OutsideContentSetting | null>(null);
   const [open, setOpen] = useState(false);
@@ -41,7 +42,7 @@ export default function ApprovalsChip({ onNavigate }: { onNavigate: () => void }
   };
 
   // Loaded once (a failed first load hides the chip), and again on each open
-  // (a failed refresh keeps what it shows). The Settings card announces its
+  // (a failed refresh keeps what it shows). The Delegate card announces its
   // saves.
   const load = (first: boolean, signal?: AbortSignal) => {
     const at = saves.current;
@@ -168,8 +169,8 @@ export default function ApprovalsChip({ onNavigate }: { onNavigate: () => void }
 
           <p className="mt-2 border-t border-line px-3 pt-2 pb-1 text-[13px] text-fg-muted">
             Works the same in the app, email and chat apps.{" "}
-            <Link href="/settings/executive" onClick={go} className="font-medium text-accent hover:underline">
-              More in Settings
+            <Link href={APPROVALS_HREF} onClick={go} className="font-medium text-accent hover:underline">
+              More on Delegate
             </Link>
           </p>
         </div>

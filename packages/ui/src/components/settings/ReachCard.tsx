@@ -59,6 +59,8 @@ export function useJumpTo(anchor: string) {
   }, [anchor]);
 }
 
+// One row of choices, side by side. The picked one's line (or why a step
+// can't be picked yet) shows under it.
 export function StepList<T extends string>({
   name,
   labelledBy,
@@ -74,36 +76,44 @@ export function StepList<T extends string>({
   busy: boolean;
   onPick: (step: T) => void;
 }) {
+  const picked = steps.find((step) => step.value === current);
+  const blocked = steps.find((step) => step.reason && step.value !== current)?.reason;
   return (
-    <div role="radiogroup" aria-labelledby={labelledBy} className="flex flex-col gap-2">
-      {steps.map((step) => {
-        const checked = step.value === current;
-        const reason = step.reason;
-        return (
-          <label
-            key={step.value}
-            className={`flex items-start gap-3 rounded-xl border p-3.5 transition-colors ${
-              checked ? "border-accent/60 bg-accent/10" : "border-line bg-surface-elevated hover:border-line-strong"
-            } ${reason && !checked ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}
-          >
-            <input
-              type="radio"
-              name={name}
-              value={step.value}
-              checked={checked}
-              disabled={busy || (Boolean(reason) && !checked)}
-              onChange={() => onPick(step.value)}
-              className="mt-1 h-4 w-4 flex-shrink-0 accent-indigo-500"
-            />
-            <span className="min-w-0">
-              <span className="block text-[15px] font-medium text-fg">{step.label}</span>
-              <span className="mt-0.5 block text-sm text-fg-muted leading-snug">
-                {reason && !checked ? reason : step.line}
-              </span>
-            </span>
-          </label>
-        );
-      })}
+    <div>
+      <div
+        role="radiogroup"
+        aria-labelledby={labelledBy}
+        className="inline-flex max-w-full flex-wrap overflow-hidden rounded-xl border border-line"
+      >
+        {steps.map((step, i) => {
+          const checked = step.value === current;
+          const off = Boolean(step.reason) && !checked;
+          return (
+            <label
+              key={step.value}
+              title={off ? (step.reason ?? undefined) : undefined}
+              className={`relative flex min-h-touch items-center px-3.5 text-sm transition-colors ${
+                i > 0 ? "border-l border-line" : ""
+              } ${checked ? "bg-accent/10 font-semibold text-accent-strong" : "text-fg-muted hover:bg-surface-overlay/60"} ${
+                off ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+              } has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-accent`}
+            >
+              <input
+                type="radio"
+                name={name}
+                value={step.value}
+                checked={checked}
+                disabled={busy || off}
+                onChange={() => onPick(step.value)}
+                className="sr-only"
+              />
+              {step.label}
+            </label>
+          );
+        })}
+      </div>
+      {picked && <p className="mt-2 text-sm text-fg-muted leading-snug">{picked.line}</p>}
+      {blocked && <p className="mt-1 text-sm text-fg-subtle leading-snug">{blocked}</p>}
     </div>
   );
 }
@@ -272,7 +282,7 @@ export function AsYouTrainingCard({
       titleId="as-you-training-label"
       description={
         on
-          ? "Every reply, follow-up, invite answer and suggested action waits for you, whatever Approvals says. Tick “on its own next time” when you send one and that person goes on their own from then on."
+          ? "Everything waits for you first, whatever Approvals says. Tick “on its own next time” when you send one and that person goes on their own."
           : "Off: Approvals alone decides what goes on its own as you."
       }
       action={
@@ -289,7 +299,7 @@ export function AsYouTrainingCard({
         disabled={busy}
         onChange={(learn) => void save(() => setTraining({ drafts: learn }))}
         label="Learn from my edits"
-        help="When you change a draft before sending, tick Do it like this next time and it learns how you write to that person. Nothing more is sent."
+        help="Change a draft, tick Do it like this next time, and it learns how you write to that person."
       />
       {children}
       {error && <p className="mt-3 text-sm text-red-500">{error}</p>}

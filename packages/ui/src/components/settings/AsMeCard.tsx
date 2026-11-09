@@ -84,7 +84,7 @@ export default function AsMeCard({
     <>
       <SettingsCard
         title="Leading or paused"
-        description="Leading, it acts on what it finds. Paused, it only answers when asked, and briefs, nudges and research stop too. Anything you tap Send or Approve on still goes."
+        description="Leading, it acts on what it finds. Paused, it only answers when asked, and briefs and nudges stop too."
       >
         <ExecutiveRunSwitch />
         <p className="mt-4 border-t border-line pt-4 text-[15px] text-fg">
@@ -112,7 +112,7 @@ export default function AsMeCard({
           titleId="as-me-training-label"
           description={
             lead.training
-              ? "Everything it would do in its own name comes to you as a card on Home first, whatever Approvals says. Tick “Do this on its own next time” when you approve one and it does that without asking from then on."
+              ? "Everything it would do comes to you first as a card on Home, whatever Approvals says. Tick “Do this on its own next time” when you approve one."
               : "Off: Approvals alone decides what waits for your yes."
           }
           action={

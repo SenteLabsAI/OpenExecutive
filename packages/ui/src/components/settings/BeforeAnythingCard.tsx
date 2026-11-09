@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
 
 import LeadRulesEditor from "@/components/settings/LeadRulesEditor";
 import OutsideContentCard from "@/components/settings/OutsideContentCard";
@@ -12,6 +13,7 @@ import {
   type OutsideContentSetting,
   type TakeTheLead,
 } from "@/lib/api";
+import { rulesSummary } from "@/lib/leadRules";
 import { APPROVALS_LEADS, APPROVALS_SENDS } from "@/lib/reach";
 
 // Delegate → Before anything goes out: the one setting for both sides.
@@ -30,9 +32,36 @@ export default function BeforeAnythingCard({
   lead: TakeTheLead | null;
   setLead: (next: TakeTheLead) => void;
 }) {
+  const [editing, setEditing] = useState(false);
+  const rules = lead?.rules ?? [];
+
   return (
     <>
-      <OutsideContentCard />
+      <OutsideContentCard>
+        {approvals?.can_change && (
+          <>
+            <ul className="grid gap-3 sm:grid-cols-3">
+              {LEVELS.map((mode) => (
+                <li
+                  key={mode}
+                  className={`rounded-xl border p-4 ${mode === approvals.mode ? "border-accent/60 bg-accent/10" : "border-line"}`}
+                >
+                  <span className="block text-[15px] font-semibold text-fg">{APPROVALS_SENDS[mode].label}</span>
+                  <span className="mt-2 block text-[13px] leading-relaxed text-fg-muted">
+                    <span className="font-semibold text-fg">As you:</span> {APPROVALS_SENDS[mode].line}
+                  </span>
+                  <span className="mt-2 block text-[13px] leading-relaxed text-fg-muted">
+                    <span className="font-semibold text-fg">As me:</span> {APPROVALS_LEADS[mode]}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <p className="text-sm text-fg-muted">
+              In training, on either side, holds everything for you first, whatever the level.
+            </p>
+          </>
+        )}
+      </OutsideContentCard>
       {approvals && !approvals.can_change && (
         <SettingsCard
           title="Approvals"
@@ -43,40 +72,37 @@ export default function BeforeAnythingCard({
           </p>
         </SettingsCard>
       )}
-      {approvals?.can_change && (
-        <SettingsCard title="What each level means here">
-          <ul className="grid gap-3 sm:grid-cols-3">
-            {LEVELS.map((mode) => (
-              <li
-                key={mode}
-                className={`rounded-xl border p-4 ${mode === approvals.mode ? "border-accent/60 bg-accent/10" : "border-line"}`}
-              >
-                <span className="block text-[15px] font-semibold text-fg">{APPROVALS_SENDS[mode].label}</span>
-                <span className="mt-2 block text-[13px] leading-relaxed text-fg-muted">
-                  <span className="font-semibold text-fg">As you:</span> {APPROVALS_SENDS[mode].line}
-                </span>
-                <span className="mt-2 block text-[13px] leading-relaxed text-fg-muted">
-                  <span className="font-semibold text-fg">As me:</span> {APPROVALS_LEADS[mode]}
-                </span>
-              </li>
-            ))}
-          </ul>
-          <p className="mt-3 text-sm text-fg-muted">
-            In training, on either side, holds everything for you first, whatever the level.
-          </p>
-        </SettingsCard>
-      )}
       {lead && (
         <SettingsCard
           title="Your rules"
-          description="Anything the Executive would do in its own name that matches one of these always waits for your yes, on every level."
+          titleId="rules-label"
+          description={
+            editing
+              ? "Anything the Executive would do in its own name that matches one of these always waits for your yes, on every level."
+              : rulesSummary(rules)
+          }
+          action={
+            <button
+              type="button"
+              aria-expanded={editing}
+              aria-controls={editing ? "rules-editor" : undefined}
+              onClick={() => setEditing((v) => !v)}
+              className="text-sm font-medium text-accent hover:underline cursor-pointer"
+            >
+              {editing ? "Done" : rules.length === 0 ? "Add a rule" : `Edit (${rules.length})`}
+            </button>
+          }
         >
-          <LeadRulesEditor
-            rules={lead.rules}
-            emptyText="No rules yet."
-            onAdd={async (kind, value) => setLead(await addCompanyLeadRule(kind, value))}
-            onDelete={async (id) => setLead(await deleteCompanyLeadRule(id))}
-          />
+          {editing && (
+            <div id="rules-editor">
+              <LeadRulesEditor
+                rules={rules}
+                emptyText="No rules yet."
+                onAdd={async (kind, value) => setLead(await addCompanyLeadRule(kind, value))}
+                onDelete={async (id) => setLead(await deleteCompanyLeadRule(id))}
+              />
+            </div>
+          )}
         </SettingsCard>
       )}
       <p className="text-[15px] text-fg-muted">

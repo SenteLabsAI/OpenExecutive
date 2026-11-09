@@ -10,8 +10,10 @@ import { formatAgo } from "@/lib/setupStatus";
 
 // Delegate → As you: what went out as you on its own in the last week (GET
 // /delegation/handled), meeting invites it accepted on its own included.
+// One row, closed: today's count, and the week's list on a click.
 export default function SentCard({ handleIt }: { handleIt: HandleIt }) {
   const [handled, setHandled] = useState<HandledReply[] | null>(null);
+  const [open, setOpen] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -21,10 +23,27 @@ export default function SentCard({ handleIt }: { handleIt: HandleIt }) {
     return () => controller.abort();
   }, [handleIt.sent_today]);
 
+  const toggle = handled && handled.length > 0 && (
+    <button
+      type="button"
+      aria-expanded={open}
+      aria-controls={open ? "sent-list" : undefined}
+      onClick={() => setOpen((v) => !v)}
+      className="text-sm font-medium text-accent hover:underline cursor-pointer"
+    >
+      {open ? "Hide" : `This week (${handled.length})`}
+    </button>
+  );
+
   return (
-    <SettingsCard title="Sent as you on its own" titleId="sent-label" description={sentTodayLine(handleIt.sent_today)}>
-      {handled && handled.length > 0 ? (
-        <ul className="flex flex-col gap-2" aria-label="Sent as you this week">
+    <SettingsCard
+      title="Sent as you on its own"
+      titleId="sent-label"
+      description={handled && handled.length === 0 ? `${sentTodayLine(handleIt.sent_today)} Nothing sent in the last week.` : sentTodayLine(handleIt.sent_today)}
+      action={toggle || undefined}
+    >
+      {open && handled && handled.length > 0 && (
+        <ul id="sent-list" className="flex flex-col gap-2" aria-label="Sent as you this week">
           {handled.map((h) => (
             <li key={h.decision_id} className="rounded-md border border-border px-3 py-2 text-sm">
               <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -43,8 +62,6 @@ export default function SentCard({ handleIt }: { handleIt: HandleIt }) {
             </li>
           ))}
         </ul>
-      ) : (
-        handled && <p className="text-sm text-fg-muted">Nothing sent in the last week.</p>
       )}
     </SettingsCard>
   );
