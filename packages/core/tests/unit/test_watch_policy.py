@@ -1276,3 +1276,10 @@ async def test_the_models_card_line_reaches_the_card(db: Path) -> None:
     row = next(i for i in ms.list_watchlist(enabled_only=False, db_path=db) if i.slug == "stock-acme")
     assert row.config_json[wp.CARD_LINE_KEY] == "Acme stock: a big move means news."
     assert wp.card_line(row) == "Acme stock: a big move means news."
+    # An over-long line is dropped, never cut mid-word.
+    await wt.handle_propose_watch({
+        "slug": "stock-acmf", "signal_type": "stock", "target": "ACMF",
+        "grounding_entity": "Acme Corp", "rationale": "y", "certainty": "unsure",
+        "finding_index": 1, "card_line": "word " * 40,
+    }, collector)
+    assert collector[-1].card_line == ""

@@ -545,6 +545,7 @@ async def handle_propose_watch(tool_input: dict[str, Any], collector: list[Any])
     declined is refused HERE so a new slug cannot route around the decline.
     """
     from openexecutive.monitoring.research.watch_policy import (
+        MAX_CARD_LINE,
         WatchProposal,
         entity_declined,
     )
@@ -608,7 +609,9 @@ async def handle_propose_watch(tool_input: dict[str, Any], collector: list[Any])
         trigger=trigger,
         route_to_specialist=str(tool_input.get("route_to_specialist", ""))[:32],
         display_label=str(tool_input.get("display_label", ""))[:120],
-        card_line=" ".join(str(tool_input.get("card_line", "")).split())[:120],
+        # Over-long lines are dropped, never cut mid-word: the card then says
+        # what it watches in its own words.
+        card_line=line if len(line := " ".join(str(tool_input.get("card_line", "")).split())) <= MAX_CARD_LINE else "",
     ))
     return json.dumps({"ok": True, "queued": slug, "signal_type": signal_type})
 
