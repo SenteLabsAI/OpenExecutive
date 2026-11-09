@@ -1526,6 +1526,13 @@ def nudge_headline() -> str:
     return NUDGE_HEADLINE
 
 
+def _plain(text: str) -> str:
+    """One line with no link or markup syntax: card text comes from model
+    words and labels shaped by web content, so a chat app must never render
+    it as a link, and a newline must never forge a bullet."""
+    return " ".join(re.sub(r"[<>\[\]|`]", " ", text).split())
+
+
 def card_line(item: WatchlistItem) -> str:
     """One plain line for ``item`` on the card: the line the model wrote for
     it, else what it watches in words (``describe.watching_line``)."""
@@ -1533,20 +1540,16 @@ def card_line(item: WatchlistItem) -> str:
     from openexecutive.monitoring.validation import registrable_domain
 
     config = item.config_json if isinstance(item.config_json, dict) else {}
-    # Model words shaped by web content: no link or markup syntax survives,
-    # so a chat app can't render them as a link.
-    written = " ".join(re.sub(r"[<>\[\]|`]", " ", str(config.get(CARD_LINE_KEY) or "")).split())
+    written = _plain(str(config.get(CARD_LINE_KEY) or ""))
     if written and len(written) <= MAX_CARD_LINE:
         # The model's words name no source on their own: the site it
-        # watches stays beside them, so an approval is of the real target.
+        # watches always follows them, so an approval is of the real target.
         host = registrable_domain(item.target)
-        named = bool(host) and re.search(rf"(?<![\w.-]){re.escape(host)}(?![\w-]|\.\w)", written.casefold())
-        return f"{written} ({host})" if host and not named else written
+        return f"{written} ({host})" if host else written
     label = next(
         (str(config[k]) for k in ("vendor_label", "feed_label", "display_name", "label") if config.get(k)), "",
     )
-    # One line, whatever the label holds: a newline in it can't forge a bullet.
-    line = " ".join(watching_line(item.signal_type, item.target, label).split())
+    line = _plain(watching_line(item.signal_type, item.target, label))
     return line if len(line) <= MAX_CARD_LINE * 2 else line[: MAX_CARD_LINE * 2 - 1].rstrip() + "…"
 
 

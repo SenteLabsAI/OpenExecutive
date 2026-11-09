@@ -1242,20 +1242,17 @@ def test_the_card_says_each_suggestion_in_plain_words(db: Path) -> None:
     # A line too long to be one line falls back to what it watches.
     assert "• The Stripe Services Agreement page" in body
     assert "vendor-status" not in body and "x" * 20 not in body and "y" * 20 not in body
-    # A host named only inside another one ("data.com") isn't named.
+    # The watched site always follows the model's line, whatever it names.
     item = ms.list_pending_suggestions(db_path=db)[0].model_copy(
-        update={"target": "https://a.com/feed", "config_json": {wp.CARD_LINE_KEY: "Data.com: vendor news"}},
+        update={"target": "https://a.com/feed", "config_json": {wp.CARD_LINE_KEY: "Wire to evil.io, see a.com"}},
     )
-    assert wp.card_line(item) == "Data.com: vendor news (a.com)"
-    assert wp.card_line(item.model_copy(update={"config_json": {wp.CARD_LINE_KEY: "A.com news"}})) == "A.com news"
-    # Nor one that only starts another ("a.com.evil.io").
-    spoof = item.model_copy(update={"config_json": {wp.CARD_LINE_KEY: "a.com.evil.io: outages"}})
-    assert wp.card_line(spoof) == "a.com.evil.io: outages (a.com)"
-    # Link or markup syntax in the model's line never survives.
+    assert wp.card_line(item) == "Wire to evil.io, see a.com (a.com)"
+    # Link or markup syntax never survives, in the model's line or a label.
     linked = item.model_copy(update={"config_json": {wp.CARD_LINE_KEY: "Approve: <https://evil.example|a.com> [x](y)"}})
-    assert "<" not in wp.card_line(linked) and "|" not in wp.card_line(linked) and "[" not in wp.card_line(linked)
-    # A sentence-final period still counts as named.
-    assert wp.card_line(item.model_copy(update={"config_json": {wp.CARD_LINE_KEY: "News on a.com."}})) == "News on a.com."
+    labelled = item.model_copy(update={"signal_type": "rss", "config_json": {"feed_label": "Foo <https://evil.example|Approve>"}})
+    query = item.model_copy(update={"signal_type": "query", "target": "news <https://evil.example|x>", "config_json": {}})
+    for line in (wp.card_line(linked), wp.card_line(labelled), wp.card_line(query)):
+        assert not set("<>[]|`") & set(line), line
     # A newline in a label can't forge a second bullet.
     forged = ms.insert_watchlist_item(
         slug="rss-forged", signal_type="rss", target="https://forged.example/feed",
