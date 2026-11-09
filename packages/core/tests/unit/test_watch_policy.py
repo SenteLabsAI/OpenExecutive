@@ -550,7 +550,10 @@ def test_sweep_nudges_once_suggestions_pile_up(db: Path) -> None:
     assert first is not None and first.id is not None and ms.approve_suggestion(first.id, db_path=db)
     assert wp.sweep(datetime.now(UTC), db_path=db)["nudged"] == 0
     alerts = [a for a in list_alerts(limit=10, db_path=db) if a.source == wp.NUDGE_ALERT_SOURCE]
-    assert len(alerts) == 1 and "4 watch suggestions" in alerts[0].headline
+    assert len(alerts) == 1 and alerts[0].headline == "4 things to watch, waiting for your OK"
+    # In words, never slugs or signal types.
+    assert "rss-s" not in alerts[0].body and "(rss)" not in alerts[0].body
+    assert "• New posts at s1.com" in alerts[0].body
 
 
 def test_direct_add_needs_a_finding_that_cites_the_source() -> None:
@@ -1193,3 +1196,27 @@ def test_a_stronger_insert_makes_a_weaker_same_site_proposal_already_watched(db:
     out = wp.apply_proposals([weaker, strong], [_finding()], _ctx(), db_path=db)
     assert [(o["slug"], o["outcome"]) for o in out] == [("rss-acme-news", "rejected"), ("rss-acme-blog", "added")]
     assert "already watched" in out[0]["result_preview"]
+
+
+def test_the_card_says_each_suggestion_in_plain_words(db: Path) -> None:
+    # A 2026-11 card listed "vendor-status-github (vendor_status) — Repeated
+    # October Actions/Pages/webhook ..." cut off mid-word.
+    ms.insert_watchlist_item(
+        slug="vendor-status-github", signal_type="vendor_status", target="https://www.githubstatus.com",
+        config={wp.CARD_LINE_KEY: "GitHub status: outages could break our deploys."},
+        notes="Repeated October Actions/Pages/webhook and REST latency incidents; " + "x" * 300,
+        mode=MODE_DRY_RUN, origin=ORIGIN_RESEARCH_PROPOSED, db_path=db,
+    )
+    ms.insert_watchlist_item(
+        slug="page-watch-legal", signal_type="page_watch", target="https://stripe.com/legal/ssa",
+        config={"label": "Stripe Services Agreement", wp.CARD_LINE_KEY: "y" * 200},
+        mode=MODE_DRY_RUN, origin=ORIGIN_RESEARCH_PROPOSED, db_path=db,
+    )
+    pending = ms.list_pending_suggestions(db_path=db)
+    body = wp.nudge_body(pending)
+    assert body.splitlines()[0] == "I'd like to keep an eye on these:"
+    assert "• GitHub status: outages could break our deploys." in body
+    # A line too long to be one line falls back to what it watches.
+    assert "• The Stripe Services Agreement page" in body
+    assert "vendor-status" not in body and "x" * 20 not in body and "y" * 20 not in body
+    assert wp.nudge_headline(1) == "1 thing to watch, waiting for your OK"

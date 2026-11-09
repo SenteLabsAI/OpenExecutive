@@ -360,7 +360,18 @@ PROPOSE_WATCH_TOOL: dict[str, Any] = {
                     "'unsure' can only turn an add into a suggestion — never the reverse."
                 ),
             },
-            "display_label": {"type": "string"},
+            "display_label": {
+                "type": "string",
+                "description": "The source's plain name, as a person would say it, e.g. 'GitHub status'.",
+            },
+            "card_line": {
+                "type": "string",
+                "description": (
+                    "One short line the principal reads on the approval card: the plain name, a colon, and why "
+                    "it matters to the company, under 15 words, no ids, codes or jargon. E.g. 'GitHub status: "
+                    "outages could break our deploys.'"
+                ),
+            },
             "trigger": {"type": "object", "description": "Optional adapter trigger; policy adds quiet defaults."},
             "route_to_specialist": {"type": "string"},
         },
@@ -597,6 +608,7 @@ async def handle_propose_watch(tool_input: dict[str, Any], collector: list[Any])
         trigger=trigger,
         route_to_specialist=str(tool_input.get("route_to_specialist", ""))[:32],
         display_label=str(tool_input.get("display_label", ""))[:120],
+        card_line=" ".join(str(tool_input.get("card_line", "")).split())[:120],
     ))
     return json.dumps({"ok": True, "queued": slug, "signal_type": signal_type})
 
