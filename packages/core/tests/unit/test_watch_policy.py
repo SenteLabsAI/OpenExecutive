@@ -1255,6 +1255,8 @@ def test_the_card_says_each_suggestion_in_plain_words(db: Path) -> None:
     query = item.model_copy(update={"signal_type": "query", "target": "news <https://evil.example|x>", "config_json": {}})
     for line in (wp.card_line(linked), wp.card_line(labelled), wp.card_line(query)):
         assert not set("<>[]|`") & set(line), line
+    pinged = item.model_copy(update={"config_json": {wp.CARD_LINE_KEY: "@everyone *Approve* ~now~"}})
+    assert not set("@*~") & set(wp.card_line(pinged))
     # A newline in a label can't forge a second bullet.
     forged = ms.insert_watchlist_item(
         slug="rss-forged", signal_type="rss", target="https://forged.example/feed",

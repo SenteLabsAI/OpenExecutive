@@ -1530,7 +1530,7 @@ def _plain(text: str) -> str:
     """One line with no link or markup syntax: card text comes from model
     words and labels shaped by web content, so a chat app must never render
     it as a link, and a newline must never forge a bullet."""
-    return " ".join(re.sub(r"[<>\[\]|`]", " ", text).split())
+    return " ".join(re.sub(r"[<>\[\]|`@*~]", " ", text).split())
 
 
 def card_line(item: WatchlistItem) -> str:
