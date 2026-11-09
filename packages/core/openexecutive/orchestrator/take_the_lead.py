@@ -124,6 +124,9 @@ RULE_DOMAIN = "domain"
 RULE_WORDS = "words"
 RULE_AMOUNT = "amount"
 RULE_KINDS: tuple[str, ...] = (RULE_PERSON, RULE_DOMAIN, RULE_WORDS, RULE_AMOUNT)
+# What a Goes rule can be about. Words only wait: what an email says can be
+# echoed into what it sends, so words never let anything go.
+GOES_RULE_KINDS: tuple[str, ...] = (RULE_PERSON, RULE_DOMAIN, RULE_AMOUNT)
 RULE_VALUE_MAX = 200
 # What a rule does: "wait" always holds the action for the owner, on every
 # level; "go" lets it go on its own where the level would hold it. A Waits
@@ -444,6 +447,8 @@ def add_rule(
 ) -> Rule:
     if effect not in RULE_EFFECTS:
         raise RuleError("Pick whether it waits for you or goes on its own.")
+    if effect == EFFECT_GO and kind not in GOES_RULE_KINDS:
+        raise RuleError("A words rule can only wait for you.")
     text = clean_rule(kind, value)
     conn = _connect(db_path)
     try:
@@ -723,12 +728,11 @@ def goes_rules(
 ) -> list[Rule]:
     """Every Goes rule that matches. Stricter than a Waits rule, since it
     lets something go: a person or domain must be every recipient (and
-    there must be one), words must appear as whole words in ``words_text``
-    (what it would send; ``text`` when not given), and an amount rule needs
-    an amount in ``words_text`` and every amount in ``text`` under its
-    limit. What each one lets go is ``goes_kinds``."""
+    there must be one), and an amount rule needs an amount in
+    ``words_text`` (what it would send; ``text`` when not given) and every
+    amount in ``text`` under its limit. Words rules only wait. What each
+    one lets go is ``goes_kinds``."""
     own = text if words_text is None else words_text
-    lowered = own.lower()
     found = amounts(text)
     mine = amounts(own)
     out: list[Rule] = []
@@ -743,9 +747,6 @@ def goes_rules(
         elif rule.kind == RULE_DOMAIN:
             if recipients and all(r.endswith("@" + value) for r in recipients):
                 out.append(rule)
-        elif rule.kind == RULE_WORDS:
-            if value.strip() and re.search(rf"(?<!\w){re.escape(value.strip().lower())}(?!\w)", lowered):
-                out.append(rule)
         elif rule.kind == RULE_AMOUNT:
             limit = _number(value) or 0
             if mine and all(a < limit for a in [*found, *mine]) and _all_parsed(text, found) and _all_parsed(own, mine):
@@ -754,13 +755,12 @@ def goes_rules(
 
 
 # What a Goes rule lets go where Balanced would ask: a person or company
-# rule, anything only to them; an amount rule, the money; a words rule,
-# neither money nor someone new. A delete or share always waits.
+# rule, anything only to them; an amount rule, the money. A delete or share
+# always waits.
 _GOES_KINDS: dict[str, frozenset[str]] = {
     RULE_PERSON: frozenset(KINDS) - {DELETE_SHARE},
     RULE_DOMAIN: frozenset(KINDS) - {DELETE_SHARE},
     RULE_AMOUNT: frozenset({MONEY}),
-    RULE_WORDS: frozenset({CONTRACTS, PEOPLE_DECISIONS, BIG_SEND}),
 }
 
 

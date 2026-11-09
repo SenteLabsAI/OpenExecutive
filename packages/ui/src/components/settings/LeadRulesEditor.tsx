@@ -3,7 +3,7 @@
 import { useState } from "react";
 
 import type { LeadRule, LeadRuleEffect, LeadRuleKind } from "@/lib/api";
-import { EFFECT_HINT, RULE_KINDS, RULES_ORDER, describeRule, ruleGoes } from "@/lib/leadRules";
+import { EFFECT_HINT, RULE_KINDS, RULES_ORDER, describeRule, kindGoes, ruleGoes } from "@/lib/leadRules";
 
 // Your rules (orchestrator/take_the_lead.py), the owner's, on Delegate →
 // Approvals. A Waits rule always waits for a yes, on every level; a Goes
@@ -126,7 +126,10 @@ export default function LeadRulesEditor({
                   key={e.effect}
                   type="button"
                   aria-pressed={effect === e.effect}
-                  onClick={() => setEffect(e.effect)}
+                  onClick={() => {
+                    setEffect(e.effect);
+                    if (e.effect === "go" && !kindGoes(kind)) setKind("amount");
+                  }}
                   disabled={busy || disabled}
                   className={segment(effect === e.effect)}
                 >
@@ -138,7 +141,7 @@ export default function LeadRulesEditor({
           <fieldset className="flex flex-col gap-1.5">
             <legend className="mb-1.5 text-[13px] font-semibold text-fg">When it&apos;s about</legend>
             <div className="inline-flex w-fit flex-wrap overflow-hidden rounded-lg border border-line">
-              {RULE_KINDS.map((r) => (
+              {RULE_KINDS.filter((r) => effect === "wait" || kindGoes(r.kind)).map((r) => (
                 <button
                   key={r.kind}
                   type="button"

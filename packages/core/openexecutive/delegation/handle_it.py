@@ -198,10 +198,9 @@ def content_hold(
     (``rule``) on every level; then, below Hands-off, money, contracts,
     credentials and the like (``sensitive``), a link (``link``) or an amount
     (``amount``), unless a Goes rule covers it: a person or company rule
-    covers all of them, an amount rule the money, a words rule the rest
-    (a link or credentials always wait). ``texts`` are read for rules,
-    topics and amounts, ``link_texts`` (what it would send) for links and
-    Goes words and amounts, so a sender can't write what lets a reply go,
+    covers all of them, an amount rule the money (a link or credentials
+    always wait). ``texts`` are read for rules, topics and amounts,
+    ``link_texts`` (what it would send) for links and Goes amounts,
     ``recipients`` for person and domain rules. Unreadable rules hold, on
     Hands-off too."""
     from openexecutive.orchestrator import take_the_lead
@@ -230,7 +229,7 @@ def content_hold(
     money = {t for t in topics if re.sub(r"\s+", " ", t) in MONEY_WORDS}
     if take_the_lead.RULE_AMOUNT not in kinds and money:
         return "sensitive"
-    if take_the_lead.RULE_WORDS not in kinds and topics - money:
+    if topics - money:
         return "sensitive"
     if take_the_lead.RULE_AMOUNT not in kinds and any(_AMOUNT_RE.search(t or "") for t in texts):
         return "amount"

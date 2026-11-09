@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { describeRule, rulesChangeLine, rulesSummary } from "../src/lib/leadRules.ts";
+import { describeRule, kindGoes, rulesChangeLine, rulesSummary } from "../src/lib/leadRules.ts";
 
 test("Your rules line: none yet, then what each kind does", () => {
   assert.match(rulesSummary([]), /^None yet\. Approvals decides everything\./);
@@ -34,4 +34,9 @@ test("a rule reads by its effect", () => {
 
 test("an unknown kind shows its value", () => {
   assert.equal(describeRule({ kind: "other", value: "x" }), "x");
+});
+
+test("words can only wait; amount, person and company can go", () => {
+  assert.equal(kindGoes("words"), false);
+  for (const kind of ["amount", "person", "domain"]) assert.equal(kindGoes(kind), true);
 });

@@ -50,6 +50,12 @@ export const RULE_KINDS: {
   },
 ];
 
+// What a Goes rule can be about (GOES_RULE_KINDS in take_the_lead.py).
+// Words only wait: what an email says can end up in what it sends.
+export function kindGoes(kind: LeadRuleKind): boolean {
+  return kind !== "words";
+}
+
 export function ruleGoes(rule: Rule): boolean {
   return rule.effect === "go";
 }

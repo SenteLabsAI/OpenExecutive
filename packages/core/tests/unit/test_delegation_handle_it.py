@@ -820,21 +820,15 @@ def test_a_goes_rule_never_lets_a_link_go(switched_on: Any) -> None:
     assert _check(switched_on, reply=_reply(body="The agenda is at https://docs.example.com/a.")) == "link"
 
 
-def test_a_goes_words_rule_reads_only_what_it_would_send(switched_on: Any) -> None:
-    """The sender can't write what lets a reply go: Goes words are read in
-    the reply, as whole words; they never cover money, and credentials
-    still wait."""
+def test_a_words_rule_can_only_wait(switched_on: Any) -> None:
+    """Words in an email can be echoed into the reply, so a words rule never
+    lets one go."""
     from openexecutive.orchestrator import take_the_lead as ttl
 
-    ttl.add_rule(ttl.SCOPE_COMPANY, "words", "board deck", created_by="t", effect=ttl.EFFECT_GO)
+    with pytest.raises(ttl.RuleError):
+        ttl.add_rule(ttl.SCOPE_COMPANY, "words", "board deck", created_by="t", effect=ttl.EFFECT_GO)
     board = _msg("m1", "t1", text="Can you send the board deck before Thursday?")
-    assert _check(switched_on, message=board, reply=_reply(body="Sure, will do.")) == "sensitive"
-    assert _check(switched_on, message=board, reply=_reply(body="Sure, the board deck is on its way.")) is None
-    asks = _msg("m1", "t1", text="Board deck: please confirm the wire details and your password.")
-    assert _check(switched_on, message=asks, reply=_reply(body="The board deck is coming.")) == "sensitive"
-    wire = _msg("m1", "t1", text="Board deck attached. Please wire the funds.")
-    assert _check(switched_on, message=wire, reply=_reply(body="Thanks for the board deck.")) == "sensitive"
-    assert _check(switched_on, message=board, reply=_reply(body="The board decks are coming.")) == "sensitive"
+    assert _check(switched_on, message=board, reply=_reply(body="Sure, the board deck is on its way.")) == "sensitive"
 
 
 def test_a_goes_amount_rule_needs_the_amount_in_the_reply(switched_on: Any) -> None:

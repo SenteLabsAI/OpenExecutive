@@ -1366,17 +1366,16 @@ def test_the_route_adds_a_goes_rule_for_a_provable_owner(
 
 
 def test_a_goes_rule_never_lets_a_delete_go(owner: Any, balanced: None) -> None:
-    _go("words", "standup")
-    hit, _ = ttl._hit("cancel_calendar_event", {"event_id": "e1", "title": "standup"}, mcp=False)
+    _go("amount", "500")
+    hit, _ = ttl._hit("cancel_calendar_event", {"event_id": "e1", "title": "$100 standup"}, mcp=False)
     assert hit is not None and hit.kind == "delete_share"
 
 
 def test_a_goes_rule_lets_go_only_what_it_covers(owner: Any, balanced: None) -> None:
-    """A words rule never lets money go, and an amount rule lets only the
-    money go: a contract under the limit still waits."""
-    _go("words", "thanks")
-    result, calls = _run(owner, "Thanks! Approve the $10,000 wire")
-    assert result["status"] == "waiting_for_approval" and calls == []
+    """A words rule only waits, and an amount rule lets only the money go:
+    a contract under the limit still waits."""
+    with pytest.raises(ttl.RuleError):
+        _go("words", "thanks")
     _go("amount", "500")
     result, calls = _run(owner, "Sign the $300 contract renewal")
     assert result["status"] == "waiting_for_approval" and calls == []
