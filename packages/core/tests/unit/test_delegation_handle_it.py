@@ -725,6 +725,19 @@ def test_once_they_allow_the_person_replies_to_them_go(owner: Any, models: dict[
     assert inbox.card_payload(card)["handle_it_reason"] == "training"
 
 
+def test_someone_with_no_address_on_file_is_never_allowed_by_omission(owner: Any, models: dict[str, Any]) -> None:
+    """A card reaching an allowed person and someone with no email on file
+    (``action_cards._addresses`` gives "" for them) still waits in training."""
+    from openexecutive.delegation import training
+
+    _on(owner)
+    _in_training(owner)
+    training.allow_person(owner.id, DANA, "Dana Park", decision_id=None)
+    assert handle_it.training_hold(owner.id, [DANA]) is None
+    assert handle_it.training_hold(owner.id, [DANA, ""]) == "training"
+    assert handle_it.training_hold(owner.id, [""]) == "training"
+
+
 def test_careful_holds_an_allowed_person_too(owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
     from openexecutive.delegation import training
 

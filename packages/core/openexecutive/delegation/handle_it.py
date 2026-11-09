@@ -201,14 +201,14 @@ def in_training(person_id: int, *, db_path: Path | None = None) -> bool:
 
 def training_hold(person_id: int, addresses: list[str], *, db_path: Path | None = None) -> str | None:
     """``"training"`` when As you is in training and any of ``addresses``
-    isn't allowed yet; None when it may go (not in training, or every one
-    allowed)."""
+    isn't allowed yet, someone with no address on file included; None when
+    it may go (not in training, or every one allowed)."""
     from openexecutive.delegation import training
 
     if not training.in_training(person_id, db_path=db_path):
         return None
     going = [a for a in addresses if a]
-    if training.all_allowed(person_id, going, db_path=db_path) is None:
+    if len(going) != len(addresses) or training.all_allowed(person_id, going, db_path=db_path) is None:
         return "training"
     return None
 
