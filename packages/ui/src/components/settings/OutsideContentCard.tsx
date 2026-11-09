@@ -45,9 +45,13 @@ const OPTIONS: {
 // what the Executive does on its own and what it asks first, the same on
 // every channel (orchestrator/levels.py, orchestrator/outside_mode.py).
 // Shown to the owner only; nobody else may change it. Lives on Delegate →
-// Before anything goes out: the three levels in one row with the picked
-// one's line, and the rest, with `children`, behind What each level means.
-export default function OutsideContentCard({ children }: { children?: ReactNode } = {}) {
+// Approvals: the three levels in one row with the picked one's line, then
+// `note` (what your rules change), and the rest, with `children`, behind
+// What each level means.
+export default function OutsideContentCard({
+  children,
+  note,
+}: { children?: ReactNode; note?: ReactNode } = {}) {
   const [setting, setSetting] = useState<OutsideContentSetting | null>(null);
   const [more, setMore] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -127,6 +131,7 @@ export default function OutsideContentCard({ children }: { children?: ReactNode 
             })}
           </div>
           {picked && <p className="mt-2 text-sm text-fg-muted leading-snug">{picked.text}</p>}
+          {note}
           <button
             type="button"
             aria-expanded={more}

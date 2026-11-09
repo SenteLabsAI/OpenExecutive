@@ -13,13 +13,15 @@ import {
   type OutsideContentSetting,
   type TakeTheLead,
 } from "@/lib/api";
-import { rulesSummary } from "@/lib/leadRules";
+import { rulesChangeLine, rulesSummary } from "@/lib/leadRules";
 import { APPROVALS_LEADS, APPROVALS_SENDS } from "@/lib/reach";
 
-// Delegate → Before anything goes out: the one setting for both sides.
-// Approvals (the owner's; everyone else sees the level) decides what goes on
-// its own and what comes as an Approve card on Home; Your rules (the
-// owner's, POST/DELETE /take-the-lead/rules) always wait, on every level.
+// Delegate → Approvals: the one setting for both sides. The level (the
+// owner's; everyone else sees it) decides what goes on its own and what
+// comes as an Approve card on Home. Your rules (the owner's, POST/DELETE
+// /take-the-lead/rules) change that: a Waits rule always waits, a Goes rule
+// lets something go on its own. Careful and In training still hold
+// everything. With no rules, the level alone decides.
 
 const LEVELS: OutsideContentMode[] = ["ask", "outsiders", "trust"];
 
@@ -32,12 +34,24 @@ export default function BeforeAnythingCard({
   lead: TakeTheLead | null;
   setLead: (next: TakeTheLead) => void;
 }) {
-  const [editing, setEditing] = useState(false);
+  const [adding, setAdding] = useState(false);
   const rules = lead?.rules ?? [];
+  const changed = rulesChangeLine(rules);
 
   return (
     <>
-      <OutsideContentCard>
+      <OutsideContentCard
+        note={
+          changed && (
+            <p className="mt-3 rounded-lg bg-surface-overlay px-3 py-2 text-sm text-fg-muted">
+              <span className="font-semibold text-fg">Your rules change this:</span> {changed}{" "}
+              <a href="#rules-label" className="font-medium text-accent hover:underline">
+                See rules
+              </a>
+            </p>
+          )
+        }
+      >
         {approvals?.can_change && (
           <>
             <ul className="grid gap-3 sm:grid-cols-3">
@@ -76,32 +90,29 @@ export default function BeforeAnythingCard({
         <SettingsCard
           title="Your rules"
           titleId="rules-label"
-          description={
-            editing
-              ? "Anything the Executive would do in its own name that matches one of these always waits for your yes, on every level."
-              : rulesSummary(rules)
-          }
+          description={rulesSummary(rules)}
           action={
-            <button
-              type="button"
-              aria-expanded={editing}
-              aria-controls={editing ? "rules-editor" : undefined}
-              onClick={() => setEditing((v) => !v)}
-              className="text-sm font-medium text-accent hover:underline cursor-pointer"
-            >
-              {editing ? "Done" : rules.length === 0 ? "Add a rule" : `Edit (${rules.length})`}
-            </button>
+            !adding && (
+              <button
+                type="button"
+                aria-expanded={adding}
+                aria-controls="rules-editor"
+                onClick={() => setAdding(true)}
+                className="text-sm font-medium text-accent hover:underline cursor-pointer"
+              >
+                Add a rule
+              </button>
+            )
           }
         >
-          {editing && (
-            <div id="rules-editor">
-              <LeadRulesEditor
-                rules={rules}
-                emptyText="No rules yet."
-                onAdd={async (kind, value) => setLead(await addCompanyLeadRule(kind, value))}
-                onDelete={async (id) => setLead(await deleteCompanyLeadRule(id))}
-              />
-            </div>
+          {(rules.length > 0 || adding) && (
+            <LeadRulesEditor
+              rules={rules}
+              adding={adding}
+              onDone={() => setAdding(false)}
+              onAdd={async (kind, value, effect) => setLead(await addCompanyLeadRule(kind, value, effect))}
+              onDelete={async (id) => setLead(await deleteCompanyLeadRule(id))}
+            />
           )}
         </SettingsCard>
       )}

@@ -9,7 +9,7 @@ import { approvalsTitle, onApprovalsChanged } from "@/lib/approvalsLevel";
 import { APPROVALS_HREF } from "@/lib/reach";
 
 // Settings → Your Executive: the Approvals level in one line. It is changed
-// on Delegate → Before anything goes out (or from the side menu), so this
+// on Delegate → Approvals (or from the side menu), so this
 // only names it and links there. Hidden until it loads.
 export default function ApprovalsLinkCard() {
   const [setting, setSetting] = useState<OutsideContentSetting | null>(null);

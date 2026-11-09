@@ -7,7 +7,7 @@ every acting call they make goes through ``_gated``. A message only to the
 principal skips it: they are who it would wait for (``_only_to_principal``).
 Everything else, in order:
 
-- the owner's added rules (``list_rules``, a person, domain, words or an
+- the owner's Waits rules (``list_rules``, a person, domain, words or an
   amount) hold at every level;
 - Careful holds everything;
 - **In training** (``Lead.training``, ``PUT /take-the-lead``) sits above the
@@ -18,6 +18,8 @@ Everything else, in order:
   same person or thing, ``allow``), and from then on it runs on its own,
   except on Careful;
 - Hands-off runs everything else;
+- a Goes rule (``rule_goes``) lets it go where Balanced would hold it,
+  except a delete or share;
 - Balanced holds the six ``KINDS`` (money, contracts, people decisions,
   deleting or sharing, someone new, big sends; ``check``) and runs the
   rest.
@@ -122,7 +124,17 @@ RULE_DOMAIN = "domain"
 RULE_WORDS = "words"
 RULE_AMOUNT = "amount"
 RULE_KINDS: tuple[str, ...] = (RULE_PERSON, RULE_DOMAIN, RULE_WORDS, RULE_AMOUNT)
+# What a Goes rule can be about. Words only wait: what an email says can be
+# echoed into what it sends, so words never let anything go.
+GOES_RULE_KINDS: tuple[str, ...] = (RULE_PERSON, RULE_DOMAIN, RULE_AMOUNT)
 RULE_VALUE_MAX = 200
+# What a rule does: "wait" always holds the action for the owner, on every
+# level; "go" lets it go on its own where the level would hold it. A Waits
+# rule wins over a Goes rule, Careful holds everything, and In training is
+# the last check: while it's on, a Goes rule lets nothing out on its own.
+EFFECT_WAIT = "wait"
+EFFECT_GO = "go"
+RULE_EFFECTS: tuple[str, ...] = (EFFECT_WAIT, EFFECT_GO)
 RULES_MAX = 50
 
 # The acting skill tools. Everything else an unattended pass may call reads,
@@ -184,12 +196,39 @@ _MULTIPLIERS: dict[str, int] = {
 _MULT = r"(thousand|million|billion|mn|bn|k|m|b)\b"
 _CURRENCY_CODES = r"usd|eur|gbp|chf|jpy|cad|aud|inr|cny"
 _AMOUNT_VALUE_RE = re.compile(
-    rf"(?:[$€£¥]\s?)(\d[\d,]*(?:\.\d+)?)\s?(?:{_MULT})?"
+    rf"(?:[$€£¥₹]\s?)(\d[\d,]*(?:\.\d+)?)\s?(?:{_MULT})?"
     rf"|\b(\d[\d,]*(?:\.\d+)?)\s?(?:{_MULT})?\s?(?:{_CURRENCY_CODES}|dollars|euros|pounds)\b"
     rf"|\b(?:{_CURRENCY_CODES})\s?(\d[\d,]*(?:\.\d+)?)\s?(?:{_MULT})?",
     re.IGNORECASE,
 )
 _DOMAIN_RE = re.compile(r"^[a-z0-9.-]+\.[a-z]{2,}$")
+# Anything that reads as an amount, parsed or not: a Goes amount rule needs
+# every one of these parsed by ``amounts``, and no percentages.
+_AMOUNT_SIGN_RE = re.compile(r"[$€£¥₹]\s*\d")
+_PERCENT_RE = re.compile(r"\d\s*%|\bper\s?cent\b", re.IGNORECASE)
+# A number next to money, to check it is written the plain way amounts()
+# reads (1,200.50 or 1200), not 1.200,50 or 1.000.000.
+_MONEY_NUMBER_RE = re.compile(
+    rf"[$€£¥₹]\s?([\d.,]*\d)|\b([\d.,]*\d)\s?(?:{_CURRENCY_CODES}|dollars?|euros?|pounds?|bucks)\b",
+    re.IGNORECASE,
+)
+_PLAIN_NUMBER_RE = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?")
+# Scale words: fine right after a number when amounts() knows them, else
+# an amount it can't read ("ten thousand dollars", "$5 trillion", "₹3 crore").
+_SCALE_RE = re.compile(r"\b(hundred|thousand|million|billion|trillion|grand|crores?|lakhs?|tn)\b", re.IGNORECASE)
+# A bare number of 3+ digits within a few words of a money word ("wire
+# 50000 to", "pay 1200 now"): an amount amounts() can't see.
+_BARE_MONEY_RE = re.compile(
+    r"\b(?:wire|pay|paid|payment|transfer|send|deposit|fee|invoice|refund|charge|cost|price|fund|funds|owe)\b"
+    r"(?:\W+\w+){0,3}?\W+\d[\d,.]{2,}\b(?![\d.,]*\s?(?:%|usd|eur|gbp|dollars?|euros?|pounds?))"
+    r"|\b\d[\d,.]{2,}\b(?:\W+\w+){0,3}?\W+(?:wire|payment|transfer|deposit|fee|invoice|refund)\b",
+    re.IGNORECASE,
+)
+_SPELLED_MONEY_RE = re.compile(
+    r"\b(?:a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|thirty|forty|fifty|"
+    r"sixty|seventy|eighty|ninety|few|several|many)\s+(?:dollars?|euros?|pounds?|bucks|usd|eur|gbp)\b",
+    re.IGNORECASE,
+)
 
 
 def person_scope(person_id: int) -> str:
@@ -240,8 +279,16 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         f"CREATE TABLE IF NOT EXISTS {RULES_TABLE} ("  # noqa: S608
         "id INTEGER PRIMARY KEY AUTOINCREMENT, scope TEXT NOT NULL, kind TEXT NOT NULL, "
-        "value TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL)"
+        "value TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL, "
+        "effect TEXT NOT NULL DEFAULT 'wait')"
     )
+    rule_columns = {r[1] for r in conn.execute(f"PRAGMA table_info({RULES_TABLE})")}  # noqa: S608
+    if "effect" not in rule_columns:
+        try:
+            conn.execute(f"ALTER TABLE {RULES_TABLE} ADD COLUMN effect TEXT NOT NULL DEFAULT 'wait'")  # noqa: S608
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
     conn.execute(
         f"CREATE TABLE IF NOT EXISTS {LOG_TABLE} ("  # noqa: S608
         "id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, scope TEXT NOT NULL, "
@@ -365,6 +412,7 @@ class Rule:
     kind: str
     value: str
     created_at: str
+    effect: str = EFFECT_WAIT
 
 
 class RuleError(ValueError):
@@ -385,7 +433,7 @@ def clean_rule(kind: str, value: str) -> str:
         if not _DOMAIN_RE.match(text):
             raise RuleError("That isn't a domain, like example.com.")
     elif kind == RULE_AMOUNT:
-        number = _number(text.lstrip("$€£¥"))
+        number = _number(text.lstrip("$€£¥₹"))
         if number is None or number <= 0:
             raise RuleError("That isn't an amount, like 500.")
         # Plain digits: "{:g}" turns 1000000 into "1e+06", which _number can't read back.
@@ -403,7 +451,7 @@ def list_rules(scopes: list[str], *, db_path: Path | None = None) -> list[Rule]:
         try:
             marks = ",".join("?" * len(scopes))
             rows = conn.execute(
-                f"SELECT id, scope, kind, value, created_at FROM {RULES_TABLE} "  # noqa: S608
+                f"SELECT id, scope, kind, value, created_at, effect FROM {RULES_TABLE} "  # noqa: S608
                 f"WHERE scope IN ({marks}) ORDER BY id",
                 tuple(scopes),
             ).fetchall()
@@ -412,11 +460,18 @@ def list_rules(scopes: list[str], *, db_path: Path | None = None) -> list[Rule]:
     except Exception:
         logger.warning("take_the_lead: couldn't read the rules", exc_info=True)
         raise
-    return [Rule(id=r["id"], scope=r["scope"], kind=r["kind"], value=r["value"], created_at=r["created_at"])
+    return [Rule(id=r["id"], scope=r["scope"], kind=r["kind"], value=r["value"], created_at=r["created_at"],
+                 effect=EFFECT_GO if r["effect"] == EFFECT_GO else EFFECT_WAIT)
             for r in rows]
 
 
-def add_rule(scope: str, kind: str, value: str, *, created_by: str, db_path: Path | None = None) -> Rule:
+def add_rule(
+    scope: str, kind: str, value: str, *, created_by: str, effect: str = EFFECT_WAIT, db_path: Path | None = None,
+) -> Rule:
+    if effect not in RULE_EFFECTS:
+        raise RuleError("Pick whether it waits for you or goes on its own.")
+    if effect == EFFECT_GO and kind not in GOES_RULE_KINDS:
+        raise RuleError("A words rule can only wait for you.")
     text = clean_rule(kind, value)
     conn = _connect(db_path)
     try:
@@ -427,14 +482,15 @@ def add_rule(scope: str, kind: str, value: str, *, created_by: str, db_path: Pat
             raise RuleError(f"There are already {RULES_MAX} rules here.")
         now = datetime.now(UTC).isoformat()
         cur = conn.execute(
-            f"INSERT INTO {RULES_TABLE} (scope, kind, value, created_by, created_at) VALUES (?, ?, ?, ?, ?)",  # noqa: S608
-            (scope, kind, text, created_by, now),
+            f"INSERT INTO {RULES_TABLE} (scope, kind, value, created_by, created_at, effect) "  # noqa: S608
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (scope, kind, text, created_by, now, effect),
         )
         conn.commit()
         rule_id = int(cur.lastrowid or 0)
     finally:
         conn.close()
-    return Rule(id=rule_id, scope=scope, kind=kind, value=text, created_at=now)
+    return Rule(id=rule_id, scope=scope, kind=kind, value=text, created_at=now, effect=effect)
 
 
 def delete_rule(rule_id: int, scope: str, *, db_path: Path | None = None) -> bool:
@@ -652,8 +708,11 @@ def _mail_only_to_principal(tool: str, tool_input: dict[str, Any]) -> bool:
 
 
 def _rule_hit(rules: list[Rule], text: str, recipients: list[str]) -> Hit | None:
+    """The first Waits rule that ``text`` / ``recipients`` match."""
     lowered = text.lower()
     for rule in rules:
+        if rule.effect != EFFECT_WAIT:
+            continue
         value = rule.value
         if rule.kind == RULE_PERSON:
             if "@" in value and value in recipients:
@@ -671,6 +730,120 @@ def _rule_hit(rules: list[Rule], text: str, recipients: list[str]) -> Hit | None
             if any(a >= limit for a in amounts(text)):
                 return Hit("rule", f"your rule about amounts of {value} or more", rule.id)
     return None
+
+
+def rule_waits(rules: list[Rule], text: str, recipients: list[str]) -> Hit | None:
+    """Public name for the Waits-rule check, for what goes out as a person
+    (``delegation.handle_it``)."""
+    return _rule_hit(rules, text, recipients)
+
+
+def rule_goes(
+    rules: list[Rule], text: str, recipients: list[str], *, words_text: str | None = None,
+) -> Rule | None:
+    """The first Goes rule that matches, or None (see ``goes_rules``)."""
+    found = goes_rules(rules, text, recipients, words_text=words_text)
+    return found[0] if found else None
+
+
+def goes_rules(
+    rules: list[Rule], text: str, recipients: list[str], *, words_text: str | None = None,
+) -> list[Rule]:
+    """Every Goes rule that matches. Stricter than a Waits rule, since it
+    lets something go: a person or domain must be every recipient (and
+    there must be one), and an amount rule needs an amount in
+    ``words_text`` (what it would send; ``text`` when not given) and every
+    amount in ``text`` under its limit. Words rules only wait. What each
+    one lets go is ``goes_kinds``."""
+    own = text if words_text is None else words_text
+    found = amounts(text)
+    mine = amounts(own)
+    out: list[Rule] = []
+    for rule in rules:
+        if rule.effect != EFFECT_GO:
+            continue
+        value = rule.value
+        if rule.kind == RULE_PERSON:
+            theirs = {value} if "@" in value else _person_address(value)
+            if recipients and set(recipients) <= theirs:
+                out.append(rule)
+        elif rule.kind == RULE_DOMAIN:
+            if recipients and all(r.endswith("@" + value) for r in recipients):
+                out.append(rule)
+        elif rule.kind == RULE_AMOUNT:
+            limit = _number(value) or 0
+            if mine and all(a < limit for a in [*found, *mine]) and _all_parsed(text, found) and _all_parsed(own, mine):
+                out.append(rule)
+    return out
+
+
+# What a Goes rule lets go where Balanced would ask: a person or company
+# rule, anything only to them; an amount rule, the money. A delete or share
+# always waits.
+_GOES_KINDS: dict[str, frozenset[str]] = {
+    RULE_PERSON: frozenset(KINDS) - {DELETE_SHARE},
+    RULE_DOMAIN: frozenset(KINDS) - {DELETE_SHARE},
+    RULE_AMOUNT: frozenset({MONEY}),
+}
+
+
+def goes_kinds(rules: list[Rule]) -> frozenset[str]:
+    """The kinds ``rules`` (Goes rules that matched) let go together."""
+    out: frozenset[str] = frozenset()
+    for rule in rules:
+        out |= _GOES_KINDS.get(rule.kind, frozenset())
+    return out
+
+
+def _bare_money(text: str) -> bool:
+    """A bare number near a money word, with no currency sign before it."""
+    for m in _BARE_MONEY_RE.finditer(text):
+        first_digit = m.start() + re.search(r"\d", m.group(0)).start()  # type: ignore[union-attr]
+        if not re.search(r"[$€£¥₹]\s?$", text[:first_digit]):
+            return True
+    return False
+
+
+def _all_parsed(text: str, found: list[float]) -> bool:
+    """Whether ``amounts`` read every amount in ``text`` right: no
+    percentage, no spelled-out or unknown-scale amount, every number next to
+    money written plainly, and no currency sign it skipped. Fails closed."""
+    if _PERCENT_RE.search(text) or _SPELLED_MONEY_RE.search(text) or _bare_money(text):
+        return False
+    if len(_AMOUNT_SIGN_RE.findall(text)) > len(found):
+        return False
+    for m in _MONEY_NUMBER_RE.finditer(text):
+        if not _PLAIN_NUMBER_RE.fullmatch(m.group(1) or m.group(2)):
+            return False
+    for m in _SCALE_RE.finditer(text):
+        known = m.group(1).lower() in _MULTIPLIERS
+        if not (known and re.search(r"\d\s?$", text[: m.start()])):
+            return False
+    return True
+
+
+def _person_address(name: str) -> set[str]:
+    """The primary address of the one People entry named ``name`` (case
+    ignored), or empty when none or several are. Aliases don't count, since
+    a Goes rule lets things go. Never raises."""
+    try:
+        from openexecutive.people.store import list_people
+
+        wanted = name.strip().lower()
+        named = [p for p in list_people(include_contacts=True) if (p.full_name or "").strip().lower() == wanted]
+        address = (named[0].email or "").strip().lower() if len(named) == 1 else ""
+        return {address} if address else set()
+    except Exception:
+        return set()
+
+
+def rule_text(rule: Rule) -> str:
+    """A rule in the owner's words: "amounts under $500"."""
+    if rule.kind == RULE_AMOUNT:
+        return f"amounts under ${rule.value}" if rule.effect == EFFECT_GO else f"amounts of ${rule.value} or more"
+    if rule.kind == RULE_WORDS:
+        return f'anything with "{rule.value}"'
+    return f"anything with {rule.value}"
 
 
 def _mcp_deletes(tool: str, tool_input: dict[str, Any]) -> bool:
@@ -1587,10 +1760,11 @@ def _careful() -> bool:
         return True
 
 
-def _hit(name: str, tool_input: dict[str, Any], *, mcp: bool) -> tuple[Hit | None, Allowed | None]:
-    """Why this call waits (and for what it was allowed, when it runs under
-    an allowance): the owner's rules, then Careful, then In training, then
-    the level. Never raises: an error holds."""
+def _hit(name: str, tool_input: dict[str, Any], *, mcp: bool) -> tuple[Hit | None, Allowed | Rule | None]:
+    """Why this call waits (and what let it go, when an allowance or a Goes
+    rule did): the owner's Waits rules, then Careful, then In training, then
+    the level, where a Goes rule lets go what Balanced would hold. Never
+    raises: an error holds."""
     try:
         lead = get(SCOPE_EXECUTIVE)
         rules = list_rules([SCOPE_COMPANY])
@@ -1610,6 +1784,17 @@ def _hit(name: str, tool_input: dict[str, Any], *, mcp: bool) -> tuple[Hit | Non
             return None, found
         if _level_runs():
             return None, None
+        # A Goes rule lets go what it covers (goes_kinds) where Balanced
+        # would hold it; the rest still waits, a delete or share always.
+        # Only who it actually reaches counts for a person or company rule,
+        # never an address written in the body.
+        targets = sorted({a.lower() for a in addresses})
+        goes = goes_rules(rules, text, targets)
+        if goes:
+            released = goes_kinds(goes)
+            rest = Lead(scope=SCOPE_EXECUTIVE, ask_first={k: k not in released for k in KINDS})
+            held = check(name, tool_input, lead=rest, rules=[], mcp=mcp)
+            return (held, None) if held is not None else (None, goes[0])
         # Balanced: the six kinds wait, everything else goes.
         asks = Lead(scope=SCOPE_EXECUTIVE, ask_first=dict.fromkeys(KINDS, True))
         hit = check(name, tool_input, lead=asks, rules=[], mcp=mcp)
@@ -1635,7 +1820,7 @@ def _level_runs() -> bool:
 
 
 async def _gated(name: str, inner: _Handler, tool_input: dict[str, Any], *, source: str, mcp: bool) -> str:
-    allowed: Allowed | None = None
+    allowed: Allowed | Rule | None = None
     if (not mcp and _only_to_principal(name, tool_input)) or (mcp and _mail_only_to_principal(name, tool_input)):
         hit = None
     else:
@@ -1662,7 +1847,9 @@ async def _gated(name: str, inner: _Handler, tool_input: dict[str, Any], *, sour
     text = result if isinstance(result, str) else json.dumps(result) if isinstance(result, dict) else str(result)
     failed = result_failed(text)
     why = _SOURCE_WHY.get(source, "")
-    if allowed is not None:
+    if isinstance(allowed, Rule):
+        why = f"{why} Your rule: {rule_text(allowed)}.".strip()
+    elif allowed is not None:
         why = f"{why} You allowed this: {allowed.label}.".strip()
         if not failed:
             _used(allowed.id)

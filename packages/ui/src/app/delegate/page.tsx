@@ -29,8 +29,8 @@ import { PageSpinner } from "@/components/ui/Spinner";
 
 // Delegate: one page, three tabs. As you (Act as me): what it writes and
 // sends in your name, from your own mailbox, and how you write. As me (Take
-// the lead): what it does in its own name without being asked. Before
-// anything goes out: the one Approvals setting for both, and your rules. In
+// the lead): what it does in its own name without being asked. Approvals:
+// the one level for both, and your rules. In
 // training, on either side, holds everything for you first. Each tab shows
 // where it stands (Your inbox, On, Balanced), so all three read at a glance.
 // What it does for you sits beside the page (to the right on a wide screen,
@@ -39,7 +39,7 @@ import { PageSpinner } from "@/components/ui/Spinner";
 const TAB_NAME: Record<DelegateTab, string> = {
   [AS_YOU_ANCHOR]: "As you",
   [AS_ME_ANCHOR]: "As me",
-  [APPROVALS_ANCHOR]: "Before anything goes out",
+  [APPROVALS_ANCHOR]: "Approvals",
 };
 
 export default function DelegatePage() {

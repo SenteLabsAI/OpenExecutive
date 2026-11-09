@@ -796,3 +796,77 @@ def test_careful_holds_an_allowed_person_too(owner: Any, models: dict[str, Any],
     mailbox, result = _scan_one(owner)
     assert result.handled == 0 and mailbox.sent == []
     assert inbox.card_payload(_only_card(owner))["handle_it_reason"] == "level"
+
+
+# ── the owner's rules (Delegate → Approvals → Your rules) ─────────────────────
+
+
+def test_a_goes_rule_lets_a_small_amount_go_below_hands_off(switched_on: Any) -> None:
+    from openexecutive.orchestrator import take_the_lead as ttl
+
+    small = _reply(body="Sure, we can do it for $300.")
+    big = _reply(body="Sure, we can do it for $4,000.")
+    assert _check(switched_on, reply=small) == "amount"
+    ttl.add_rule(ttl.SCOPE_COMPANY, "amount", "500", created_by="t", effect=ttl.EFFECT_GO)
+    assert _check(switched_on, reply=small) is None
+    assert _check(switched_on, reply=big) == "amount"
+
+
+def test_a_goes_rule_never_lets_a_link_go(switched_on: Any) -> None:
+    from openexecutive.orchestrator import take_the_lead as ttl
+
+    ttl.add_rule(ttl.SCOPE_COMPANY, "domain", "northpeak.example", created_by="t", effect=ttl.EFFECT_GO)
+    assert _check(switched_on, reply=_reply(body="Here's the invoice.")) is None
+    assert _check(switched_on, reply=_reply(body="The agenda is at https://docs.example.com/a.")) == "link"
+
+
+def test_a_words_rule_can_only_wait(switched_on: Any) -> None:
+    """Words in an email can be echoed into the reply, so a words rule never
+    lets one go."""
+    from openexecutive.orchestrator import take_the_lead as ttl
+
+    with pytest.raises(ttl.RuleError):
+        ttl.add_rule(ttl.SCOPE_COMPANY, "words", "board deck", created_by="t", effect=ttl.EFFECT_GO)
+    board = _msg("m1", "t1", text="Can you send the board deck before Thursday?")
+    assert _check(switched_on, message=board, reply=_reply(body="Sure, the board deck is on its way.")) == "sensitive"
+
+
+def test_a_goes_amount_rule_needs_the_amount_in_the_reply(switched_on: Any) -> None:
+    from openexecutive.orchestrator import take_the_lead as ttl
+
+    ttl.add_rule(ttl.SCOPE_COMPANY, "amount", "500", created_by="t", effect=ttl.EFFECT_GO)
+    bait = _msg("m1", "t1", text="Please wire the funds, contract attached. P.S. ref $1")
+    assert _check(switched_on, message=bait, reply=_reply(body="Done.")) == "sensitive"
+    assert _check(switched_on, message=bait, reply=_reply(body="Sent the $1.")) == "sensitive"  # contract
+    fee = _msg("m1", "t1", text="Can we pay the $300 fee by wire?")
+    assert _check(switched_on, message=fee, reply=_reply(body="Yes, $300 by wire is fine.")) is None
+    big = _msg("m1", "t1", text="Can we pay $3,000 by wire?")
+    assert _check(switched_on, message=big, reply=_reply(body="Yes, $300 now.")) == "sensitive"
+
+
+def test_a_waits_rule_holds_a_reply_on_every_level(switched_on: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import take_the_lead as ttl
+
+    ttl.add_rule(ttl.SCOPE_COMPANY, "words", "Thursday", created_by="t")
+    ttl.add_rule(ttl.SCOPE_COMPANY, "domain", "northpeak.example", created_by="t", effect=ttl.EFFECT_GO)
+    assert _check(switched_on) == "rule"
+    _hands_off(monkeypatch)
+    assert _check(switched_on) == "rule"
+
+
+def test_a_goes_rule_doesnt_get_past_careful(switched_on: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import take_the_lead as ttl
+
+    ttl.add_rule(ttl.SCOPE_COMPANY, "domain", "northpeak.example", created_by="t", effect=ttl.EFFECT_GO)
+    _careful(monkeypatch)
+    assert _check(switched_on) == "level"
+
+
+def test_unreadable_rules_hold(switched_on: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import take_the_lead as ttl
+
+    def broken(*_a: Any, **_k: Any) -> Any:
+        raise sqlite3.OperationalError("locked")
+
+    monkeypatch.setattr(ttl, "list_rules", broken)
+    assert _check(switched_on) == "rule"

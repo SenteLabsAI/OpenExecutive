@@ -441,3 +441,46 @@ def test_allow_needs_in_training_and_an_accept(
                        headers={"x-caller-email": OWNER})
     assert resp.status_code == 422 and resp.json()["detail"]["code"] == "cant_allow"
     assert mailbox.answers == []
+
+
+# ── the owner's rules reach invites too ──────────────────────────────────────
+
+
+def test_a_waits_rule_holds_an_invite_even_on_hands_off(
+    person: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.orchestrator import take_the_lead as ttl
+
+    _on(person, monkeypatch, level="trust")
+    ttl.add_rule(ttl.SCOPE_COMPANY, "words", "pilot", created_by="t")
+    mailbox = _mailbox()
+    assert _scan(person, mailbox).handled == 0 and mailbox.answers == []
+    (card,) = invites.cards(person)
+    assert card.waited_because == handle_it.REASONS["rule"]
+
+
+def test_a_goes_company_rule_lets_a_sensitive_title_go(person: Any, models: dict[str, Any]) -> None:
+    from openexecutive.orchestrator import take_the_lead as ttl
+
+    _on(person)
+    wire = _mailbox(event=_event(title="Wire approval"))
+    assert _scan(person, wire).handled == 0
+    (card,) = invites.cards(person)
+    assert card.waited_because == handle_it.REASONS["sensitive"]
+    ttl.add_rule(ttl.SCOPE_COMPANY, "domain", DANA.split("@")[1], created_by="t", effect=ttl.EFFECT_GO)
+    again = _mailbox(_invite("i2", "ti2"), event=_event("ev2", title="Wire approval"))
+    assert _scan(person, again).handled == 1 and again.answers == [("ev2", True)]
+
+
+def test_unreadable_rules_hold_an_invite(person: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import take_the_lead as ttl
+
+    def broken(*_a: Any, **_k: Any) -> Any:
+        raise sqlite3.OperationalError("locked")
+
+    _on(person, monkeypatch, level="trust")
+    monkeypatch.setattr(ttl, "list_rules", broken)
+    mailbox = _mailbox()
+    assert _scan(person, mailbox).handled == 0 and mailbox.answers == []
+    (card,) = invites.cards(person)
+    assert card.waited_because == handle_it.REASONS["rule"]

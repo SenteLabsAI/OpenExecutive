@@ -1,12 +1,13 @@
 """Take the lead (orchestrator.take_the_lead): In training and the rules on
-Delegate → As me and Before anything goes out. What it did shows in Recent activity
+Delegate → As me and Approvals. What it did shows in Recent activity
 (``today._build_activity``), with each person's own As you rows.
 
   GET    /take-the-lead              — the As the Executive switch, its Ask
                                        first switches and the company's rules
                                        (the principal's alone)
   PUT    /take-the-lead              — {enabled?, training?, ask_first?}
-  POST   /take-the-lead/rules        — {kind, value}: a company rule
+  POST   /take-the-lead/rules        — {kind, value, effect?}: a company rule,
+                                       "wait" (default) or "go"
   DELETE /take-the-lead/rules/{id}
   POST   /take-the-lead/learned      — {key}: allow a suggested action
   DELETE /take-the-lead/learned/{id} — ask first again for an allowed one
@@ -47,6 +48,9 @@ class RuleOut(BaseModel):
     id: int
     kind: str
     value: str
+    # "wait": always waits for the owner; "go": goes on its own where the
+    # level would hold it (never past Careful or In training).
+    effect: str
 
 
 class LearnedOut(BaseModel):
@@ -100,6 +104,7 @@ class RuleIn(BaseModel):
 
     kind: str
     value: str
+    effect: str = "wait"
 
 
 def _principal(request: Request) -> Any:
@@ -167,7 +172,7 @@ def _out(principal: Any) -> LeadOut:
             )
             for k in take_the_lead.KINDS
         ],
-        rules=[RuleOut(id=r.id, kind=r.kind, value=r.value) for r in rules],
+        rules=[RuleOut(id=r.id, kind=r.kind, value=r.value, effect=r.effect) for r in rules],
         learned=[
             LearnedOut(id=a.id, label=a.label, feature=a.feature, example=_example(a.example), uses=a.uses, created_at=a.created_at)
             for a in learned
@@ -237,13 +242,24 @@ def add_company_rule(request: Request, body: RuleIn) -> LeadOut:
     from openexecutive.orchestrator import take_the_lead
 
     principal = _principal(request)
+    # A Goes rule lets more go on its own, so, like removing a rule, it
+    # needs a request tied to the owner.
+    if body.effect == take_the_lead.EFFECT_GO and not _provably_theirs(request, principal):
+        raise HTTPException(
+            status_code=409,
+            detail="This needs signed sign-ins on this server, so that nobody else can change it for you.",
+        )
     try:
         rule = take_the_lead.add_rule(
             take_the_lead.SCOPE_COMPANY, body.kind, body.value, created_by=f"person:{principal.id}",
+            effect=body.effect,
         )
     except take_the_lead.RuleError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
-    _audit("Added a Take the lead rule", {"scope": "company", "kind": rule.kind, "value": rule.value})
+    _audit(
+        "Added a Take the lead rule",
+        {"scope": "company", "kind": rule.kind, "value": rule.value, "effect": rule.effect},
+    )
     return _out(principal)
 
 
