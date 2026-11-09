@@ -51,7 +51,7 @@ export default function DelegatePage() {
   const [sheet, setSheet] = useState(false);
   const closeSheet = useCallback(() => setSheet(false), []);
   const [tab, pickTab] = useDelegateTab();
-  const { status } = useExecutiveStatus();
+  const { status, unknown } = useExecutiveStatus();
 
   useEffect(() => {
     const controller = new AbortController();
@@ -98,7 +98,9 @@ export default function DelegatePage() {
             onPick={pickTab}
             badges={{
               [AS_YOU_ANCHOR]: settings ? { text: REACH_LABEL[reachOf(settings)] } : null,
-              [AS_ME_ANCHOR]: status && !status.paused ? { text: "On", dot: true } : status ? { text: "Paused" } : null,
+              // No badge while the last status read failed, rather than a stale one.
+              [AS_ME_ANCHOR]:
+                !status || unknown ? null : status.paused ? { text: "Paused" } : { text: "On", dot: true },
               [APPROVALS_ANCHOR]: level ? { text: approvalsTitle(level) } : null,
             }}
           />
