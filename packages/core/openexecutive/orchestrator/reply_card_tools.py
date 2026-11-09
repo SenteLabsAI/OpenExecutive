@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -76,7 +76,7 @@ def _made_since(created_at: str, since: datetime | None) -> bool:
         return False
     if made.tzinfo is None:
         made = made.replace(tzinfo=UTC)
-    return made >= since - timedelta(seconds=5)
+    return made >= since
 
 
 async def _artifact_files(ids: list[str], since: datetime | None) -> list[tuple[str, str, bytes]] | str:
