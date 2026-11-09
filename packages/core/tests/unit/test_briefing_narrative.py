@@ -77,9 +77,10 @@ def test_standalone_dm_prompt_enumerates_actionables() -> None:
     assert "cards BELOW" not in STANDALONE_BRIEF_SYSTEM
 
 
-def test_standalone_dm_prompt_carries_older_items_as_one_line() -> None:
+def test_standalone_dm_prompt_names_each_older_item() -> None:
     lowered = STANDALONE_BRIEF_SYSTEM.lower()
-    assert "never re-list carried items" in lowered
+    assert "still open from before" in lowered
+    assert "never a count of items without naming them" in lowered
     assert "Handled overnight" in STANDALONE_BRIEF_SYSTEM
     assert "Top call" in STANDALONE_BRIEF_SYSTEM
     assert "delta" in lowered

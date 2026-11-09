@@ -34,7 +34,7 @@ def test_render_context_without_since_is_the_legacy_single_list() -> None:
     assert "PROPOSALS AWAITING DECISION:" in text
     assert "- item 1" in text and "- item 2" in text and "- item 3" in text
     assert "NEW SINCE LAST BRIEF" not in text
-    assert "CARRIED OVER" not in text
+    assert "STILL OPEN FROM BEFORE" not in text
     assert "HANDLED OVERNIGHT" not in text
 
 
@@ -46,8 +46,11 @@ def test_render_context_splits_new_vs_carried_and_lists_handled() -> None:
     )
     assert "NEEDS YOU — NEW SINCE LAST BRIEF:" in text
     assert "- item 1 (why now: SLA ends today) [next move: nudge]" in text
-    assert "- item 2" not in text and "- item 3" not in text
-    assert "CARRIED OVER: 2 older item(s) still open (oldest 3d, 1 flagged likely stale) — on Home" in text
+    # Older items are each named, never only counted.
+    assert "STILL OPEN FROM BEFORE" in text
+    assert "- item 2 (open 2d, likely stale)" in text
+    assert "- item 3 (open 3d)" in text
+    assert "older item(s)" not in text
     assert "HANDLED OVERNIGHT BY THE EXECUTIVE" in text
     assert "routed: Routed 'Acme renewal' to Dana" in text
     assert "PROPOSALS AWAITING DECISION:" not in text
@@ -61,7 +64,7 @@ def test_render_context_with_since_and_nothing_new_still_reports_carried() -> No
     today = {"departments": [], "proposals": [_proposal(7, hours_ago=50)], "people": []}
     text = render_briefing_context(period_label="p", today_data=today, activity=[], since=since)
     assert "NEW SINCE LAST BRIEF" not in text
-    assert "CARRIED OVER: 1 older item(s) still open (oldest 2d) — on Home" in text
+    assert "- item 7 (open 2d)" in text
 
 
 def test_eod_context_splits_and_lists_handled() -> None:
@@ -75,10 +78,10 @@ def test_eod_context_splits_and_lists_handled() -> None:
     assert "WHAT OE DID TODAY" in text
     assert "ALERTS I HANDLED TODAY" in text and "closed: Resolved 'Stripe incident'" in text
     assert "STILL AWAITING DECISION — NEW SINCE LAST BRIEF:" in text
-    assert "- item 1" in text and "- item 3" not in text
-    assert "CARRIED OVER: 2 older item(s)" in text
+    assert "- item 1" in text
+    assert "STILL OPEN FROM BEFORE" in text and "- item 3 (open 3d)" in text
     legacy = _render_eod_context(period_label="p", today_data=_today(), activity=[])
-    assert "STILL AWAITING DECISION:" in legacy and "CARRIED OVER" not in legacy
+    assert "STILL AWAITING DECISION:" in legacy and "STILL OPEN FROM BEFORE" not in legacy
 
 
 def test_render_context_mentions_pending_watch_suggestions_once() -> None:
@@ -111,8 +114,8 @@ def test_render_context_lists_rewritten_open_items_separately_from_handled() -> 
     # Listed exactly once, under REWRITTEN — not re-listed as new or carried.
     assert text.count("item 4") == 1
     assert text.index("REWRITTEN BY THE EXECUTIVE") < text.index("HANDLED OVERNIGHT BY THE EXECUTIVE")
-    # Rewritten items are still carried-over for the count.
-    assert "CARRIED OVER: 3 older item(s)" in text
+    # The other older items are still named.
+    assert "- item 2 (open 2d, likely stale)" in text and "- item 3 (open 3d)" in text
 
 
 def test_eod_context_lists_rewritten_open_items() -> None:
@@ -146,3 +149,68 @@ def test_activity_label_claims_a_delta_only_when_bounded() -> None:
     assert "OE ACTIVITY SINCE LAST BRIEF" not in unbounded
     assert "RECENT OE ACTIVITY" in unbounded
     assert "NOT a delta" in unbounded
+
+
+def test_older_items_carry_what_they_need_and_their_link(monkeypatch) -> None:
+    from openexecutive.alerts import card_refs
+
+    monkeypatch.setattr(card_refs, "_base", lambda: "https://app.example.com")
+    since = datetime.now(UTC) - timedelta(hours=24)
+    today = {"departments": [], "people": [], "proposals": [
+        _proposal(4, hours_ago=80, suggested_action="Reply with your answer."),
+    ]}
+    for text in (
+        render_briefing_context(period_label="p", today_data=today, activity=[], since=since),
+        _render_eod_context(period_label="p", today_data=today, activity=[], since=since),
+    ):
+        assert (
+            "- item 4 — needs: Reply with your answer. (open 3d) — link: "
+            "https://app.example.com/?card=4"
+        ) in text
+
+
+def test_older_items_past_the_limit_end_with_one_more_line() -> None:
+    from openexecutive.briefing.brief_state import CARRIED_LIMIT, carried_lines
+
+    items = [_proposal(i, hours_ago=50) for i in range(CARRIED_LIMIT + 2)]
+    lines = carried_lines(items, datetime.now(UTC))
+    assert len(lines) == CARRIED_LIMIT + 1
+    assert lines[-1] == "- (and 2 more on Home)"
+
+
+def test_eod_context_names_what_the_research_found_and_the_work_done(monkeypatch) -> None:
+    from openexecutive.alerts import card_refs
+
+    monkeypatch.setattr(card_refs, "_base", lambda: "https://app.example.com")
+    text = _render_eod_context(
+        period_label="p", today_data={"departments": [], "people": [], "proposals": []},
+        activity=[{
+            "kind": "workflow_done", "summary": "Researched your market",
+            "detail": "Looked at 7 updates. Sent 1 message.", "artifact_id": "run:r1",
+            "at": "2026-11-07T19:30:00+00:00",
+        }],
+        found=["- Harbor Supply is closing — dealers need a new wholesaler"],
+    )
+    assert "WHAT THE RESEARCH FOUND" in text
+    assert "- Harbor Supply is closing — dealers need a new wholesaler" in text
+    assert (
+        "Researched your market — Looked at 7 updates. Sent 1 message. — link: "
+        "https://app.example.com/artifacts/run%3Ar1"
+    ) in text
+
+
+def test_older_open_items_alone_are_no_news_for_the_digest() -> None:
+    from openexecutive.workflows.end_of_day_digest import _has_news
+
+    since = datetime.now(UTC) - timedelta(hours=24)
+    old_only = {"proposals": [_proposal(2, hours_ago=60), _proposal(3, hours_ago=90)]}
+    quiet = dict(
+        since=since, activity=[], handled=[], conversation=[], live_lines=[],
+        owner_notes="", found=[],
+    )
+    assert _has_news(today_data=old_only, **quiet) is False
+    assert _has_news(today_data=_today(), **quiet) is True  # item 1 is new
+    assert _has_news(
+        today_data=old_only, **{**quiet, "activity": [{"kind": "workflow_done"}]},
+    ) is True
+    assert _has_news(today_data=old_only, **{**quiet, "found": ["- a finding"]}) is True

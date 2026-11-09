@@ -370,6 +370,49 @@ def rewritten_lines(
     ]
 
 
+# The most older open items a brief names one by one. Past it, the rest are
+# one closing "and N more on Home" line.
+CARRIED_LIMIT = 8
+
+
+def card_link(p: dict[str, Any]) -> str:
+    """`` — link: <address>`` for a proposal's card on Home, or "" when the
+    app has no web address set (the brief then names it without a link)."""
+    from openexecutive.alerts.card_refs import card_url
+
+    alert_id = p.get("alert_id")
+    url = card_url(alert_id) if isinstance(alert_id, int) else ""
+    return f" — link: {url}" if url else ""
+
+
+def carried_lines(
+    carried: list[dict[str, Any]], now: datetime, limit: int = CARRIED_LIMIT
+) -> list[str]:
+    """The briefs' STILL OPEN FROM BEFORE block: one line per older open
+    proposal, ``- <headline> — needs: <suggested action> (open Nd) — link:
+    <card on Home>``, then ``(and N more on Home)`` past ``limit``. A count
+    alone ("6 older items are still open") told the reader nothing, so each
+    item is named. Shared by the morning brief and the end-of-day digest."""
+    lines: list[str] = []
+    for p in carried[:limit]:
+        created = parse_aware(p.get("created_at"))
+        days = max(0, (now - created).days) if created is not None else 0
+        line = f"- {str(p.get('headline', ''))[:140]}"
+        action = " ".join(str(p.get("suggested_action") or "").split())
+        if action:
+            line += f" — needs: {action[:110]}"
+        line += f" (open {days}d"
+        if p.get("review_verdict") == "likely_stale":
+            line += ", likely stale"
+        lines.append(line + ")" + card_link(p))
+    rest = len(carried) - limit
+    if rest > 0:
+        from openexecutive.alerts.card_refs import on_home_note
+
+        lines.append(f"- (and {rest} more {on_home_note()})")
+    return lines
+
+
 def handled_since(
     since: datetime, limit: int = 20, *, include_private: bool = False
 ) -> list[dict[str, Any]]:

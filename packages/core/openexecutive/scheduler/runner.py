@@ -2678,6 +2678,7 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
         artifact = ""
         fingerprint: str | None = None
         suppressed = False
+        quiet = False
         private_to_principal = False
         # This run goes to the principal alone, so the brief may read what is
         # private to them (morning_brief.PRINCIPAL_DELIVERY).
@@ -2694,6 +2695,7 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
                 elif event.type == "result" and event.data and event.data.get("brief_fingerprint"):
                     fingerprint = str(event.data["brief_fingerprint"])
                     suppressed = bool(event.data.get("suppressed"))
+                    quiet = bool(event.data.get("quiet"))
                     private_to_principal = bool(event.data.get("private_to_principal"))
                 elif event.type == "error" and event.message:
                     raise RuntimeError(event.message)
@@ -2705,14 +2707,34 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
             or "(no artifact)",
         )
 
-        if not artifact:
+        held_text: str = ""
+        quiet_held: list[int] = []
+        if quiet and not artifact:
+            # Nothing new today (the end-of-day digest): no message, unless
+            # the principal asked to get messages in it, which then go alone.
+            held_text, quiet_held = _with_held_messages(kind, "")
+        if quiet and not artifact and not quiet_held:
+            # No outcome recorded: the last one stays, and so does the
+            # "since last brief" window, so the next digest covers this day.
+            recorded = True
+            logger.info("scheduler: %s skipped — nothing new", kind)
+            audit_log(
+                "scheduled_action",
+                f"{kind} skipped — nothing new",
+                actor="scheduler",
+                details={"phase": "skipped_quiet", "kind": kind},
+            )
+        elif not artifact and not quiet_held:
             brief_state.record_delivery_outcome(kind, reason="not_written", channel=None)
             recorded = True
         else:
             sending = True
             # Messages the principal asked to get in their brief ride along
             # as one "While you were away" block (people.held_messages).
-            delivered_text, held_ids = _with_held_messages(kind, artifact)
+            delivered_text, held_ids = (
+                (held_text.strip(), quiet_held) if quiet_held
+                else _with_held_messages(kind, artifact)
+            )
             try:
                 delivery = await _deliver_to_principal(delivered_text, label=workflow.title)
             except BaseException:

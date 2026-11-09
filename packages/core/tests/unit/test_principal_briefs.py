@@ -322,6 +322,64 @@ def test_a_brief_that_couldnt_be_written_is_recorded(
     assert outcome is not None and outcome.reason == "not_written"
 
 
+def _quiet_brief_workflow():  # type: ignore[no-untyped-def]
+    from openexecutive.workflows.base import WorkflowEvent
+    from openexecutive.workflows.morning_brief import MorningBriefInput, MorningBriefWorkflow
+
+    class _Quiet(MorningBriefWorkflow):
+        async def run(self, inputs, store):  # type: ignore[override]
+            yield WorkflowEvent(
+                type="result",
+                data={"brief_fingerprint": "fp-q", "suppressed": False, "quiet": True},
+            )
+            yield WorkflowEvent(type="done")
+
+        def input_model(self):  # type: ignore[override]
+            return MorningBriefInput
+
+    return _Quiet()
+
+
+def test_a_quiet_day_sends_nothing_and_keeps_the_last_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.briefing import brief_state
+
+    sends: list[str] = []
+
+    async def _deliver(text: str, **_kw: object) -> runner.PrincipalDelivery:
+        sends.append(text)
+        return runner.PrincipalDelivery(True, "email → x", "delivered", "email")
+
+    monkeypatch.setattr(runner, "_with_held_messages", lambda kind, artifact: (artifact, []))
+    _run_brief(tmp_path, monkeypatch, workflow=_quiet_brief_workflow(), deliver=_deliver)
+    assert sends == []
+    # Not "couldn't be written": no notice, and the window stays where it was.
+    assert brief_state.last_delivery_outcome() is None
+    assert brief_state.last_delivered("principal_brief_morning") is None
+
+
+def test_a_quiet_day_still_sends_messages_held_for_the_brief(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sends: list[str] = []
+
+    async def _deliver(text: str, **_kw: object) -> runner.PrincipalDelivery:
+        sends.append(text)
+        return runner.PrincipalDelivery(True, "email → x", "delivered", "email")
+
+    async def _sent(ids: list[int]) -> None:
+        sends.append(f"marked {ids}")
+
+    monkeypatch.setattr(
+        runner, "_with_held_messages",
+        lambda kind, artifact: (f"{artifact}\n\n**While you were away**\n- Dana: hi", [5]),
+    )
+    monkeypatch.setattr(runner, "_mark_held_sent", _sent)
+    _run_brief(tmp_path, monkeypatch, workflow=_quiet_brief_workflow(), deliver=_deliver)
+    assert sends == ["**While you were away**\n- Dana: hi", "marked [5]"]
+
+
 def test_a_send_that_crashes_is_recorded_as_failed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -556,6 +614,7 @@ def test_the_email_subject_carries_the_users_date(monkeypatch: pytest.MonkeyPatc
     # 02:00 UTC on Saturday is still Friday evening in California.
     evening = datetime(2026, 9, 26, 2, 0, tzinfo=UTC)
     assert runner._email_subject("End-of-Day Digest", evening) == "End-of-Day Digest — Fri 25 Sep"
+
 
 
 def test_email_without_a_gateway_is_not_delivered(sent: _Sent) -> None:

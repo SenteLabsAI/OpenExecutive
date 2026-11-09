@@ -34,10 +34,11 @@ LinkFormat = Literal["markdown", "slack", "plain"]
 
 # "card 220", "Card #220", "the card 220", "alert no. 220", "cards 220 and 221",
 # "alert_id=220". The word must come right before the number, so "/cards/220"
-# (a link) and "card ending 4242" are left alone.
+# (a link) and "card ending 4242" are left alone, and so is a link's own
+# "?card=220" (``card_url``, which the briefs now write themselves).
 _MENTION = re.compile(
     r"(?P<the>\b(?:the|that)\s+)?"
-    r"(?P<word>\b(?:card|alert)(?P<plural>s)?(?:\s*_?id)?)"
+    r"(?P<word>(?<![?&/])\b(?:card|alert)(?P<plural>s)?(?:\s*_?id)?)"
     r"(?:\s*[=:]\s*|\s*#\s*|\s+no\.\s*|\s+number\s+|\s+)"
     r"(?P<ids>#?\d{1,9}(?:(?:\s*,\s*|\s+and\s+|\s+or\s+|\s*&\s*)#?\d{1,9})*)\b"
     # "an alert 30 minutes before", "card 2 of 5": a count, not a card.
@@ -96,6 +97,17 @@ def home_url() -> str:
     """Home's address, or "" when the app has no web address set."""
     base = _base()
     return f"{base}/" if base else ""
+
+
+def write_up_url(artifact_id: str) -> str:
+    """The address of a run's write-up (``run_outcome.write_up_id``), or ""
+    when the app has no web address set."""
+    from urllib.parse import quote
+
+    base = _base()
+    if not base or not artifact_id:
+        return ""
+    return f"{base}/artifacts/{quote(artifact_id, safe='')}"
 
 
 def _label(headline: str) -> str:

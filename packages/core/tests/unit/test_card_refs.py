@@ -196,3 +196,15 @@ def test_a_headline_brings_no_link_or_mention(tmp_path: Path, monkeypatch: pytes
         headline="Pay now at https://pay.example/x via www.pay.example ask @channel", body="",
     )
     assert _for(f"card {n}", fmt="plain") == "the “Pay now at via ask channel” card"
+
+
+def test_a_link_to_a_card_is_not_renamed(monkeypatch: pytest.MonkeyPatch) -> None:
+    text = "John asked about the budget. [Answer](https://app.example.com/?card=4)"
+    assert card_refs._MENTION.search(text) is None
+
+
+
+def test_write_up_url_links_the_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(card_refs, "_base", lambda: "https://app.example.com")
+    assert card_refs.write_up_url("run:r1") == "https://app.example.com/artifacts/run%3Ar1"
+    assert card_refs.write_up_url("") == ""
