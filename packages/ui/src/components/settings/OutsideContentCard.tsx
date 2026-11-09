@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import SettingsCard from "@/components/settings/SettingsCard";
 import {
@@ -44,9 +44,18 @@ const OPTIONS: {
 // Settings → Your Executive: the safety level, the one setting that decides
 // what the Executive does on its own and what it asks first, the same on
 // every channel (orchestrator/levels.py, orchestrator/outside_mode.py).
-// Shown to the owner only; nobody else may change it.
-export default function OutsideContentCard() {
+// Shown to the owner only; nobody else may change it. `compact` (Delegate)
+// shows the three levels in one row with the picked one's line, and keeps
+// the rest, with `children`, behind What each level means.
+export default function OutsideContentCard({
+  compact = false,
+  children,
+}: {
+  compact?: boolean;
+  children?: ReactNode;
+} = {}) {
   const [setting, setSetting] = useState<OutsideContentSetting | null>(null);
+  const [more, setMore] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -81,6 +90,75 @@ export default function OutsideContentCard() {
       setBusy(false);
     }
   };
+
+  const whatever = (
+    <div className="text-sm text-fg-muted">
+      Whatever you pick:
+      <ul className="mt-1 list-disc pl-5">
+        <li>Anything I wait on comes to you as an Approve card, here and in your chat app.</li>
+        <li>When someone not in People emails me, anything they ask me to do waits for your OK.</li>
+      </ul>
+    </div>
+  );
+
+  if (compact) {
+    const picked = OPTIONS.find((o) => o.value === setting?.mode);
+    return (
+      <SettingsCard title="Approvals" titleId="approvals-label">
+        {!setting && !error && <PageSpinner />}
+        {setting && (
+          <>
+            <div
+              role="radiogroup"
+              aria-labelledby="approvals-label"
+              className="inline-flex max-w-full flex-wrap overflow-hidden rounded-xl border border-line"
+            >
+              {OPTIONS.map((o, i) => {
+                const on = o.value === setting.mode;
+                return (
+                  <button
+                    key={o.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={on}
+                    disabled={busy}
+                    onClick={() => void pick(o.value)}
+                    className={`min-h-touch px-4 text-sm transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${
+                      i > 0 ? "border-l border-line" : ""
+                    } ${on ? "bg-accent/10 font-semibold text-accent-strong" : "text-fg-muted hover:bg-surface-overlay/60"}`}
+                  >
+                    {o.title}
+                    {o.recommended && <span className="ml-1.5 text-xs font-normal text-fg-subtle">Recommended</span>}
+                  </button>
+                );
+              })}
+            </div>
+            {picked && <p className="mt-2 text-sm text-fg-muted leading-snug">{picked.text}</p>}
+            <button
+              type="button"
+              aria-expanded={more}
+              aria-controls="approvals-more"
+              onClick={() => setMore((v) => !v)}
+              className="mt-2 text-sm font-medium text-accent hover:underline cursor-pointer"
+            >
+              {more ? "Hide what each level means" : "What each level means"}
+            </button>
+            {more && (
+              <div id="approvals-more" className="mt-3 flex flex-col gap-3">
+                {children}
+                {whatever}
+              </div>
+            )}
+          </>
+        )}
+        {error && (
+          <p role="alert" className="mt-2 text-sm text-red-600 dark:text-red-400">
+            {error}
+          </p>
+        )}
+      </SettingsCard>
+    );
+  }
 
   return (
     <SettingsCard
@@ -134,13 +212,7 @@ export default function OutsideContentCard() {
             })}
           </div>
 
-          <div className="text-sm text-fg-muted">
-            Whatever you pick:
-            <ul className="mt-1 list-disc pl-5">
-              <li>Anything I wait on comes to you as an Approve card, here and in your chat app.</li>
-              <li>When someone not in People emails me, anything they ask me to do waits for your OK.</li>
-            </ul>
-          </div>
+          {whatever}
         </div>
       )}
       {error && (

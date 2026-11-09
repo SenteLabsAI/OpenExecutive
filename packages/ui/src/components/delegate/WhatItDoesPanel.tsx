@@ -6,47 +6,48 @@ import Icon from "@/components/Icon";
 import WhatItDoes from "@/components/delegate/WhatItDoes";
 import WhoSendsCard from "@/components/delegate/WhoSendsCard";
 
-// What it does for you, beside the Delegate page. On a wide screen it sits
-// to the right of the settings, so a change shows there as it's saved;
-// closing it is remembered in this browser. On a narrow one it opens as a
-// sheet from the bottom. "Compare" holds Who writes and who sends.
+// What it does for you, beside the Delegate page. On a wide screen it opens
+// to the right of the settings, so a change shows there as it's saved; it
+// starts closed, so As you and As me sit side by side, and opening it is
+// remembered in this browser. On a narrow one it opens as a sheet from the
+// bottom. "Compare" holds Who writes and who sends.
 
-const CLOSED_KEY = "oe.whatItDoes.closed";
+const OPEN_KEY = "oe.whatItDoes.open";
 
-// Closed, kept in this browser. Read through useSyncExternalStore so the
-// server render (open) and the first client render agree.
+// Open, kept in this browser. Read through useSyncExternalStore so the
+// server render (closed) and the first client render agree.
 const listeners = new Set<() => void>();
-let sessionClosed = false;
+let sessionOpen = false;
 
-function readClosed(): boolean {
+function readOpen(): boolean {
   try {
-    return window.localStorage.getItem(CLOSED_KEY) === "1";
+    return window.localStorage.getItem(OPEN_KEY) === "1";
   } catch {
-    return sessionClosed;
+    return sessionOpen;
   }
 }
 
-function writeClosed(closed: boolean): void {
+function writeOpen(open: boolean): void {
   try {
-    if (closed) window.localStorage.setItem(CLOSED_KEY, "1");
-    else window.localStorage.removeItem(CLOSED_KEY);
+    if (open) window.localStorage.setItem(OPEN_KEY, "1");
+    else window.localStorage.removeItem(OPEN_KEY);
   } catch {
     /* storage unavailable: lasts until the page reloads */
   }
-  sessionClosed = closed;
+  sessionOpen = open;
   listeners.forEach((fn) => fn());
 }
 
 export function useWhatItDoesOpen(): [boolean, (open: boolean) => void] {
-  const closed = useSyncExternalStore(
+  const open = useSyncExternalStore(
     (fn) => {
       listeners.add(fn);
       return () => listeners.delete(fn);
     },
-    readClosed,
+    readOpen,
     () => false,
   );
-  return [!closed, (open: boolean) => writeClosed(!open)];
+  return [open, writeOpen];
 }
 
 // Wide enough for the column (Tailwind's lg). Only one of the column and the

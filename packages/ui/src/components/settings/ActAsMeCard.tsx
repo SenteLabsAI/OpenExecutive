@@ -173,8 +173,11 @@ export default function ActAsMeCard({
         {!connected && (
           <div className="space-y-3">
             {settings.gmail.status === "not_configured" && (
-              <div>
-                <p className="text-sm text-fg-muted leading-relaxed">
+              <details className="group">
+                <summary className="cursor-pointer text-sm font-medium text-accent hover:underline">
+                  How to connect it
+                </summary>
+                <p className="mt-2 text-sm text-fg-muted leading-relaxed">
                   For Gmail, on a computer with a browser, with the Executive&apos;s Google OAuth
                   client exported, run this and sign in as yourself, then put the file it writes
                   where the API reads it (see the Act as me section of .env.example):
@@ -189,7 +192,7 @@ export default function ActAsMeCard({
                     <pre className={pre}>{settings.gmail.outlook_connect_command}</pre>
                   </>
                 )}
-              </div>
+              </details>
             )}
             <Button variant="primary" onClick={() => void recheck()} disabled={busy}>
               {busy ? "Checking…" : "Check again"}

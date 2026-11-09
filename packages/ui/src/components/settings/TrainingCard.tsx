@@ -60,7 +60,7 @@ export function LearnedCard({
     <SettingsCard
       title="What it's learned as you"
       titleId={titleId}
-      description="Who it may send to on its own, and how you write to each person. Yours alone. Remove one and it asks again."
+      description="Who it may send to on its own, and how you write to each person. Remove one and it asks again."
     >
       {learned.length === 0 ? (
         <p className="text-sm text-fg-muted">Nothing yet. Tick “on its own next time” or “Do it like this next time” on a card.</p>
