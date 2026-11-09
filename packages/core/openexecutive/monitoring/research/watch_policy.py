@@ -64,7 +64,6 @@ from openexecutive.monitoring.models import (
 )
 from openexecutive.monitoring.research.models import ResearchFinding
 from openexecutive.monitoring.sources._http import validate_target_url
-from openexecutive.monitoring.sources.base import collapse_whitespace
 from openexecutive.monitoring.target_validation import page_watch_target_problem
 from openexecutive.monitoring.validation import normalize_target, registrable_domain
 
@@ -214,6 +213,9 @@ class WatchProposal:
     trigger: dict[str, Any] = field(default_factory=dict)
     route_to_specialist: str = ""
     display_label: str = ""
+    # One plain line for the approval card ("GitHub status: outages could
+    # break our deploys."), written by the model as it proposes the watch.
+    card_line: str = ""
 
 
 @dataclass
@@ -1215,6 +1217,8 @@ def apply_proposals(
         cadence, floor, trigger = quiet_defaults(proposal, ctx.priority_terms)
         config = dict(proposal.config)
         config["_policy"] = _policy_stamp(decision, proposal, finding, supported)
+        if proposal.card_line:
+            config[CARD_LINE_KEY] = proposal.card_line
         is_direct = decision.tier == TIER_DIRECT
         # A department-grounded watch is the department's: its alerts go to
         # the head (as of now — the head at insert time; a later head change
@@ -1311,14 +1315,13 @@ def _notify_department_heads(
                 logger.debug("watch_policy: principal lookup failed", exc_info=True)
         if person_id is None:
             continue
-        lines = [
-            f"- {i.slug} ({i.signal_type}) — {collapse_whitespace(i.notes or i.target)}"[:200]
-            for i in items[:DEPARTMENT_CARD_MAX_LINES]
-        ]
+        # Same plain lines as the principal's card (``nudge_body``).
+        lines = [f"• {card_line(i)}" for i in items[:DEPARTMENT_CARD_MAX_LINES]]
+        if (more := len(items) - DEPARTMENT_CARD_MAX_LINES) > 0:
+            lines.append(f"• and {more} more on the Watch list")
         body = (
-            f"The Executive suggested these sources for {ref.title} to monitor and "
-            "is not sure enough to add them on its own. Approve or decline them "
-            "on the Watch list page.\n\n" + "\n".join(lines)
+            f"I'd like to keep an eye on these for {ref.title}. Approve or decline "
+            "them on the Watch list page.\n" + "\n".join(lines)
         )
         try:
             alert_id = propose_via_alert(
@@ -1505,6 +1508,59 @@ def _auto_disable(now: datetime, db_path: Path | None) -> int:
     return n
 
 
+# The approval card names each suggestion the way a person would say it, one
+# short line each, never its slug, its signal type or the research notes cut
+# off mid-word (a 2026-11 card read "vendor-status-github (vendor_status) —
+# Repeated October Actions/Pages/webhook and REST latency incid...").
+CARD_LINE_KEY = "_card_line"
+MAX_CARD_LINE = 120
+NUDGE_SHOWN = 10
+
+
+# No count in the headline: an open card is refreshed in place
+# (``coalesce_alert`` updates its body only), so a count there goes stale.
+NUDGE_HEADLINE = "Things to watch, waiting for your OK"
+
+
+def nudge_headline() -> str:
+    return NUDGE_HEADLINE
+
+
+def _plain(text: str) -> str:
+    """One line with no link or markup syntax: card text comes from model
+    words and labels shaped by web content, so a chat app must never render
+    it as a link, and a newline must never forge a bullet."""
+    return " ".join(re.sub(r"[<>\[\]|`@*~]", " ", text).split())
+
+
+def card_line(item: WatchlistItem) -> str:
+    """One plain line for ``item`` on the card: the line the model wrote for
+    it, else what it watches in words (``describe.watching_line``)."""
+    from openexecutive.monitoring.describe import watching_line
+
+    config = item.config_json if isinstance(item.config_json, dict) else {}
+    written = _plain(str(config.get(CARD_LINE_KEY) or ""))
+    if written and len(written) <= MAX_CARD_LINE:
+        # The model's words name no source on their own: the site it
+        # watches (else its ticker or query) always follows them, so an
+        # approval is of the real target.
+        source = registrable_domain(item.target) or _plain(item.target)[:60]
+        return f"{written} ({source})" if source else written
+    label = next(
+        (str(config[k]) for k in ("vendor_label", "feed_label", "display_name", "label") if config.get(k)), "",
+    )
+    line = _plain(watching_line(item.signal_type, item.target, label))
+    return line if len(line) <= MAX_CARD_LINE * 2 else line[: MAX_CARD_LINE * 2 - 1].rstrip() + "…"
+
+
+def nudge_body(pending: list[WatchlistItem]) -> str:
+    lines = [f"• {card_line(i)}" for i in pending[:NUDGE_SHOWN]]
+    more = len(pending) - NUDGE_SHOWN
+    if more > 0:
+        lines.append(f"• and {more} more on the Watch list")
+    return "I'd like to keep an eye on these:\n" + "\n".join(lines)
+
+
 def _nudge_if_piled_up(now: datetime, db_path: Path | None) -> int:
     # Suggestions routed to a department HEAD were put in front of that head
     # when they were filed; everything else (the principal's own, and rows
@@ -1526,12 +1582,7 @@ def _nudge_if_piled_up(now: datetime, db_path: Path | None) -> int:
     dedup_key = f"{NUDGE_ALERT_SOURCE}:pending"
     year, week, _ = now.isocalendar()
     external_id = f"{dedup_key}:{year}-W{week:02d}"
-    lines = [f"- {i.slug} ({i.signal_type}) — {i.notes or i.target}"[:200] for i in pending[:10]]
-    body = (
-        "The Executive suggested these sources to monitor and is not sure "
-        "enough to add them on its own. Approve or decline them on the "
-        "Watch list page.\n\n" + "\n".join(lines)
-    )
+    body = nudge_body(pending)
     if coalesce_alert(
         source=NUDGE_ALERT_SOURCE, dedup_key=dedup_key, severity="medium", body=body, db_path=db_path,
     ):
@@ -1540,7 +1591,7 @@ def _nudge_if_piled_up(now: datetime, db_path: Path | None) -> int:
         source=NUDGE_ALERT_SOURCE,
         external_id=external_id,
         severity="medium",
-        headline=f"{len(pending)} watch suggestions are waiting for you",
+        headline=nudge_headline(),
         body=body,
         suggested_action="Review the suggestions on /watchlist",
         topic_tags=["watchlist"],

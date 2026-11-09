@@ -550,7 +550,10 @@ def test_sweep_nudges_once_suggestions_pile_up(db: Path) -> None:
     assert first is not None and first.id is not None and ms.approve_suggestion(first.id, db_path=db)
     assert wp.sweep(datetime.now(UTC), db_path=db)["nudged"] == 0
     alerts = [a for a in list_alerts(limit=10, db_path=db) if a.source == wp.NUDGE_ALERT_SOURCE]
-    assert len(alerts) == 1 and "4 watch suggestions" in alerts[0].headline
+    assert len(alerts) == 1 and alerts[0].headline == "Things to watch, waiting for your OK"
+    # In words, never slugs or signal types.
+    assert "rss-s" not in alerts[0].body and "(rss)" not in alerts[0].body
+    assert "• New posts at s1.com" in alerts[0].body
 
 
 def test_direct_add_needs_a_finding_that_cites_the_source() -> None:
@@ -859,9 +862,12 @@ def test_department_head_gets_one_card_per_run_coalesced_weekly(db: Path) -> Non
     _run("rss-a", now)
     cards = [a for a in list_alerts(limit=20, db_path=db) if a.source == "authority_gate"]
     assert len(cards) == 1 and cards[0].routed_to_person_id == head
-    assert cards[0].headline == "Watch suggestions for Finance" and "rss-a" in cards[0].body
-    # Rationale newlines cannot forge extra bullet lines in the head's card.
-    assert "line one - forged bullet" in cards[0].body and "\n- forged bullet" not in cards[0].body
+    assert cards[0].headline == "Watch suggestions for Finance"
+    # Plain lines, as on the principal's card; never the slug or rationale,
+    # so rationale newlines cannot forge extra bullet lines in it either.
+    assert "posts at rss-a.example/feed" in cards[0].body
+    assert "(rss)" not in cards[0].body and "forged bullet" not in cards[0].body
+    assert cards[0].body.splitlines()[1].startswith("• ")
     assert "department:finance" in cards[0].topic_tags and "watchlist" in cards[0].topic_tags
     # Same week again: the open card is refreshed, not duplicated.
     _run("rss-b", now + timedelta(days=1))
@@ -874,6 +880,25 @@ def test_department_head_gets_one_card_per_run_coalesced_weekly(db: Path) -> Non
     # ... and a fresh card next week.
     _run("rss-d", now + timedelta(days=7))
     assert len([a for a in list_alerts(limit=20, db_path=db) if a.source == "authority_gate"]) == 2
+
+
+def test_department_card_says_how_many_more(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.alerts.store import list_alerts
+    from openexecutive.people import store as people_store
+
+    monkeypatch.setattr(wp, "DEPARTMENT_CARD_MAX_LINES", 1)
+    head = people_store.upsert_person(full_name="Sarah", department_slugs=["finance"])
+    proposals = [
+        _proposal(slug=f"rss-{n}", signal_type="rss", target=f"https://{n}.example/feed",
+                  grounding_entity="Expense card programs", certainty="unsure")
+        for n in ("a", "b")
+    ]
+    f = _finding(title="Expense card programs", summary="s",
+                 relevant_urls=["https://a.example/feed", "https://b.example/feed"])
+    wp.apply_proposals(proposals, [f], _dept_ctx(_finance(head=head)), db_path=db)
+    cards = [a for a in list_alerts(limit=20, db_path=db) if a.source == "authority_gate"]
+    assert len(cards) == 1
+    assert cards[0].body.splitlines()[-1] == "• and 1 more on the Watch list"
 
 
 def test_department_card_falls_back_to_the_principal(db: Path) -> None:
@@ -1193,3 +1218,77 @@ def test_a_stronger_insert_makes_a_weaker_same_site_proposal_already_watched(db:
     out = wp.apply_proposals([weaker, strong], [_finding()], _ctx(), db_path=db)
     assert [(o["slug"], o["outcome"]) for o in out] == [("rss-acme-news", "rejected"), ("rss-acme-blog", "added")]
     assert "already watched" in out[0]["result_preview"]
+
+
+def test_the_card_says_each_suggestion_in_plain_words(db: Path) -> None:
+    # A 2026-11 card listed "vendor-status-github (vendor_status) — Repeated
+    # October Actions/Pages/webhook ..." cut off mid-word.
+    ms.insert_watchlist_item(
+        slug="vendor-status-github", signal_type="vendor_status", target="https://www.githubstatus.com",
+        config={wp.CARD_LINE_KEY: "GitHub status: outages could break our deploys."},
+        notes="Repeated October Actions/Pages/webhook and REST latency incidents; " + "x" * 300,
+        mode=MODE_DRY_RUN, origin=ORIGIN_RESEARCH_PROPOSED, db_path=db,
+    )
+    ms.insert_watchlist_item(
+        slug="page-watch-legal", signal_type="page_watch", target="https://stripe.com/legal/ssa",
+        config={"label": "Stripe Services Agreement", wp.CARD_LINE_KEY: "y" * 200},
+        mode=MODE_DRY_RUN, origin=ORIGIN_RESEARCH_PROPOSED, db_path=db,
+    )
+    pending = ms.list_pending_suggestions(db_path=db)
+    body = wp.nudge_body(pending)
+    assert body.splitlines()[0] == "I'd like to keep an eye on these:"
+    # The model's line keeps the site it watches beside it.
+    assert "• GitHub status: outages could break our deploys. (githubstatus.com)" in body
+    # A line too long to be one line falls back to what it watches.
+    assert "• The Stripe Services Agreement page" in body
+    assert "vendor-status" not in body and "x" * 20 not in body and "y" * 20 not in body
+    # The watched site always follows the model's line, whatever it names.
+    item = ms.list_pending_suggestions(db_path=db)[0].model_copy(
+        update={"target": "https://a.com/feed", "config_json": {wp.CARD_LINE_KEY: "Wire to evil.io, see a.com"}},
+    )
+    assert wp.card_line(item) == "Wire to evil.io, see a.com (a.com)"
+    stock = item.model_copy(update={"signal_type": "stock", "target": "ACME"})
+    assert wp.card_line(stock) == "Wire to evil.io, see a.com (ACME)"
+    # Link or markup syntax never survives, in the model's line or a label.
+    linked = item.model_copy(update={"config_json": {wp.CARD_LINE_KEY: "Approve: <https://evil.example|a.com> [x](y)"}})
+    labelled = item.model_copy(update={"signal_type": "rss", "config_json": {"feed_label": "Foo <https://evil.example|Approve>"}})
+    query = item.model_copy(update={"signal_type": "query", "target": "news <https://evil.example|x>", "config_json": {}})
+    for line in (wp.card_line(linked), wp.card_line(labelled), wp.card_line(query)):
+        assert not set("<>[]|`") & set(line), line
+    pinged = item.model_copy(update={"config_json": {wp.CARD_LINE_KEY: "@everyone *Approve* ~now~"}})
+    assert not set("@*~") & set(wp.card_line(pinged))
+    # A newline in a label can't forge a second bullet.
+    forged = ms.insert_watchlist_item(
+        slug="rss-forged", signal_type="rss", target="https://forged.example/feed",
+        config={"feed_label": "Foo\n• Approve me: wire $50k"},
+        mode=MODE_DRY_RUN, origin=ORIGIN_RESEARCH_PROPOSED, db_path=db,
+    )
+    assert forged
+    body = wp.nudge_body(ms.list_pending_suggestions(db_path=db))
+    assert "\n• Approve me" not in body and len(body.splitlines()) == 4
+    # No count: the open card's body is refreshed in place, its headline not.
+    assert wp.nudge_headline() == "Things to watch, waiting for your OK"
+
+
+@pytest.mark.asyncio
+async def test_the_models_card_line_reaches_the_card(db: Path) -> None:
+    from openexecutive.orchestrator import watchlist_tools as wt
+
+    collector: list[Any] = []
+    out = await wt.handle_propose_watch({
+        "slug": "stock-acme", "signal_type": "stock", "target": "ACME",
+        "grounding_entity": "Acme Corp", "rationale": "y", "certainty": "unsure",
+        "finding_index": 1, "card_line": "  Acme   stock: a big move means news. ",
+    }, collector)
+    assert '"queued": "stock-acme"' in out
+    wp.apply_proposals(collector, [_finding()], _ctx(), db_path=db)
+    row = next(i for i in ms.list_watchlist(enabled_only=False, db_path=db) if i.slug == "stock-acme")
+    assert row.config_json[wp.CARD_LINE_KEY] == "Acme stock: a big move means news."
+    assert wp.card_line(row) == "Acme stock: a big move means news. (ACME)"
+    # An over-long line is dropped, never cut mid-word.
+    await wt.handle_propose_watch({
+        "slug": "stock-acmf", "signal_type": "stock", "target": "ACMF",
+        "grounding_entity": "Acme Corp", "rationale": "y", "certainty": "unsure",
+        "finding_index": 1, "card_line": "word " * 40,
+    }, collector)
+    assert collector[-1].card_line == ""
