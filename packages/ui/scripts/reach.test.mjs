@@ -6,10 +6,13 @@ import {
   APPROVALS_SENDS,
   AS_ME_HREF,
   AS_YOU_HREF,
+  REACH_LABEL,
   REACH_ORDER,
   reachLine,
   reachOf,
   sentTodayLine,
+  tabForClick,
+  tabFromHash,
 } from "../src/lib/reach.ts";
 
 const settings = (over = {}) => ({
@@ -53,4 +56,26 @@ test("each block of the Delegate page has its own link", () => {
   assert.equal(APPROVALS_HREF, "/delegate#before-anything-goes-out");
   assert.equal(sentTodayLine(1), "Sent 1 reply on its own today.");
   assert.equal(sentTodayLine(3), "Sent 3 replies on its own today.");
+});
+
+test("a link's #hash opens its tab, and anything else opens As you", () => {
+  assert.equal(tabFromHash(new URL(APPROVALS_HREF, "http://x").hash), "before-anything-goes-out");
+  assert.equal(tabFromHash(new URL(AS_ME_HREF, "http://x").hash), "as-me");
+  assert.equal(tabFromHash(new URL(AS_YOU_HREF, "http://x").hash), "as-you");
+  assert.equal(tabFromHash(""), "as-you");
+  assert.equal(tabFromHash("#nothing-here"), "as-you");
+  assert.deepEqual(REACH_ORDER.map((step) => REACH_LABEL[step]), ["Off", "When you ask", "Your inbox"]);
+});
+
+test("only a plain click on a Delegate link switches the tab", () => {
+  const origin = "https://app.example.com";
+  const click = (over = {}) => ({ button: 0, modified: false, target: "", href: `${origin}${AS_ME_HREF}`, origin, ...over });
+  assert.equal(tabForClick(click()), "as-me");
+  assert.equal(tabForClick(click({ href: `${origin}/delegate` })), "as-you");
+  assert.equal(tabForClick(click({ target: "_self" })), "as-me");
+  assert.equal(tabForClick(click({ modified: true })), null);
+  assert.equal(tabForClick(click({ button: 1 })), null);
+  assert.equal(tabForClick(click({ target: "_blank" })), null);
+  assert.equal(tabForClick(click({ href: `${origin}/settings#as-me` })), null);
+  assert.equal(tabForClick(click({ href: `https://elsewhere.example.com${AS_ME_HREF}` })), null);
 });

@@ -12012,8 +12012,9 @@ delegation:
     How far it goes as you (ReachCard.tsx: Off / When you ask / Your inbox,
     a "Now:" line from lib/reach.ts reachLine naming the level or In
     training, the inbox watcher's status under Your inbox), in the As you
-    block of the one Delegate page (app/delegate/page.tsx, anchors as-you /
-    as-me / before-anything-goes-out; the old tab routes and
+    tab of the one Delegate page (app/delegate/page.tsx, three tabs named by
+    the anchors as-you / as-me / before-anything-goes-out, picked by the
+    link's #hash via components/delegate/useDelegateTab.ts; the old tab routes and
     /settings/act-as-me redirect to them). What it does for you links
     act_as_me rows to it and handle_it rows to Approvals.
   surfaces: |
@@ -12023,15 +12024,15 @@ delegation:
     under Your inbox; the card polls GET /delegation while a check runs),
     In training with Learn from my edits (AsYouTrainingCard), Read my
     calendar, What it's learned as you (LearnedCard: allowances and
-    writing examples), Sent as you on its own (SentCard), and under
-    Advanced at the foot of the page How I write
+    writing examples), Sent as you on its own (SentCard), Let team members
+    use it, and inside the mailbox card once it's connected How I write
     (length and tone, a greeting input per audience, the sign-off and the
     habit / never lists in textareas that grow to fit, the signature with
     Refresh from Gmail and Don't add my signature — or Add my Gmail
     signature — and each exemplar quoted, with Remove examples).
     Settings → Your Executive (app/settings/executive; /settings/on-its-own
     redirects there): the pause, what it always does without asking and
-    the voice. Delegate → As me (AsMeCard): Leading or paused (the same
+    the voice. Delegate → As me (AsMeCard): On or paused (the same
     ExecutiveRunSwitch, a Now line for the level), In training (the owner's
     switch) with What it's learned (allowed items with Remove, suggestions
     with Allow). Delegate → Before anything goes out (BeforeAnythingCard):
@@ -12040,7 +12041,7 @@ delegation:
     lib/reach.ts, one card per level for both sides), Your rules
     (LeadRulesEditor on POST/DELETE /take-the-lead/rules) and a link to
     Settings → Your Executive. Say it was written with AI (both switches)
-    sits under Advanced. Setup
+    is a card on the As you tab. Setup
     status light your_gmail (amber while the inbox watcher is erroring,
     rate-limited or has 25 cards waiting); the API protection light says
     Send needs signed callers. The chat chip "Drafted an email as you
