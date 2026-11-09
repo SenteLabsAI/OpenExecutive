@@ -74,3 +74,21 @@ export function reachLine(step: ReachStep, inTraining: boolean, level: OutsideCo
 export function sentTodayLine(n: number): string {
   return n === 1 ? "Sent 1 reply on its own today." : `Sent ${n} replies on its own today.`;
 }
+
+// The tab a click on a link opens on this page, or null when it leaves the
+// page alone: a click that opens a new tab or window (a modifier key, a
+// button other than the left one, a target other than this one), or a link
+// to somewhere other than Delegate. A plain /delegate link opens As you.
+export function tabForClick(click: {
+  button: number;
+  modified: boolean;
+  target: string;
+  href: string;
+  origin: string;
+}): DelegateTab | null {
+  if (click.button !== 0 || click.modified) return null;
+  if (click.target && click.target !== "_self") return null;
+  const url = new URL(click.href, click.origin);
+  if (url.origin !== click.origin || url.pathname !== "/delegate") return null;
+  return tabFromHash(url.hash);
+}

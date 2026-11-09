@@ -11,6 +11,7 @@ import {
   reachLine,
   reachOf,
   sentTodayLine,
+  tabForClick,
   tabFromHash,
 } from "../src/lib/reach.ts";
 
@@ -64,4 +65,17 @@ test("a link's #hash opens its tab, and anything else opens As you", () => {
   assert.equal(tabFromHash(""), "as-you");
   assert.equal(tabFromHash("#nothing-here"), "as-you");
   assert.deepEqual(REACH_ORDER.map((step) => REACH_LABEL[step]), ["Off", "When you ask", "Your inbox"]);
+});
+
+test("only a plain click on a Delegate link switches the tab", () => {
+  const origin = "https://app.example.com";
+  const click = (over = {}) => ({ button: 0, modified: false, target: "", href: `${origin}${AS_ME_HREF}`, origin, ...over });
+  assert.equal(tabForClick(click()), "as-me");
+  assert.equal(tabForClick(click({ href: `${origin}/delegate` })), "as-you");
+  assert.equal(tabForClick(click({ target: "_self" })), "as-me");
+  assert.equal(tabForClick(click({ modified: true })), null);
+  assert.equal(tabForClick(click({ button: 1 })), null);
+  assert.equal(tabForClick(click({ target: "_blank" })), null);
+  assert.equal(tabForClick(click({ href: `${origin}/settings#as-me` })), null);
+  assert.equal(tabForClick(click({ href: `https://elsewhere.example.com${AS_ME_HREF}` })), null);
 });

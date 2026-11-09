@@ -2,7 +2,7 @@
 
 import { useCallback, useSyncExternalStore } from "react";
 
-import { AS_YOU_ANCHOR, tabFromHash, type DelegateTab } from "@/lib/reach";
+import { AS_YOU_ANCHOR, tabForClick, tabFromHash, type DelegateTab } from "@/lib/reach";
 
 // Which Delegate tab is open. A link's #hash picks it (AS_YOU_HREF,
 // AS_ME_HREF, APPROVALS_HREF), including a link clicked while the page is
@@ -23,18 +23,17 @@ function fromAddress() {
   set(tabFromHash(window.location.hash));
 }
 
-// Only a plain left click stays on this page. A click that opens a new tab
-// or window leaves this one as it is. (Not defaultPrevented: the app's own
-// links prevent the browser's default to navigate themselves.)
 function onClick(event: MouseEvent) {
-  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-  const link = (event.target as Element | null)?.closest?.("a[href]");
-  if (!link || ((link as HTMLAnchorElement).target && (link as HTMLAnchorElement).target !== "_self")) return;
-  const url = new URL((link as HTMLAnchorElement).href, window.location.href);
-  // A plain /delegate link opens As you, as the page would on arriving.
-  if (url.origin === window.location.origin && url.pathname === "/delegate") {
-    set(tabFromHash(url.hash));
-  }
+  const link = (event.target as Element | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
+  if (!link) return;
+  const tab = tabForClick({
+    button: event.button,
+    modified: event.metaKey || event.ctrlKey || event.shiftKey || event.altKey,
+    target: link.target,
+    href: link.href,
+    origin: window.location.origin,
+  });
+  if (tab) set(tab);
 }
 
 function subscribe(fn: () => void) {
