@@ -134,6 +134,21 @@ def test_bulk_ack_teaches_the_watch_like_a_single_dismiss(client: TestClient, db
     assert item is not None and item.dismiss_count == 2 and item.trust_score == pytest.approx(0.64)
 
 
+def test_a_bulk_dismiss_leaves_a_suggestions_cards_suggestions_pending(client: TestClient, db: Path) -> None:
+    # Housekeeping, not a no: only a single-card dismiss declines them.
+    from openexecutive.monitoring.research import watch_policy as wp
+
+    monitoring_store.insert_watchlist_item(
+        slug="rss-s", signal_type="rss", target="https://s.com/feed",
+        mode="dry_run", origin="research_proposed", db_path=db,
+    )
+    (item,) = monitoring_store.list_pending_suggestions(db_path=db)
+    card = _insert(db, "w", source=wp.NUDGE_ALERT_SOURCE, body=wp.nudge_body([item]), topic_tags=["watchlist"])
+    assert client.post("/alerts/bulk-ack", json={"status": "dismissed", "alert_ids": [card]}).json() == {"count": 1}
+    assert [i.slug for i in monitoring_store.list_pending_suggestions(db_path=db)] == ["rss-s"]
+    assert monitoring_store.list_declines(db_path=db) == []
+
+
 def test_reopen_brings_a_closed_alert_back(
     client: TestClient, db: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
