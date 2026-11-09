@@ -550,7 +550,7 @@ def test_sweep_nudges_once_suggestions_pile_up(db: Path) -> None:
     assert first is not None and first.id is not None and ms.approve_suggestion(first.id, db_path=db)
     assert wp.sweep(datetime.now(UTC), db_path=db)["nudged"] == 0
     alerts = [a for a in list_alerts(limit=10, db_path=db) if a.source == wp.NUDGE_ALERT_SOURCE]
-    assert len(alerts) == 1 and alerts[0].headline == "4 things to watch, waiting for your OK"
+    assert len(alerts) == 1 and alerts[0].headline == "Things to watch, waiting for your OK"
     # In words, never slugs or signal types.
     assert "rss-s" not in alerts[0].body and "(rss)" not in alerts[0].body
     assert "• New posts at s1.com" in alerts[0].body
@@ -862,9 +862,12 @@ def test_department_head_gets_one_card_per_run_coalesced_weekly(db: Path) -> Non
     _run("rss-a", now)
     cards = [a for a in list_alerts(limit=20, db_path=db) if a.source == "authority_gate"]
     assert len(cards) == 1 and cards[0].routed_to_person_id == head
-    assert cards[0].headline == "Watch suggestions for Finance" and "rss-a" in cards[0].body
-    # Rationale newlines cannot forge extra bullet lines in the head's card.
-    assert "line one - forged bullet" in cards[0].body and "\n- forged bullet" not in cards[0].body
+    assert cards[0].headline == "Watch suggestions for Finance"
+    # Plain lines, as on the principal's card; never the slug or rationale,
+    # so rationale newlines cannot forge extra bullet lines in it either.
+    assert "posts at rss-a.example/feed" in cards[0].body
+    assert "(rss)" not in cards[0].body and "forged bullet" not in cards[0].body
+    assert cards[0].body.splitlines()[1].startswith("• ")
     assert "department:finance" in cards[0].topic_tags and "watchlist" in cards[0].topic_tags
     # Same week again: the open card is refreshed, not duplicated.
     _run("rss-b", now + timedelta(days=1))
@@ -1219,4 +1222,22 @@ def test_the_card_says_each_suggestion_in_plain_words(db: Path) -> None:
     # A line too long to be one line falls back to what it watches.
     assert "• The Stripe Services Agreement page" in body
     assert "vendor-status" not in body and "x" * 20 not in body and "y" * 20 not in body
-    assert wp.nudge_headline(1) == "1 thing to watch, waiting for your OK"
+    # No count: the open card's body is refreshed in place, its headline not.
+    assert wp.nudge_headline() == "Things to watch, waiting for your OK"
+
+
+@pytest.mark.asyncio
+async def test_the_models_card_line_reaches_the_card(db: Path) -> None:
+    from openexecutive.orchestrator import watchlist_tools as wt
+
+    collector: list[Any] = []
+    out = await wt.handle_propose_watch({
+        "slug": "stock-acme", "signal_type": "stock", "target": "ACME",
+        "grounding_entity": "Acme Corp", "rationale": "y", "certainty": "unsure",
+        "finding_index": 1, "card_line": "  Acme   stock: a big move means news. ",
+    }, collector)
+    assert '"queued": "stock-acme"' in out
+    wp.apply_proposals(collector, [_finding()], _ctx(), db_path=db)
+    row = next(i for i in ms.list_watchlist(enabled_only=False, db_path=db) if i.slug == "stock-acme")
+    assert row.config_json[wp.CARD_LINE_KEY] == "Acme stock: a big move means news."
+    assert wp.card_line(row) == "Acme stock: a big move means news."

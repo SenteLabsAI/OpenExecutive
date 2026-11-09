@@ -64,7 +64,6 @@ from openexecutive.monitoring.models import (
 )
 from openexecutive.monitoring.research.models import ResearchFinding
 from openexecutive.monitoring.sources._http import validate_target_url
-from openexecutive.monitoring.sources.base import collapse_whitespace
 from openexecutive.monitoring.target_validation import page_watch_target_problem
 from openexecutive.monitoring.validation import normalize_target, registrable_domain
 
@@ -1316,14 +1315,13 @@ def _notify_department_heads(
                 logger.debug("watch_policy: principal lookup failed", exc_info=True)
         if person_id is None:
             continue
-        lines = [
-            f"- {i.slug} ({i.signal_type}) — {collapse_whitespace(i.notes or i.target)}"[:200]
-            for i in items[:DEPARTMENT_CARD_MAX_LINES]
-        ]
+        # Same plain lines as the principal's card (``nudge_body``).
+        lines = [f"• {card_line(i)}" for i in items[:DEPARTMENT_CARD_MAX_LINES]]
+        if (more := len(items) - DEPARTMENT_CARD_MAX_LINES) > 0:
+            lines.append(f"• and {more} more on the Watch list")
         body = (
-            f"The Executive suggested these sources for {ref.title} to monitor and "
-            "is not sure enough to add them on its own. Approve or decline them "
-            "on the Watch list page.\n\n" + "\n".join(lines)
+            f"I'd like to keep an eye on these for {ref.title}. Approve or decline "
+            "them on the Watch list page.\n" + "\n".join(lines)
         )
         try:
             alert_id = propose_via_alert(
@@ -1519,8 +1517,13 @@ MAX_CARD_LINE = 120
 NUDGE_SHOWN = 10
 
 
-def nudge_headline(count: int) -> str:
-    return f"{count} thing{'' if count == 1 else 's'} to watch, waiting for your OK"
+# No count in the headline: an open card is refreshed in place
+# (``coalesce_alert`` updates its body only), so a count there goes stale.
+NUDGE_HEADLINE = "Things to watch, waiting for your OK"
+
+
+def nudge_headline() -> str:
+    return NUDGE_HEADLINE
 
 
 def card_line(item: WatchlistItem) -> str:
@@ -1576,7 +1579,7 @@ def _nudge_if_piled_up(now: datetime, db_path: Path | None) -> int:
         source=NUDGE_ALERT_SOURCE,
         external_id=external_id,
         severity="medium",
-        headline=nudge_headline(len(pending)),
+        headline=nudge_headline(),
         body=body,
         suggested_action="Review the suggestions on /watchlist",
         topic_tags=["watchlist"],
