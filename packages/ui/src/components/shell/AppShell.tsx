@@ -153,7 +153,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <AskOEProvider>
       <PageCrumbProvider>
-      <div className="flex h-full bg-surface text-fg">
+      {/* relative + overflow-clip: an absolutely positioned element inside a
+          page (Tailwind's sr-only labels, for one) has no positioned
+          ancestor in the scroll slot, so it escapes the slot's overflow and
+          stretches the document. On a phone that made the whole page
+          scrollable: the bottom bar slid up off the bottom edge, and
+          scrolling the drawer chained to the page behind it. This box is
+          their containing block now, and clip (unlike hidden) can't be
+          scrolled by script or focus either. */}
+      <div className="relative flex h-full overflow-clip bg-surface text-fg">
         {/* Mobile backdrop */}
         {drawerOpen && (
           <div

@@ -320,7 +320,10 @@ export default function HomePage() {
   if (redirecting) return <div className="h-full bg-surface" />;
 
   return (
-    <div className="flex h-full relative">
+    // overflow-clip: keeps absolutely positioned content (sr-only labels)
+    // from stretching the document, which let the whole page scroll on a
+    // phone (see AppShell).
+    <div className="flex h-full relative overflow-clip">
       {/* Mobile backdrop */}
       {mobileNavOpen && (
         <div
