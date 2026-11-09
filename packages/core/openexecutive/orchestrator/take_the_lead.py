@@ -216,6 +216,14 @@ _PLAIN_NUMBER_RE = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2}
 # Scale words: fine right after a number when amounts() knows them, else
 # an amount it can't read ("ten thousand dollars", "$5 trillion", "₹3 crore").
 _SCALE_RE = re.compile(r"\b(hundred|thousand|million|billion|trillion|grand|crores?|lakhs?|tn)\b", re.IGNORECASE)
+# A bare number of 3+ digits within a few words of a money word ("wire
+# 50000 to", "pay 1200 now"): an amount amounts() can't see.
+_BARE_MONEY_RE = re.compile(
+    r"\b(?:wire|pay|paid|payment|transfer|send|deposit|fee|invoice|refund|charge|cost|price|fund|funds|owe)\b"
+    r"(?:\W+\w+){0,3}?\W+\d[\d,.]{2,}\b(?![\d.,]*\s?(?:%|usd|eur|gbp|dollars?|euros?|pounds?))"
+    r"|\b\d[\d,.]{2,}\b(?:\W+\w+){0,3}?\W+(?:wire|payment|transfer|deposit|fee|invoice|refund)\b",
+    re.IGNORECASE,
+)
 _SPELLED_MONEY_RE = re.compile(
     r"\b(?:a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|thirty|forty|fifty|"
     r"sixty|seventy|eighty|ninety|few|several|many)\s+(?:dollars?|euros?|pounds?|bucks|usd|eur|gbp)\b",
@@ -425,7 +433,7 @@ def clean_rule(kind: str, value: str) -> str:
         if not _DOMAIN_RE.match(text):
             raise RuleError("That isn't a domain, like example.com.")
     elif kind == RULE_AMOUNT:
-        number = _number(text.lstrip("$€£¥"))
+        number = _number(text.lstrip("$€£¥₹"))
         if number is None or number <= 0:
             raise RuleError("That isn't an amount, like 500.")
         # Plain digits: "{:g}" turns 1000000 into "1e+06", which _number can't read back.
@@ -787,11 +795,20 @@ def goes_kinds(rules: list[Rule]) -> frozenset[str]:
     return out
 
 
+def _bare_money(text: str) -> bool:
+    """A bare number near a money word, with no currency sign before it."""
+    for m in _BARE_MONEY_RE.finditer(text):
+        first_digit = m.start() + re.search(r"\d", m.group(0)).start()  # type: ignore[union-attr]
+        if not re.search(r"[$€£¥₹]\s?$", text[:first_digit]):
+            return True
+    return False
+
+
 def _all_parsed(text: str, found: list[float]) -> bool:
     """Whether ``amounts`` read every amount in ``text`` right: no
     percentage, no spelled-out or unknown-scale amount, every number next to
     money written plainly, and no currency sign it skipped. Fails closed."""
-    if _PERCENT_RE.search(text) or _SPELLED_MONEY_RE.search(text):
+    if _PERCENT_RE.search(text) or _SPELLED_MONEY_RE.search(text) or _bare_money(text):
         return False
     if len(_AMOUNT_SIGN_RE.findall(text)) > len(found):
         return False

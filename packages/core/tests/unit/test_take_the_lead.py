@@ -1298,6 +1298,10 @@ def _run(owner: Any, text: str, person_id: int | None = None) -> tuple[dict[str,
     return result, calls
 
 
+def test_an_amount_rule_takes_a_rupee_sign() -> None:
+    assert ttl.add_rule(ttl.SCOPE_COMPANY, "amount", "₹500", created_by="t").value == "500"
+
+
 def test_rules_keep_their_effect() -> None:
     assert ttl.add_rule(ttl.SCOPE_COMPANY, "words", "acquisition", created_by="t").effect == ttl.EFFECT_WAIT
     _go("amount", "500")
@@ -1411,6 +1415,7 @@ def test_an_amount_goes_rule_fails_closed_on_an_amount_it_cant_read() -> None:
         "Pay €1.000.000 today",
         "The fee is $100, plus a ten thousand dollar deposit",
         "The fee is $100, plus a few dollars",
+        "Fee is $20; please wire 50000 to the new account",
     ]:
         assert ttl.rule_goes(rules, text, []) is None, text
     for text in ["I can do $100 now.", "Pay $1,200.50 and $2k", "That's 300 dollars"]:
