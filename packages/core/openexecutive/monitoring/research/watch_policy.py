@@ -1543,9 +1543,10 @@ def card_line(item: WatchlistItem) -> str:
     written = _plain(str(config.get(CARD_LINE_KEY) or ""))
     if written and len(written) <= MAX_CARD_LINE:
         # The model's words name no source on their own: the site it
-        # watches always follows them, so an approval is of the real target.
-        host = registrable_domain(item.target)
-        return f"{written} ({host})" if host else written
+        # watches (else its ticker or query) always follows them, so an
+        # approval is of the real target.
+        source = registrable_domain(item.target) or _plain(item.target)[:60]
+        return f"{written} ({source})" if source else written
     label = next(
         (str(config[k]) for k in ("vendor_label", "feed_label", "display_name", "label") if config.get(k)), "",
     )

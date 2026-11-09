@@ -1247,6 +1247,8 @@ def test_the_card_says_each_suggestion_in_plain_words(db: Path) -> None:
         update={"target": "https://a.com/feed", "config_json": {wp.CARD_LINE_KEY: "Wire to evil.io, see a.com"}},
     )
     assert wp.card_line(item) == "Wire to evil.io, see a.com (a.com)"
+    stock = item.model_copy(update={"signal_type": "stock", "target": "ACME"})
+    assert wp.card_line(stock) == "Wire to evil.io, see a.com (ACME)"
     # Link or markup syntax never survives, in the model's line or a label.
     linked = item.model_copy(update={"config_json": {wp.CARD_LINE_KEY: "Approve: <https://evil.example|a.com> [x](y)"}})
     labelled = item.model_copy(update={"signal_type": "rss", "config_json": {"feed_label": "Foo <https://evil.example|Approve>"}})
@@ -1280,7 +1282,7 @@ async def test_the_models_card_line_reaches_the_card(db: Path) -> None:
     wp.apply_proposals(collector, [_finding()], _ctx(), db_path=db)
     row = next(i for i in ms.list_watchlist(enabled_only=False, db_path=db) if i.slug == "stock-acme")
     assert row.config_json[wp.CARD_LINE_KEY] == "Acme stock: a big move means news."
-    assert wp.card_line(row) == "Acme stock: a big move means news."
+    assert wp.card_line(row) == "Acme stock: a big move means news. (ACME)"
     # An over-long line is dropped, never cut mid-word.
     await wt.handle_propose_watch({
         "slug": "stock-acmf", "signal_type": "stock", "target": "ACMF",
