@@ -104,68 +104,68 @@ export default function DelegatePage() {
           />
 
           <div className="@container">
-            {tab === AS_YOU_ANCHOR && (
-              <Panel id={AS_YOU_ANCHOR} lede="It writes email in your voice from your own mailbox. How far it goes is your call.">
-                {delegation.state === "loading" && <PageSpinner />}
-                {delegation.state === "error" && (
-                  <SettingsCard>
-                    <p className="text-[15px] text-fg-muted">Couldn&apos;t load this setting.</p>
-                  </SettingsCard>
-                )}
-                {delegation.state === "hidden" && (
-                  <SettingsCard>
-                    <p className="text-[15px] text-fg-muted leading-relaxed">
-                      Act as me isn&apos;t available to you here. The owner of this Open Executive can turn it on for team
-                      members.
-                    </p>
-                  </SettingsCard>
-                )}
-                {settings && (
-                  <ActAsMeCard
-                    load={delegation}
-                    level={level}
-                    side={
-                      <>
-                        {settings.team && <TeamSection team={settings.team} onSettings={delegation.setSettings} />}
-                        {settings.disclosure?.enabled && (
-                          <ReplyDisclosureCard
-                            disclosure={settings.disclosure}
-                            onSettings={delegation.setSettings}
-                            title="Say it was written with AI"
-                          />
-                        )}
-                      </>
-                    }
-                  >
-                    {settings.enabled && (
-                      <AsYouTrainingCard settings={settings} onSettings={delegation.setSettings} />
-                    )}
-                    {settings.training && <LearnedCard training={settings.training} onSettings={delegation.setSettings} />}
-                    {settings.handle_it?.enabled && <SentCard handleIt={settings.handle_it} />}
-                  </ActAsMeCard>
-                )}
-              </Panel>
-            )}
+            <Panel
+              id={AS_YOU_ANCHOR}
+              hidden={tab !== AS_YOU_ANCHOR}
+              lede="It writes email in your voice from your own mailbox. How far it goes is your call."
+            >
+              {delegation.state === "loading" && <PageSpinner />}
+              {delegation.state === "error" && (
+                <SettingsCard>
+                  <p className="text-[15px] text-fg-muted">Couldn&apos;t load this setting.</p>
+                </SettingsCard>
+              )}
+              {delegation.state === "hidden" && (
+                <SettingsCard>
+                  <p className="text-[15px] text-fg-muted leading-relaxed">
+                    Act as me isn&apos;t available to you here. The owner of this Open Executive can turn it on for team
+                    members.
+                  </p>
+                </SettingsCard>
+              )}
+              {settings && (
+                <ActAsMeCard
+                  load={delegation}
+                  level={level}
+                  side={
+                    <>
+                      {settings.team && <TeamSection team={settings.team} onSettings={delegation.setSettings} />}
+                      {settings.disclosure?.enabled && (
+                        <ReplyDisclosureCard
+                          disclosure={settings.disclosure}
+                          onSettings={delegation.setSettings}
+                          title="Say it was written with AI"
+                        />
+                      )}
+                    </>
+                  }
+                >
+                  {settings.enabled && (
+                    <AsYouTrainingCard settings={settings} onSettings={delegation.setSettings} />
+                  )}
+                  {settings.training && <LearnedCard training={settings.training} onSettings={delegation.setSettings} />}
+                  {settings.handle_it?.enabled && <SentCard handleIt={settings.handle_it} />}
+                </ActAsMeCard>
+              )}
+            </Panel>
 
-            {tab === AS_ME_ANCHOR && (
-              <Panel
-                id={AS_ME_ANCHOR}
-                lede="In its own name, without being asked. Every day before your brief, and when new mail or a message comes in, it follows up with people, books meetings, starts workflows, assigns tasks and makes changes in your apps. People can see it's the Executive."
-              >
-                <div className="grid gap-4 @4xl:grid-cols-2 @4xl:items-start">
-                  <AsMeCard lead={lead.lead} state={lead.state} setLead={lead.setLead} level={level} />
-                </div>
-              </Panel>
-            )}
+            <Panel
+              id={AS_ME_ANCHOR}
+              hidden={tab !== AS_ME_ANCHOR}
+              lede="In its own name, without being asked. Every day before your brief, and when new mail or a message comes in, it follows up with people, books meetings, starts workflows, assigns tasks and makes changes in your apps. People can see it's the Executive."
+            >
+              <div className="grid gap-4 @4xl:grid-cols-2 @4xl:items-start">
+                <AsMeCard lead={lead.lead} state={lead.state} setLead={lead.setLead} level={level} />
+              </div>
+            </Panel>
 
-            {tab === APPROVALS_ANCHOR && (
-              <Panel
-                id={APPROVALS_ANCHOR}
-                lede="One setting for both As you and As me. It decides what goes on its own and what comes to you as an Approve card on Home, the same in the app, email and every chat app."
-              >
-                <BeforeAnythingCard approvals={approvals} lead={lead.lead} setLead={lead.setLead} />
-              </Panel>
-            )}
+            <Panel
+              id={APPROVALS_ANCHOR}
+              hidden={tab !== APPROVALS_ANCHOR}
+              lede="One setting for both As you and As me. It decides what goes on its own and what comes to you as an Approve card on Home, the same in the app, email and every chat app."
+            >
+              <BeforeAnythingCard approvals={approvals} lead={lead.lead} setLead={lead.setLead} />
+            </Panel>
           </div>
         </div>
       </main>
@@ -252,9 +252,21 @@ function DelegateTabs({
   );
 }
 
-function Panel({ id, lede, children }: { id: DelegateTab; lede: string; children: ReactNode }) {
+// All three stay mounted, so a half-written edit on one tab is still there
+// when you come back to it.
+function Panel({
+  id,
+  hidden,
+  lede,
+  children,
+}: {
+  id: DelegateTab;
+  hidden: boolean;
+  lede: string;
+  children: ReactNode;
+}) {
   return (
-    <section id={id} role="tabpanel" aria-labelledby={`${id}-tab`} className="mt-6">
+    <section id={id} role="tabpanel" aria-labelledby={`${id}-tab`} hidden={hidden} className="mt-6">
       <p className="max-w-3xl text-[15px] text-fg-muted leading-relaxed">{lede}</p>
       <div className="mt-5 space-y-4">{children}</div>
     </section>

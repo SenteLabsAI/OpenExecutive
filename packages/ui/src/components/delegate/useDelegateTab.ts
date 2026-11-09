@@ -48,6 +48,7 @@ function subscribe(fn: () => void) {
   return () => {
     listeners.delete(fn);
     if (listeners.size === 0) {
+      current = null;
       window.removeEventListener("hashchange", fromAddress);
       window.removeEventListener("popstate", fromAddress);
       document.removeEventListener("click", onClick, true);
