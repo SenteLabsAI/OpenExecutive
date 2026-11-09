@@ -284,7 +284,7 @@ async def _send_checked(
                 raise SendRefused(
                     422, "cant_allow", "Sending on its own next time is for replies and follow-ups while In training is on.",
                 )
-            if not all(training.room_for(person.id, training.person_key(person.id, a)) for a in going):
+            if not training.room_for_all(person.id, going):
                 raise SendRefused(
                     409, "learned_full", "It has learned as much as it can hold. Remove something first.",
                 )

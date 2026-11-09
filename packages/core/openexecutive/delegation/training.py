@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -244,6 +245,15 @@ def room_for(person_id: int, key: str, *, db_path: Path | None = None) -> bool:
     from openexecutive.orchestrator import take_the_lead
 
     return take_the_lead.room_for(key, person_id=person_id, db_path=db_path)
+
+
+def room_for_all(person_id: int, addresses: Iterable[str], *, db_path: Path | None = None) -> bool:
+    """Whether ``person_id`` can allow every one of ``addresses`` at once:
+    the ones not yet allowed must fit together under the list's cap."""
+    from openexecutive.orchestrator import take_the_lead
+
+    keys = {person_key(person_id, a) for a in addresses if _email(a)}
+    return take_the_lead.room_for_all(keys, person_id=person_id, db_path=db_path)
 
 
 # --------------------------------------------------------------------------- #

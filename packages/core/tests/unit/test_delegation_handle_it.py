@@ -738,6 +738,24 @@ def test_someone_with_no_address_on_file_is_never_allowed_by_omission(owner: Any
     assert handle_it.training_hold(owner.id, [""]) == "training"
 
 
+def test_a_card_reaching_several_people_is_allowed_whole_or_not_at_all(
+    owner: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With room for one more, a card to two new people is refused up front
+    instead of running and then allowing only the first of them."""
+    from openexecutive.delegation import training
+    from openexecutive.orchestrator import take_the_lead
+
+    monkeypatch.setattr(take_the_lead, "ALLOWED_MAX", 2)
+    training.allow_person(owner.id, DANA, "Dana Park", decision_id=None)
+    sam = "sam@co.example"
+    assert training.room_for_all(owner.id, [DANA, sam])
+    assert not training.room_for_all(owner.id, [sam, "lee@co.example"])
+    # The same address twice is one allowance; one already allowed costs nothing.
+    assert training.room_for_all(owner.id, [sam, "Sam@co.example", DANA])
+    assert training.room_for_all(owner.id, [])
+
+
 def test_an_unreadable_training_setting_holds(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     from openexecutive.delegation import training
 

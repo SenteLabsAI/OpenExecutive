@@ -894,7 +894,7 @@ async def approve(
         addresses = [a for a in _addresses([actions[i] for i in sorted(chosen)]) if a]
         if not addresses:
             raise ApproveRefused(422, "cant_allow", "Nothing on this card can be allowed.")
-        if not all(training.room_for(person.id, training.person_key(person.id, a)) for a in addresses):
+        if not training.room_for_all(person.id, addresses):
             raise ApproveRefused(409, "learned_full", "It has learned as much as it can hold. Remove something first.")
     if not claim_for_execution(instance.id, resolver_person_id=resolver):
         raise ApproveRefused(409, "already_handled", "This card was already handled.")

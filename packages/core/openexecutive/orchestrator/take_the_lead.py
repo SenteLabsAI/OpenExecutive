@@ -48,7 +48,7 @@ import json
 import logging
 import re
 import sqlite3
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -994,6 +994,24 @@ def room_for(key: str, *, person_id: int | None = None, db_path: Path | None = N
     try:
         return _is_allowed(conn, key) or (
             _allowed_count(conn, key.split("|", 1)[0], person_id) < ALLOWED_MAX
+        )
+    finally:
+        conn.close()
+
+
+def room_for_all(keys: Iterable[str], *, person_id: int | None = None, db_path: Path | None = None) -> bool:
+    """Whether every key in ``keys`` can be allowed together: the ones not
+    yet allowed must all fit under ``ALLOWED_MAX`` for their feature. A card
+    that reaches several people is allowed whole or not at all."""
+    conn = _connect(db_path)
+    try:
+        new_by_feature: dict[str, set[str]] = {}
+        for key in keys:
+            if not _is_allowed(conn, key):
+                new_by_feature.setdefault(key.split("|", 1)[0], set()).add(key)
+        return all(
+            _allowed_count(conn, feature, person_id) + len(new) <= ALLOWED_MAX
+            for feature, new in new_by_feature.items()
         )
     finally:
         conn.close()
