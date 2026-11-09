@@ -41,7 +41,7 @@ const CHANGED_MS = 10_000;
 function settingHref(setting: string): { href: string; label: string } | null {
   if (setting === "act_as_me") return { href: AS_YOU_HREF, label: "As you" };
   if (setting === "take_the_lead") return { href: AS_ME_HREF, label: "As me" };
-  if (setting === "pause") return { href: AS_ME_HREF, label: "Leading or paused" };
+  if (setting === "pause") return { href: AS_ME_HREF, label: "On or paused" };
   if (setting === "approvals") return { href: APPROVALS_HREF, label: "Approvals" };
   if (setting.startsWith("department:")) {
     const slug = setting.slice("department:".length);

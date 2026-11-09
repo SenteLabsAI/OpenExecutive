@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import SettingsCard from "@/components/settings/SettingsCard";
 import Switch from "@/components/Switch";
@@ -46,17 +46,6 @@ export function useReachSave(onSettings: (next: DelegationSettings) => void) {
     }
   };
   return { busy, error, save };
-}
-
-// Linked from another page (AS_YOU_HREF, AS_ME_HREF): the block appears
-// after the settings load, so the browser's own jump to the anchor has
-// passed it.
-export function useJumpTo(anchor: string) {
-  useEffect(() => {
-    if (window.location.hash === `#${anchor}`) {
-      document.getElementById(anchor)?.scrollIntoView({ block: "start" });
-    }
-  }, [anchor]);
 }
 
 // One row of choices, side by side. The picked one's line (or why a step
