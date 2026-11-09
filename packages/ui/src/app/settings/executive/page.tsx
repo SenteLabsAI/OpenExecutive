@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useExecutiveStatus } from "@/components/executive/ExecutiveStatusContext";
 import ExecutiveRunSwitch from "@/components/executive/ExecutiveRunSwitch";
 import VoicePicker from "@/components/executive/VoicePicker";
-import OutsideContentCard from "@/components/settings/OutsideContentCard";
+import ApprovalsLinkCard from "@/components/settings/ApprovalsLinkCard";
 import SettingsCard from "@/components/settings/SettingsCard";
 import SettingsSubpage from "@/components/settings/SettingsSubpage";
 
@@ -30,7 +30,7 @@ export default function ExecutiveSettingsPage() {
   return (
     <SettingsSubpage
       title="Your Executive"
-      description="Pause it, when it checks with you, what it always does without asking, and the voice it answers in."
+      description="Pause it, what it always does without asking, and the voice it answers in."
     >
       <SettingsCard
         title="Pause everything"
@@ -41,7 +41,7 @@ export default function ExecutiveSettingsPage() {
 
       <PausedNote />
 
-      <OutsideContentCard />
+      <ApprovalsLinkCard />
 
       <SettingsCard title="Always does on its own" description="No switch for these. Pause stops them too.">
         <ul className="flex flex-col gap-3">
@@ -55,7 +55,7 @@ export default function ExecutiveSettingsPage() {
       </SettingsCard>
 
       <p className="text-[15px] text-fg-muted">
-        What it does as you and as itself, In training and your rules are under{" "}
+        Approvals, what it does as you and as itself, In training and your rules are under{" "}
         <Link href="/delegate" className="font-medium text-accent underline-offset-2 hover:underline">
           Delegate
         </Link>

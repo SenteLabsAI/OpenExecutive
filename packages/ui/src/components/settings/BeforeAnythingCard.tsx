@@ -37,7 +37,7 @@ export default function BeforeAnythingCard({
 
   return (
     <>
-      <OutsideContentCard compact>
+      <OutsideContentCard>
         {approvals?.can_change && (
           <>
             <ul className="grid gap-3 sm:grid-cols-3">

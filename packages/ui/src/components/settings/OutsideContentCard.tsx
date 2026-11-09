@@ -44,16 +44,10 @@ const OPTIONS: {
 // Settings → Your Executive: the safety level, the one setting that decides
 // what the Executive does on its own and what it asks first, the same on
 // every channel (orchestrator/levels.py, orchestrator/outside_mode.py).
-// Shown to the owner only; nobody else may change it. `compact` (Delegate)
-// shows the three levels in one row with the picked one's line, and keeps
-// the rest, with `children`, behind What each level means.
-export default function OutsideContentCard({
-  compact = false,
-  children,
-}: {
-  compact?: boolean;
-  children?: ReactNode;
-} = {}) {
+// Shown to the owner only; nobody else may change it. Lives on Delegate →
+// Before anything goes out: the three levels in one row with the picked
+// one's line, and the rest, with `children`, behind What each level means.
+export default function OutsideContentCard({ children }: { children?: ReactNode } = {}) {
   const [setting, setSetting] = useState<OutsideContentSetting | null>(null);
   const [more, setMore] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -101,119 +95,65 @@ export default function OutsideContentCard({
     </div>
   );
 
-  if (compact) {
-    const picked = OPTIONS.find((o) => o.value === setting?.mode);
-    return (
-      <SettingsCard title="Approvals" titleId="approvals-label">
-        {!setting && !error && <PageSpinner />}
-        {setting && (
-          <>
-            <div
-              role="radiogroup"
-              aria-labelledby="approvals-label"
-              className="inline-flex max-w-full flex-wrap overflow-hidden rounded-xl border border-line"
-            >
-              {OPTIONS.map((o, i) => {
-                const on = o.value === setting.mode;
-                return (
-                  <button
-                    key={o.value}
-                    type="button"
-                    role="radio"
-                    aria-checked={on}
-                    disabled={busy}
-                    onClick={() => void pick(o.value)}
-                    className={`min-h-touch px-4 text-sm transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${
-                      i > 0 ? "border-l border-line" : ""
-                    } ${on ? "bg-accent/10 font-semibold text-accent-strong" : "text-fg-muted hover:bg-surface-overlay/60"}`}
-                  >
-                    {o.title}
-                    {o.recommended && <span className="ml-1.5 text-xs font-normal text-fg-subtle">Recommended</span>}
-                  </button>
-                );
-              })}
-            </div>
-            {picked && <p className="mt-2 text-sm text-fg-muted leading-snug">{picked.text}</p>}
-            <button
-              type="button"
-              aria-expanded={more}
-              aria-controls="approvals-more"
-              onClick={() => setMore((v) => !v)}
-              className="mt-2 text-sm font-medium text-accent hover:underline cursor-pointer"
-            >
-              {more ? "Hide what each level means" : "What each level means"}
-            </button>
-            {more && (
-              <div id="approvals-more" className="mt-3 flex flex-col gap-3">
-                {children}
-                {whatever}
-              </div>
-            )}
-          </>
-        )}
-        {error && (
-          <p role="alert" className="mt-2 text-sm text-red-600 dark:text-red-400">
-            {error}
-          </p>
-        )}
-      </SettingsCard>
-    );
-  }
-
+  const picked = OPTIONS.find((o) => o.value === setting?.mode);
   return (
-    <SettingsCard
-      title="Approvals"
-      description="Pick how much I do on my own. It works the same in the app, email and every chat app."
-    >
+    <SettingsCard title="Approvals" titleId="approvals-label">
       {!setting && !error && <PageSpinner />}
       {setting && (
-        <div className="flex flex-col gap-4">
-          <p className="text-sm text-fg-muted">
-            Example below: you ask me to{" "}
-            <span className="font-semibold text-fg">&ldquo;answer Dana&rsquo;s email and book the meeting she wants.&rdquo;</span>
-          </p>
-          <div role="radiogroup" aria-label="Approvals" className="flex flex-col gap-2">
-            {OPTIONS.map((o) => {
-              const picked = o.value === setting.mode;
+        <>
+          <div
+            role="radiogroup"
+            aria-labelledby="approvals-label"
+            className="inline-flex max-w-full flex-wrap overflow-hidden rounded-xl border border-line"
+          >
+            {OPTIONS.map((o, i) => {
+              const on = o.value === setting.mode;
               return (
                 <button
                   key={o.value}
                   type="button"
                   role="radio"
-                  aria-checked={picked}
+                  aria-checked={on}
                   disabled={busy}
                   onClick={() => void pick(o.value)}
-                  className={`flex min-h-touch gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${
-                    picked ? "border-accent-strong bg-accent/10" : "border-line hover:bg-surface-overlay/60"
-                  }`}
+                  className={`min-h-touch px-4 text-sm transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${
+                    i > 0 ? "border-l border-line" : ""
+                  } ${on ? "bg-accent/10 font-semibold text-accent-strong" : "text-fg-muted hover:bg-surface-overlay/60"}`}
                 >
-                  <span
-                    aria-hidden="true"
-                    className={`mt-1 h-4 w-4 flex-shrink-0 rounded-full ${
-                      picked ? "border-[5px] border-accent-strong" : "border-2 border-fg-subtle"
-                    }`}
-                  />
-                  <span>
-                    <span className="flex items-center gap-2">
-                      <span className="text-[15px] font-semibold text-fg">{o.title}</span>
-                      {o.recommended && (
-                        <span className="rounded-full bg-accent/15 px-2 py-0.5 text-xs font-semibold text-accent-strong">
-                          Recommended
-                        </span>
-                      )}
-                    </span>
-                    <span className="block text-sm text-fg-muted">{o.text}</span>
-                    <span className="mt-2 block border-l-2 border-line pl-3 text-sm text-fg-subtle">
-                      <span className="font-semibold text-fg-muted">Example:</span> {o.example}
-                    </span>
-                  </span>
+                  {o.title}
+                  {o.recommended && <span className="ml-1.5 text-xs font-normal text-fg-subtle">Recommended</span>}
                 </button>
               );
             })}
           </div>
-
-          {whatever}
-        </div>
+          {picked && <p className="mt-2 text-sm text-fg-muted leading-snug">{picked.text}</p>}
+          <button
+            type="button"
+            aria-expanded={more}
+            aria-controls={more ? "approvals-more" : undefined}
+            onClick={() => setMore((v) => !v)}
+            className="mt-2 text-sm font-medium text-accent hover:underline cursor-pointer"
+          >
+            {more ? "Hide what each level means" : "What each level means"}
+          </button>
+          {more && (
+            <div id="approvals-more" className="mt-3 flex flex-col gap-3">
+              {children}
+              <div className="text-sm text-fg-muted">
+                Say you ask me to{" "}
+                <span className="font-semibold text-fg">&ldquo;answer Dana&rsquo;s email and book the meeting she wants.&rdquo;</span>
+                <ul className="mt-1 flex flex-col gap-1 pl-5 list-disc">
+                  {OPTIONS.map((o) => (
+                    <li key={o.value}>
+                      <span className="font-semibold text-fg">{o.title}:</span> {o.example}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              {whatever}
+            </div>
+          )}
+        </>
       )}
       {error && (
         <p role="alert" className="mt-2 text-sm text-red-600 dark:text-red-400">
