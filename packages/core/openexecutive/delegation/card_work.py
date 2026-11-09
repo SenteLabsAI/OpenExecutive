@@ -296,9 +296,11 @@ async def _run(person: Any, card_id: int, *, gmail: Any, ask: str) -> None:
     finally:
         _RUNNING.discard(card_id)
         _STARTED.pop(card_id, None)
-        # Ended without handing anything back: the card is as it was.
+        # Ended without handing anything back: the card is as it was, and
+        # one that would have gone on its own waits for them instead, since
+        # what the email asked wasn't done.
         if _set_work(card_id, "", only_if=WORKING):
-            await _after(person, card_id, gmail=gmail)
+            _hand_back_unfinished(card_id)
 
 
 async def apply(
@@ -451,6 +453,18 @@ async def _after(person: Any, card_id: int, *, gmail: Any) -> None:
         await _send_on_its_own(person, gmail, card_id, ScanResult(status="ok"), now=datetime.now(UTC))
     except Exception:
         logger.exception("delegation.card_work: couldn't settle card %s after the work", card_id)
+
+
+def _hand_back_unfinished(card_id: int) -> None:
+    from openexecutive.delegation.inbox import _hand_back
+    from openexecutive.memory.decision_ledger import STATUS_PROPOSED, get_decision_instance
+
+    try:
+        card = get_decision_instance(card_id)
+        if card is not None and card.status == STATUS_PROPOSED and getattr(card, "gate_mode", "") == "auto_execute":
+            _hand_back(card, "work_unfinished")
+    except Exception:
+        logger.exception("delegation.card_work: couldn't hand back card %s", card_id)
 
 
 async def finished(person: Any, card_id: int, *, gmail: Any = None) -> None:

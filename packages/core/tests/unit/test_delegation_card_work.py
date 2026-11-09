@@ -347,6 +347,33 @@ def _with_gate(real: Any) -> Any:
     return read
 
 
+def test_an_unfinished_turn_hands_back_a_reply_that_would_go_on_its_own(
+    db: Path, owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mailbox, card = _card(owner)
+    held: list[str | None] = []
+    monkeypatch.setattr(inbox, "_hand_back", lambda c, reason: held.append(reason))
+    card_work._hand_back_unfinished(card.id)
+    assert held == []
+    monkeypatch.setattr(ledger, "get_decision_instance", _with_gate(ledger.get_decision_instance))
+    card_work._hand_back_unfinished(card.id)
+    assert held == ["work_unfinished"]
+
+
+def test_update_reply_card_hands_back_once(db: Path, owner: Any, models: dict[str, Any]) -> None:
+    import json
+
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    _mailbox, card = _card(owner)
+    token = current_session.set(Session(reply_card_work=card.id))
+    try:
+        out = json.loads(asyncio.run(reply_card_tools.handle_update_reply_card({"note": "Done."})))
+        assert "already handed back" in out["error"]
+    finally:
+        current_session.reset(token)
+
+
 @pytest.fixture(autouse=True)
 def _no_running() -> Any:
     card_work._RUNNING.clear()

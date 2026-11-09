@@ -142,6 +142,11 @@ async def handle_update_reply_card(tool_input: dict[str, Any]) -> str:
     if not offered(session):
         return _error(f"{UPDATE_REPLY_CARD} is not available on this turn. Do not retry.")
     card_id = int(session.reply_card_work)
+    from openexecutive.memory.decision_ledger import get_decision_instance
+
+    card = get_decision_instance(card_id)
+    if card is None or not card_work.still_working(card):
+        return _error(f"This card's work was already handed back, or the card was sent or dismissed. Do not call {UPDATE_REPLY_CARD} again.")
     writer = _writer(UPDATE_REPLY_CARD)
     if isinstance(writer, str):
         return writer

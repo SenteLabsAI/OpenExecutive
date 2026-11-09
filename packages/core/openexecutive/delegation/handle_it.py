@@ -173,6 +173,7 @@ REASONS: dict[str, str] = {
     "draft_changed": "You changed the draft in your mailbox, so it's yours to send.",
     "handle_it_off": "Handle it for me was off by the time it came to send.",
     # After the Executive did what the email asked (delegation.card_work).
+    "work_unfinished": "I couldn't finish what they asked, so it waits for you.",
     "work_stranger": "I did what they asked, and they aren't in your People, so it waits for you to look.",
     # Meeting invites (delegation.invites).
     "stranger": "Below Hands-off it acts on its own only for people you know.",
