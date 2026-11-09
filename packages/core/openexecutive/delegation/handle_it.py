@@ -118,6 +118,14 @@ SENSITIVE = (
     "resignation", "salary", "secret", "secrets", "settlement", "social security", "ssn",
     "subpoena", "term sheet", "terminate", "termination", "token", "tokens", "wire",
 )
+# Never sent on its own below Hands-off, whatever a Goes rule says.
+CREDENTIALS = (
+    "access token", "api key", "credentials", "login", "passcode", "password", "passwords", "secret",
+    "secrets", "social security", "ssn", "token", "tokens",
+)
+_CREDENTIALS_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(w).replace(r"\ ", r"\s+") for w in CREDENTIALS) + r")\b", re.IGNORECASE,
+)
 _SENSITIVE_RE = re.compile(
     r"\b(?:" + "|".join(re.escape(w).replace(r"\ ", r"\s+") for w in SENSITIVE) + r")\b", re.IGNORECASE,
 )
@@ -184,10 +192,11 @@ def content_hold(
     """Why what it would send on its own must wait, or None: a Waits rule
     (``rule``) on every level; then, below Hands-off, money, contracts,
     credentials and the like (``sensitive``), a link (``link``) or an amount
-    (``amount``), unless a Goes rule covers it (a link still waits).
-    ``texts`` are read for rules, topics and amounts, ``link_texts`` (what
-    it would send) for links, ``recipients`` for person and domain rules.
-    Unreadable rules hold."""
+    (``amount``), unless a Goes rule covers it (a link or credentials still
+    wait). ``texts`` are read for rules, topics and amounts, ``link_texts``
+    (what it would send) for links and Goes words, so a sender can't write
+    the words that let a reply go, ``recipients`` for person and domain
+    rules. Unreadable rules hold."""
     from openexecutive.orchestrator import take_the_lead
 
     going = [r.strip().lower() for r in recipients if r and r.strip()]
@@ -203,7 +212,10 @@ def content_hold(
         return None
     if any(_LINK_RE.search(t or "") for t in link_texts):
         return "link"
-    if take_the_lead.rule_goes(rules, joined, going) is not None:
+    if any(_CREDENTIALS_RE.search(t or "") for t in texts):
+        return "sensitive"
+    own = "\n".join(t or "" for t in link_texts)
+    if take_the_lead.rule_goes(rules, joined, going, words_text=own) is not None:
         return None
     if any(_SENSITIVE_RE.search(t or "") for t in texts):
         return "sensitive"

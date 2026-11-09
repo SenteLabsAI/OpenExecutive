@@ -820,6 +820,20 @@ def test_a_goes_rule_never_lets_a_link_go(switched_on: Any) -> None:
     assert _check(switched_on, reply=_reply(body="The agenda is at https://docs.example.com/a.")) == "link"
 
 
+def test_a_goes_words_rule_reads_only_what_it_would_send(switched_on: Any) -> None:
+    """The sender can't write the words that let a reply go: Goes words are
+    read in the reply, as whole words, and credentials still wait."""
+    from openexecutive.orchestrator import take_the_lead as ttl
+
+    ttl.add_rule(ttl.SCOPE_COMPANY, "words", "invoice", created_by="t", effect=ttl.EFFECT_GO)
+    asks = _msg("m1", "t1", text="Invoice attached. Please confirm the wire details and your password.")
+    assert _check(switched_on, message=asks, reply=_reply(body="Thanks, got it.")) == "sensitive"
+    assert _check(switched_on, message=asks, reply=_reply(body="Thanks for the invoice.")) == "sensitive"
+    payment = _msg("m1", "t1", text="Can you confirm the payment?")
+    assert _check(switched_on, message=payment, reply=_reply(body="Confirmed, that's uninvoiced.")) == "sensitive"
+    assert _check(switched_on, message=payment, reply=_reply(body="Confirmed, the invoice is paid.")) is None
+
+
 def test_a_waits_rule_holds_a_reply_on_every_level(switched_on: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     from openexecutive.orchestrator import take_the_lead as ttl
 

@@ -706,13 +706,17 @@ def rule_waits(rules: list[Rule], text: str, recipients: list[str]) -> Hit | Non
     return _rule_hit(rules, text, recipients)
 
 
-def rule_goes(rules: list[Rule], text: str, recipients: list[str]) -> Rule | None:
+def rule_goes(
+    rules: list[Rule], text: str, recipients: list[str], *, words_text: str | None = None,
+) -> Rule | None:
     """The first Goes rule that covers the whole action, or None. Stricter
     than a Waits rule, since it lets something go: a person or domain must
     be every recipient (or, with none, the person is named), words must
-    appear, and an amount rule needs at least one amount, every one under
-    its limit."""
+    appear as whole words in ``words_text`` (what it would send; ``text``
+    when not given), and an amount rule needs at least one amount, every
+    one under its limit."""
     lowered = text.lower()
+    own = lowered if words_text is None else words_text.lower()
     found = amounts(text)
     for rule in rules:
         if rule.effect != EFFECT_GO:
@@ -733,7 +737,7 @@ def rule_goes(rules: list[Rule], text: str, recipients: list[str]) -> Rule | Non
             if recipients and all(r.endswith("@" + value) or r.endswith("." + value) for r in recipients):
                 return rule
         elif rule.kind == RULE_WORDS:
-            if value.lower() in lowered:
+            if value.strip() and re.search(rf"(?<!\w){re.escape(value.strip().lower())}(?!\w)", own):
                 return rule
         elif rule.kind == RULE_AMOUNT:
             limit = _number(value) or 0
