@@ -1615,9 +1615,18 @@ def suggestions_on_card(alert: Any, *, db_path: Path | None = None) -> list[Watc
     else:
         return None
     # Only what the card shows by name: a suggestion filed after its body
-    # was written, or folded into "and N more", was never in front of them.
+    # was last written (even one whose line reads the same), or folded into
+    # "and N more", was never in front of them.
     shown = {line.strip() for line in str(getattr(alert, "body", "") or "").splitlines()}
-    return [i for i in pile if f"• {card_line(i)}" in shown]
+    written = _parse(getattr(alert, "last_seen_at", None)) or _parse(getattr(alert, "created_at", None))
+
+    def _on_card(item: WatchlistItem) -> bool:
+        filed = _parse(item.created_at)
+        if written is not None and filed is not None and filed > written:
+            return False
+        return f"• {card_line(item)}" in shown
+
+    return [i for i in pile if _on_card(i)]
 
 
 def decline_card_suggestions(alert: Any, *, db_path: Path | None = None) -> int:

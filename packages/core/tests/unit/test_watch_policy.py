@@ -949,6 +949,7 @@ def test_a_no_to_the_card_declines_what_it_lists(db: Path, monkeypatch: pytest.M
     for i in range(3):
         ms.insert_watchlist_item(
             slug=f"rss-p{i}", signal_type="rss", target=f"https://p{i}.com/feed",
+            config={wp.CARD_LINE_KEY: f"News from P{i}"},
             mode=MODE_DRY_RUN, origin=ORIGIN_RESEARCH_PROPOSED, db_path=db,
         )
         _backdate(db, f"rss-p{i}", 8)
@@ -965,8 +966,14 @@ def test_a_no_to_the_card_declines_what_it_lists(db: Path, monkeypatch: pytest.M
         slug="rss-new", signal_type="rss", target="https://new.com/feed",
         mode=MODE_DRY_RUN, origin=ORIGIN_RESEARCH_PROPOSED, db_path=db,
     )
+    # Filed later with the same line as one on the card: still unseen.
+    ms.insert_watchlist_item(
+        slug="rss-p0-blog", signal_type="rss", target="https://p0.com/blog",
+        config={wp.CARD_LINE_KEY: "News from P0"},
+        mode=MODE_DRY_RUN, origin=ORIGIN_RESEARCH_PROPOSED, db_path=db,
+    )
     assert wp.decline_card_suggestions(card, db_path=db) == 3
-    assert {i.slug for i in ms.list_pending_suggestions(db_path=db)} == {"rss-head", "rss-new"}
+    assert {i.slug for i in ms.list_pending_suggestions(db_path=db)} == {"rss-head", "rss-new", "rss-p0-blog"}
     assert not ms.is_declined("https://new.com/feed", db_path=db)
     # Remembered: the research pass won't propose them again.
     assert ms.is_declined("https://p0.com/feed", db_path=db)
