@@ -101,16 +101,25 @@ def home_url() -> str:
 
 # Any Markdown link, whatever its address (scheme-relative, javascript:,
 # mailto:), and an <address> autolink.
-_ANY_MD_LINK = re.compile(
-    r"\[([^\]\n]*)\]\(\s*<?((?:[^()\s<>]|\([^()\s]*\))*)>?[^)\n]*\)"
+# Every form of link a brief could carry, matched in one pass so an address
+# inside a link is not matched again on its own: an inline Markdown link
+# (any address: scheme-relative, javascript:, mailto:), an <address>
+# autolink, a reference definition ("[1]: address") and a bare address,
+# which chat apps and mail clients link on their own.
+_ANY_LINK = re.compile(
+    r"(?P<md>\[(?P<md_text>[^\]\n]*)\]\(\s*<?(?P<md_url>(?:[^()\s<>]|\([^()\s]*\))*)>?[^)\n]*\))"
+    r"|(?P<auto><(?P<auto_url>[a-z][a-z0-9+.-]*:[^>\s]*|//[^>\s]*)>)"
+    r"|(?P<ref>^[ \t]*\[[^\]\n]+\]:[ \t]*<?(?P<ref_url>\S+?)>?(?:[ \t].*)?$)"
+    r"|(?P<bare>(?:https?://|www\.)[^\s<>()\[\]]+)",
+    re.IGNORECASE | re.MULTILINE,
 )
-_AUTOLINK = re.compile(r"<([a-z][a-z0-9+.-]*:[^>\s]*|//[^>\s]*)>", re.IGNORECASE)
 
 
 def keep_app_links(text: str) -> str:
-    """A brief with every Markdown link that doesn't point into this app
-    reduced to its text: a brief links only to the app's own pages (cards,
-    write-ups), so a link anywhere else came from quoted mail or chat."""
+    """A brief with every link that doesn't point into this app taken out:
+    an inline link becomes its text, any other form "(link removed)". A brief
+    links only to the app's own pages (cards, write-ups), so a link anywhere
+    else came from quoted mail or chat."""
     base = _base()
 
     def ours(url: str) -> bool:
@@ -119,10 +128,17 @@ def keep_app_links(text: str) -> str:
         )
 
     def keep(m: re.Match[str]) -> str:
-        return m.group(0) if ours(m.group(2)) else m.group(1)
+        if m.group("md") is not None:
+            return m.group(0) if ours(m.group("md_url")) else m.group("md_text")
+        if m.group("auto") is not None:
+            url = m.group("auto_url")
+        elif m.group("ref") is not None:
+            url = m.group("ref_url")
+        else:
+            url = m.group("bare").rstrip(".,;:!?'\"")
+        return m.group(0) if ours(url) else "(link removed)"
 
-    text = _ANY_MD_LINK.sub(keep, text or "")
-    return _AUTOLINK.sub(lambda m: m.group(0) if ours(m.group(1)) else "(link removed)", text)
+    return _ANY_LINK.sub(keep, text or "")
 
 
 def write_up_url(artifact_id: str) -> str:

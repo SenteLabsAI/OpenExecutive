@@ -349,3 +349,19 @@ def test_no_empty_still_open_block_when_every_older_item_was_rewritten(monkeypat
     ):
         assert "STILL OPEN FROM BEFORE" not in text
         assert "- item 4 — now due Friday — link: https://app.example.com/?card=4" in text
+
+
+def test_a_brief_strips_reference_and_bare_links(monkeypatch) -> None:
+    from openexecutive.alerts import card_refs
+
+    monkeypatch.setattr(card_refs, "_base", lambda: "https://app.example.com")
+    text = (
+        "[Review][1] then see https://evil.example/x and www.evil.example.\n"
+        "[1]: https://evil.example/login\n"
+        "Home is https://app.example.com/?card=4."
+    )
+    assert card_refs.keep_app_links(text) == (
+        "[Review][1] then see (link removed) and (link removed)\n"
+        "(link removed)\n"
+        "Home is https://app.example.com/?card=4."
+    )
