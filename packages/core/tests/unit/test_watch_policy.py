@@ -550,7 +550,7 @@ def test_sweep_nudges_once_suggestions_pile_up(db: Path) -> None:
     assert first is not None and first.id is not None and ms.approve_suggestion(first.id, db_path=db)
     assert wp.sweep(datetime.now(UTC), db_path=db)["nudged"] == 0
     alerts = [a for a in list_alerts(limit=10, db_path=db) if a.source == wp.NUDGE_ALERT_SOURCE]
-    assert len(alerts) == 1 and alerts[0].headline == "Things to watch, waiting for your OK"
+    assert len(alerts) == 1 and alerts[0].headline == "Watch suggestions waiting for your OK"
     # In words, never slugs or signal types.
     assert "rss-s" not in alerts[0].body and "(rss)" not in alerts[0].body
     assert "• New posts at s1.com" in alerts[0].body
@@ -1319,7 +1319,7 @@ def test_the_card_says_each_suggestion_in_plain_words(db: Path) -> None:
     body = wp.nudge_body(ms.list_pending_suggestions(db_path=db))
     assert "\n• Approve me" not in body and len(body.splitlines()) == 4
     # No count: the open card's body is refreshed in place, its headline not.
-    assert wp.nudge_headline() == "Things to watch, waiting for your OK"
+    assert wp.nudge_headline() == "Watch suggestions waiting for your OK"
 
 
 @pytest.mark.asyncio

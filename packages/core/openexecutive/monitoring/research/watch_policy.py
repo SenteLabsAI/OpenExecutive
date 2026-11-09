@@ -1521,7 +1521,7 @@ NUDGE_SHOWN = 10
 
 # No count in the headline: an open card is refreshed in place
 # (``coalesce_alert`` updates its body only), so a count there goes stale.
-NUDGE_HEADLINE = "Things to watch, waiting for your OK"
+NUDGE_HEADLINE = "Watch suggestions waiting for your OK"
 
 
 def nudge_headline() -> str:

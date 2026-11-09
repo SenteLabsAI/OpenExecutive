@@ -155,6 +155,17 @@ def test_only_their_own_words_answer_when_the_message_wraps_them(people: SimpleN
     assert out["status"] == "dismissed"
 
 
+def test_a_no_naming_watch_suggestions_dismisses_their_card(people: SimpleNamespace) -> None:
+    from openexecutive.monitoring.research.watch_policy import NUDGE_ALERT_SOURCE, nudge_headline
+
+    _alert()
+    alert_id = _alert(source=NUDGE_ALERT_SOURCE, headline=nudge_headline())
+    said = "No, I don't.\n(The voice took this to mean: Decline the watch suggestions)"
+    with _turn(people.principal, said, own_words=said):
+        out = _call(alert_id=alert_id, reply="dismiss")
+    assert out["status"] == "dismissed"
+
+
 def test_a_teammate_answers_their_own_card(people: SimpleNamespace) -> None:
     alert_id = _alert(routed_to_person_id=people.teammate)
     with _turn(people.teammate, "yes, send it"):
