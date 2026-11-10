@@ -625,7 +625,7 @@ def test_my_calendar_is_off_until_they_turn_it_on(roster: SimpleNamespace) -> No
     mailbox = CalendarMailbox()
     session = _session(mailbox)
     result = _calendar(session, {})
-    assert result["status"] == "calendar_off" and "Settings" in result["error"]
+    assert result["status"] == "calendar_off" and "Delegate → As you" in result["error"]
     assert mailbox.windows == [] and session.turn_delegation.touched_mail is False
 
 
