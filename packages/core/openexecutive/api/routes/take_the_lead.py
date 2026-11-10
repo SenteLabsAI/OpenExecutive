@@ -366,7 +366,9 @@ def stop_job(request: Request, job_id: int) -> LeadOut:
     from openexecutive.orchestrator import take_the_lead
 
     principal = _principal(request)
-    if take_the_lead.stop_job(job_id) is None:
+    job = take_the_lead.stop_job(job_id)
+    if job is None:
         raise HTTPException(status_code=404, detail="That standing job isn't there.")
-    _audit("Standing job stopped", {"job_id": job_id})
+    if job.stopped_at is None:
+        _audit("Standing job stopped", {"job_id": job_id})
     return _out(principal)

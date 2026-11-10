@@ -53,7 +53,7 @@ import sqlite3
 from collections.abc import Awaitable, Callable, Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -2454,23 +2454,27 @@ def jobs_by_id(*, db_path: Path | None = None) -> dict[int, Job]:
 
 
 def stop_job(job_id: int, *, db_path: Path | None = None) -> Job | None:
-    """Stop a standing job. Returns it, or None when there is no such
-    active job."""
+    """Stop a standing job. Returns it as it was before this call (its
+    ``stopped_at`` is None only when this call stopped it), or None when
+    there is no such job. Stopping one already stopped is not an error:
+    two stops at once (Home and the As me tab) both succeed, once."""
     conn = _connect(db_path)
     try:
         row = conn.execute(
-            f"SELECT * FROM {JOBS_TABLE} WHERE id = ? AND stopped_at IS NULL", (job_id,),  # noqa: S608
+            f"SELECT * FROM {JOBS_TABLE} WHERE id = ?", (job_id,),  # noqa: S608
         ).fetchone()
         if row is None:
             return None
-        # Only the stop that changes the row wins: two at once (a double
-        # tap, or Home and the As me tab) stop it once.
+        job = Job(**dict(row))
+        if job.stopped_at is not None:
+            return job
         cur = conn.execute(
             f"UPDATE {JOBS_TABLE} SET stopped_at = ? WHERE id = ? AND stopped_at IS NULL",  # noqa: S608
             (datetime.now(UTC).isoformat(), job_id),
         )
         conn.commit()
-        return Job(**dict(row)) if cur.rowcount == 1 else None
+        # The other stop got there first: it was already stopped.
+        return job if cur.rowcount == 1 else replace(job, stopped_at=datetime.now(UTC).isoformat())
     finally:
         conn.close()
 

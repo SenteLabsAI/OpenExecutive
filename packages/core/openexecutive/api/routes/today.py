@@ -3122,10 +3122,12 @@ async def stop_watching(body: StopWatchingRequest, request: Request) -> dict[str
     owner = _caller_is_principal_or_unclaimed(request)
     if kind == "job":
         # The owner's alone, the same check as DELETE /take-the-lead/jobs.
-        if not caller_is_principal(request) or take_the_lead.stop_job(item_id) is None:
+        job = take_the_lead.stop_job(item_id) if caller_is_principal(request) else None
+        if job is None:
             raise HTTPException(status_code=404, detail="That isn't there any more.")
-        audit_log("take_the_lead_changed", "Standing job stopped from Home", actor="user",
-                  details={"job_id": item_id})
+        if job.stopped_at is None:
+            audit_log("take_the_lead_changed", "Standing job stopped from Home", actor="user",
+                      details={"job_id": item_id})
         return {"stopped": True}
     if kind != "action":
         raise HTTPException(status_code=404, detail="That isn't there any more.")

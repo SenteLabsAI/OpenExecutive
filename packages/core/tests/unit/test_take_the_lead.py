@@ -1543,7 +1543,9 @@ def test_standing_jobs_on_the_as_me_tab(client: TestClient, owner: Any) -> None:
     assert body["jobs"][0]["this_week"] == "1 follow-up, 1 meeting booked"
     assert (body["done_today"], body["left_today"]) == (2, 1)
     assert client.delete(f"/take-the-lead/jobs/{job['id']}").json()["jobs"] == []
-    assert client.delete(f"/take-the-lead/jobs/{job['id']}").status_code == 404
+    # A second stop (another tab) still succeeds; a job that never was doesn't.
+    assert client.delete(f"/take-the-lead/jobs/{job['id']}").status_code == 200
+    assert client.delete("/take-the-lead/jobs/9999").status_code == 404
 
 
 def test_a_teammate_cant_give_it_standing_jobs(client: TestClient, owner: Any) -> None:
@@ -1671,7 +1673,12 @@ def test_two_adds_at_once_make_one_standing_job(tmp_path: Path) -> None:
     [job] = ttl.list_jobs(db_path=db)
     with ThreadPoolExecutor(max_workers=8) as pool:
         stopped = list(pool.map(lambda _: ttl.stop_job(job.id, db_path=db), range(8)))
-    assert sum(s is not None for s in stopped) == 1
+    # Every stop succeeds; only one of them stopped it.
+    assert all(s is not None for s in stopped)
+    assert sum(s is not None and s.stopped_at is None for s in stopped) == 1
+    again = ttl.stop_job(job.id, db_path=db)
+    assert again is not None and again.stopped_at is not None
+    assert ttl.stop_job(9999, db_path=db) is None
 
 
 def test_it_only_watches_while_as_me_is_on(monkeypatch: pytest.MonkeyPatch, watched: None) -> None:
