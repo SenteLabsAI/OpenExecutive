@@ -5,11 +5,9 @@ import Link from "next/link";
 
 import {
   ArtifactSummary,
-  WorkflowMeta,
   archiveArtifact,
   deleteArtifact,
   listArtifacts,
-  listWorkflows,
   restoreArtifact,
 } from "@/lib/api";
 import Icon from "@/components/Icon";
@@ -30,6 +28,12 @@ type View = "active" | "archived";
 
 // How long the "Archived — Undo" toast stays before auto-dismissing.
 const UNDO_TIMEOUT_MS = 6000;
+
+// Server group keys (api/routes/artifacts.py `_group`).
+const CHATS_GROUP = "chats";
+const BRIEFS_GROUP = "briefs";
+// A workflow group shows its newest few, then "Show N more".
+const GROUP_PREVIEW = 2;
 
 function FilterButton({
   active,
@@ -115,13 +119,14 @@ interface UndoToast {
 
 export default function ArtifactsPage() {
   const [artifacts, setArtifacts] = useState<ArtifactSummary[]>([]);
-  const [workflows, setWorkflows] = useState<WorkflowMeta[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<KindFilter>("all");
   const [view, setView] = useState<View>("active");
   const [pending, setPending] = useState<Set<string>>(new Set());
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  // Workflow groups whose older documents are shown.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [undo, setUndo] = useState<UndoToast | null>(null);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -137,15 +142,6 @@ export default function ArtifactsPage() {
   useEffect(() => {
     load(view);
   }, [view, load]);
-
-  // Workflow metadata is view-independent — fetch once to map a run's raw
-  // workflow_name (carried as source_label) to its pretty title for group
-  // headers. Failure is non-fatal; we fall back to the raw source_label.
-  useEffect(() => {
-    listWorkflows()
-      .then(setWorkflows)
-      .catch(() => {});
-  }, []);
 
   useEffect(
     () => () => {
@@ -277,48 +273,34 @@ export default function ArtifactsPage() {
     [artifacts, shown]
   );
 
-  const workflowTitleMap = useMemo(
-    () => new Map(workflows.map((w) => [w.name, w.title] as const)),
-    [workflows]
-  );
-
   const toggleCollapsed = useCallback(
-    (key: string) => setCollapsed((c) => ({ ...c, [key]: !c[key] })),
+    (key: string) =>
+      setCollapsed((c) => ({ ...c, [key]: !(c[key] ?? key === BRIEFS_GROUP) })),
     []
   );
 
-  // Group by source, mirroring the Jobs → Runs view: each workflow becomes its
-  // own group (keyed by source_label = workflow_name, titled via workflowTitleMap),
-  // and every draft collapses into one "Drafts" group. `visible` arrives
-  // newest-first from the API, so first-seen order surfaces the group with the
-  // most recent artifact first.
+  const showAll = useCallback(
+    (key: string) => setExpanded((prev) => new Set(prev).add(key)),
+    []
+  );
+
+  // Groups come from the server (`group` / `group_label`). `visible` arrives
+  // newest-first, so first-seen order puts the most recent group first;
+  // documents from chats lead, and the daily briefs sink to the bottom.
   const groups = useMemo(() => {
     const map = new Map<
       string,
       { key: string; label: string; items: ArtifactSummary[] }
     >();
     for (const a of visible) {
-      // Namespace the workflow key so a workflow literally named "drafts"
-      // can never collide with the drafts bucket.
-      const key = a.collection
-        ? `c:${a.collection}`
-        : a.kind === "draft"
-          ? "drafts"
-          : `wf:${a.source_label}`;
-      const existing = map.get(key);
-      if (existing) {
-        existing.items.push(a);
-      } else {
-        const label = a.collection
-          ? a.collection_label || a.collection
-          : a.kind === "draft"
-            ? "Drafts"
-            : workflowTitleMap.get(a.source_label) ?? a.source_label;
-        map.set(key, { key, label, items: [a] });
-      }
+      const existing = map.get(a.group);
+      if (existing) existing.items.push(a);
+      else map.set(a.group, { key: a.group, label: a.group_label, items: [a] });
     }
-    return Array.from(map.values());
-  }, [visible, workflowTitleMap]);
+    const rank = (key: string) =>
+      key === CHATS_GROUP ? 0 : key === BRIEFS_GROUP ? 2 : 1;
+    return Array.from(map.values()).sort((x, y) => rank(x.key) - rank(y.key));
+  }, [visible]);
 
   const switchView = useCallback(
     (v: View) => {
@@ -343,12 +325,7 @@ export default function ArtifactsPage() {
                 {view === "archived" ? "Archived documents" : "Your documents"}
               </h1>
               <p className="text-[15px] text-fg-muted">
-                Every deliverable the Executive has produced for you — memos, web
-                pages, Word documents, spreadsheets and links into your connected
-                apps, alongside your workflow outputs and the team&apos;s scheduled
-                ones. Documents from your chats are yours alone; no one else
-                sees them. Archive what you&apos;re done with; delete clears it
-                for good.
+                What the Executive made for you. Archive what you&apos;re done with.
               </p>
             </div>
             {/* One filter control: the kind, with Active / Archived in its ⋯. */}
@@ -367,7 +344,7 @@ export default function ArtifactsPage() {
                 <FilterButton
                   active={shown === "draft"}
                   onClick={() => setFilter("draft")}
-                  label="Drafts"
+                  label="From chats"
                   count={counts.draft}
                 />
                 <FilterButton
@@ -421,7 +398,18 @@ export default function ArtifactsPage() {
             <>
               <div className="space-y-6">
                 {groups.map((group) => {
-                  const isCollapsed = !!collapsed[group.key];
+                  const isCollapsed = collapsed[group.key] ?? group.key === BRIEFS_GROUP;
+                  // A closed briefs group still shows the newest one.
+                  const capped =
+                    group.key.startsWith("wf:") && !expanded.has(group.key);
+                  const rows = isCollapsed
+                    ? group.key === BRIEFS_GROUP
+                      ? group.items.slice(0, 1)
+                      : []
+                    : capped
+                      ? group.items.slice(0, GROUP_PREVIEW)
+                      : group.items;
+                  const hidden = isCollapsed ? 0 : group.items.length - rows.length;
                   return (
                     <div key={group.key}>
                       <button
@@ -446,9 +434,9 @@ export default function ArtifactsPage() {
                           {group.items.length === 1 ? "document" : "documents"}
                         </span>
                       </button>
-                      {!isCollapsed && (
+                      {rows.length > 0 && (
                         <div className="overflow-hidden rounded-2xl border border-line bg-surface-elevated divide-y divide-line">
-                          {group.items.map((a) => (
+                          {rows.map((a) => (
                             <ArtifactRow
                               key={a.id}
                               item={a}
@@ -459,6 +447,15 @@ export default function ArtifactsPage() {
                               onDelete={handleDelete}
                             />
                           ))}
+                          {hidden > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => showAll(group.key)}
+                              className="flex min-h-11 w-full items-center px-4 text-left text-[15px] font-medium text-accent hover:bg-surface-overlay/60 cursor-pointer"
+                            >
+                              Show {hidden} more
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>

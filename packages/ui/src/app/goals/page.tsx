@@ -20,7 +20,7 @@ import {
   listPeople,
   type GoalView,
 } from "@/lib/api";
-import { goalCounts, groupGoals, type GoalGrouping } from "@/lib/goalGroups";
+import { STATUS_ORDER, goalCounts, groupGoals, type GoalGrouping } from "@/lib/goalGroups";
 import { PageSpinner } from "@/components/ui/Spinner";
 
 // Every goal in one place (GET /goals). A goal has an owner and, optionally,
@@ -100,8 +100,7 @@ export default function GoalsPage() {
   );
   const total = goals?.length ?? 0;
   const counts = goalCounts(goals ?? []);
-  const summary = (["off_track", "at_risk", "on_track"] as const)
-    .filter((s) => counts[s] > 0)
+  const summary = STATUS_ORDER.filter((s) => counts[s] > 0)
     .map((s) => `${counts[s]} ${goalStatusLabel(s)}`)
     .join(" · ");
 
@@ -234,11 +233,12 @@ export default function GoalsPage() {
 
 // One pill per status present in the group, worst first.
 function StatusDots({ goals }: { goals: GoalView[] }) {
-  const present = (["off_track", "at_risk", "on_track"] as const).filter((s) => goals.some((g) => g.status === s));
+  const counts = goalCounts(goals);
+  const present = STATUS_ORDER.filter((s) => counts[s] > 0);
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       {present.map((s) => (
-        <GoalStatusPill key={s} status={s} count={goals.filter((g) => g.status === s).length} />
+        <GoalStatusPill key={s} status={s} count={counts[s]} />
       ))}
     </div>
   );

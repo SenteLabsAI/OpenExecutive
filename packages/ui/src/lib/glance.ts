@@ -18,14 +18,16 @@ export function realDepartments(departments: DepartmentBriefItem[]): DepartmentB
 }
 
 // Every goal on the briefing, with or without a department.
-export function goalTotals(departments: DepartmentBriefItem[]): { goals: number; atRisk: number } {
+export function goalTotals(departments: DepartmentBriefItem[]): { goals: number; atRisk: number; unchecked: number } {
   let goals = 0;
   let atRisk = 0;
+  let unchecked = 0;
   for (const d of departments) {
     goals += d.goal_count;
     atRisk += d.at_risk_count + d.off_track_count;
+    unchecked += d.unchecked_count ?? 0;
   }
-  return { goals, atRisk };
+  return { goals, atRisk, unchecked };
 }
 
 // What Act as me sent or accepted for you in the last seven days.
@@ -71,18 +73,23 @@ export function tasksText(dueThisWeek: number, overdue: number, later: number): 
   return `${counted(later, "task", "tasks")} due later`;
 }
 
-export function goalsText(goals: number, atRisk: number): string {
+// A goal nothing has checked yet is not called on track.
+export function goalsText(goals: number, atRisk: number, unchecked = 0): string {
   const g = counted(goals, "goal", "goals");
-  return atRisk > 0 ? `${g}, ${atRisk} at risk` : `${g} on track`;
+  if (atRisk > 0) return `${g}, ${atRisk} at risk`;
+  if (unchecked > 0) return `${g}, ${unchecked} not checked yet`;
+  return `${g} on track`;
 }
 
-// Departments: the ones that need you, or else all of them on track.
-export function departmentsText(active: number, needAttention: number, atRisk: boolean): string {
+// Departments: the ones that need you, or else all of them on track. Those
+// with goals nothing has checked yet (`unchecked`) aren't called on track.
+export function departmentsText(active: number, needAttention: number, atRisk: boolean, unchecked = 0): string {
   if (needAttention > 0)
     return `${counted(needAttention, "department", "departments")} ${
       atRisk ? "at risk" : needAttention === 1 ? "needs attention" : "need attention"
     }`;
-  return `${counted(active, "department", "departments")} on track`;
+  const d = counted(active, "department", "departments");
+  return unchecked > 0 ? `${d}, ${unchecked} not checked yet` : `${d} on track`;
 }
 
 // People: those to follow up with, or else everyone, all clear.

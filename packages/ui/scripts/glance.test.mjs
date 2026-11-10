@@ -35,8 +35,9 @@ test("the row of goals with no department is not a department", () => {
 });
 
 test("goal totals count every goal, with or without a department", () => {
-  assert.deepEqual(goalTotals([dept("", 2, 1), dept("sales", 3, 0, 1)]), { goals: 5, atRisk: 2 });
-  assert.deepEqual(goalTotals([]), { goals: 0, atRisk: 0 });
+  assert.equal(goalTotals([{ ...dept("", 2), unchecked_count: 2 }, dept("sales", 1)]).unchecked, 2);
+  assert.deepEqual(goalTotals([dept("", 2, 1), dept("sales", 3, 0, 1)]), { goals: 5, atRisk: 2, unchecked: 0 });
+  assert.deepEqual(goalTotals([]), { goals: 0, atRisk: 0, unchecked: 0 });
 });
 
 test("Act as me counts what it handled in the last seven days", () => {
@@ -76,7 +77,10 @@ test("each item on Home's bottom line reads on its own", () => {
   assert.equal(tasksText(0, 0, 2), "2 tasks due later");
   assert.equal(goalsText(5, 0), "5 goals on track");
   assert.equal(goalsText(5, 1), "5 goals, 1 at risk");
+  assert.equal(goalsText(5, 0, 5), "5 goals, 5 not checked yet");
+  assert.equal(goalsText(5, 1, 2), "5 goals, 1 at risk");
   assert.equal(departmentsText(1, 0, false), "1 department on track");
+  assert.equal(departmentsText(3, 0, false, 1), "3 departments, 1 not checked yet");
   assert.equal(departmentsText(3, 2, true), "2 departments at risk");
   assert.equal(departmentsText(3, 1, false), "1 department needs attention");
   assert.equal(departmentsText(3, 2, false), "2 departments need attention");

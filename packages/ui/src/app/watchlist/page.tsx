@@ -41,7 +41,7 @@ function isSuggestion(item: WatchlistItem): boolean {
 
 const DECLINE_REASONS: { value: WatchDeclineReason; label: string; hint: string }[] = [
   { value: "not_relevant", label: "Not relevant", hint: "Never suggest this company/topic again" },
-  { value: "too_noisy", label: "Too noisy", hint: "Keep it, but only high-severity signals" },
+  { value: "too_noisy", label: "Too noisy", hint: "Keep it, but tell me only about big changes" },
   { value: "wrong_source", label: "Wrong source", hint: "Right topic, drop only this feed/page" },
 ];
 
@@ -157,7 +157,7 @@ function SuggestionCard({
           </span>
         )}
         <span>suggested {formatRelTime(item.created_at)} ago</span>
-        <span>seen in shadow: {item.fired_count} signal{item.fired_count === 1 ? "" : "s"}</span>
+        <span>noticed so far: {item.fired_count} change{item.fired_count === 1 ? "" : "s"}</span>
         {stamp.source_url && (
           <a href={stamp.source_url} target="_blank" rel="noreferrer" className="text-accent hover:underline">
             source ↗
@@ -207,8 +207,8 @@ function WatchCard({
         </div>
         <div className="text-sm text-fg-subtle mt-1.5">
           {item.last_fired_at
-            ? `Last fired ${formatRelTime(item.last_fired_at)} ago`
-            : "Hasn't fired yet"}
+            ? `Last told you ${formatRelTime(item.last_fired_at)} ago`
+            : "Nothing to tell you yet"}
           {isResearch && " · added by the Executive"}
         </div>
       </Link>
@@ -832,8 +832,8 @@ export default function WatchlistPage() {
                 What the Executive watches
               </h1>
               <p className="text-[15px] text-fg-muted mt-2">
-                External conditions the Executive is monitoring. Signals that survive
-                severity + triage become proposals in your briefing.
+                News, prices, pages and filings the Executive keeps an eye on for you.
+                When something important changes, it tells you in your briefing.
               </p>
             </div>
           </div>
@@ -867,9 +867,9 @@ export default function WatchlistPage() {
                 </span>
               </div>
               <p className="text-sm text-fg-subtle mb-4 max-w-3xl">
-                Sources the research council thought worth monitoring but couldn&apos;t tie
-                firmly enough to your company data to add on its own. They poll in
-                shadow mode and never alert until you approve. Declines are remembered.
+                Things the Executive thinks are worth watching but wants your OK on first.
+                It won&apos;t tell you about them until you approve. If you decline, it
+                won&apos;t suggest them again.
               </p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {suggestions.map((item) => (
@@ -910,7 +910,7 @@ export default function WatchlistPage() {
                     </span>
                     <span className="text-sm text-fg-muted">
                       {group.items.length}{" "}
-                      {group.items.length === 1 ? "monitor" : "monitors"}
+                      {group.items.length === 1 ? "watch" : "watches"}
                     </span>
                   </button>
                   {!isCollapsed && (

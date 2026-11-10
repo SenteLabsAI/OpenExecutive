@@ -622,3 +622,84 @@ async def test_a_change_that_changes_nothing_is_not_reported(db: Path, widgets: 
     await artifacts_route.archive_artifact(f"alert:{aid}", _REQ)
     await artifacts_route.archive_artifact(f"alert:{aid}", _REQ)
     assert widgets.seen == [(f"alert:{aid}", "archived")]
+
+
+# --- Documents page: what it lists and how it groups ---------------------------
+
+
+def _seed_named_run(db: Path, run_id: str, workflow: str, title: str) -> None:
+    wf_persistence.create_run(run_id, workflow, title, {}, db_path=db)
+    wf_persistence.complete_run(run_id, f"# {title}\n\nBody.", db_path=db)
+
+
+async def test_list_leaves_out_the_executives_working_notes(db: Path) -> None:
+    _seed_named_run(db, "run-refl", "executive_reflection", "Executive Reflection")
+    _seed_named_run(db, "run-res", "executive_research", "Executive Research (periodic)")
+    _seed_run(db, "run-deck", "Q2 Board Deck")
+
+    ids = {a.id for a in (await artifacts_route.list_artifacts(_REQ))["artifacts"]}
+    assert ids == {"run:run-deck"}
+    # Still opens by id (the activity feed links research).
+    detail = await artifacts_route.get_artifact("run:run-res", _REQ)
+    assert detail.kind == "workflow"
+    # One archived earlier stays reachable under Archived.
+    wf_persistence.set_run_archived("run-refl", True, db_path=db)
+    archived = (await artifacts_route.list_artifacts(_REQ, archived=True))["artifacts"]
+    assert [a.id for a in archived] == ["run:run-refl"]
+
+
+def test_store_exclude_workflows_filter(db: Path) -> None:
+    _seed_named_run(db, "run-a", "morning_brief", "Morning Brief 2026-09-01")
+    _seed_named_run(db, "run-b", "board_prep", "Deck")
+    runs = wf_persistence.list_artifact_runs(
+        visible_to=None, db_path=db, exclude_workflows={"morning_brief"}
+    )
+    assert [r["run_id"] for r in runs] == ["run-b"]
+
+
+async def test_list_groups_chats_briefs_and_workflows(db: Path) -> None:
+    aid = _seed_draft(db, "g-1", "Pricing memo")
+    _seed_named_run(db, "run-mb", "morning_brief", "Morning Brief 2026-09-01")
+    _seed_named_run(db, "run-eod", "end_of_day_digest", "End of day 2026-09-01")
+    _seed_run(db, "run-deck", "Q2 Board Deck")
+
+    by_id = {a.id: a for a in (await artifacts_route.list_artifacts(_REQ))["artifacts"]}
+    assert (by_id[f"alert:{aid}"].group, by_id[f"alert:{aid}"].group_label) == ("chats", "From chats")
+    assert by_id["run:run-mb"].group == by_id["run:run-eod"].group == "briefs"
+    assert by_id["run:run-mb"].group_label == "Briefs and wrap-ups"
+    from openexecutive.workflows import get_workflow
+
+    assert by_id["run:run-deck"].group == "wf:board_prep"
+    assert by_id["run:run-deck"].group_label == get_workflow("board_prep").title
+
+
+async def test_run_titles_drop_the_note_on_how_they_started(db: Path) -> None:
+    _seed_named_run(db, "run-po", "board_prep", "Board prep (post-onboarding auto-fire)")
+    _seed_named_run(db, "run-q1", "board_prep", "Weekly report (Q1)")
+    titles = {a.id: a.title for a in (await artifacts_route.list_artifacts(_REQ))["artifacts"]}
+    assert titles == {"run:run-po": "Board prep", "run:run-q1": "Weekly report (Q1)"}
+
+
+@pytest.mark.parametrize("title", ["W" + " " * 200_000 + "x", "W" + "(x)" * 50_000])
+async def test_long_run_titles_come_back_whole(db: Path, title: str) -> None:
+    _seed_named_run(db, "run-long", "board_prep", title)
+    items = (await artifacts_route.list_artifacts(_REQ))["artifacts"]
+    assert [a.title for a in items] == [title]
+
+
+def test_workflow_label_for_switched_off_and_deleted_workflows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.workflows import dynamic_store
+
+    def fake_get_definition(name: str, db_path: Path | None = None) -> Any:
+        if name == "weekly_book_restock":
+            return SimpleNamespace(title="Restock the bookshelf")
+        return None
+
+    monkeypatch.setattr(dynamic_store, "get_definition", fake_get_definition)
+    # Switched off: its saved title.
+    assert artifacts_route.workflow_label("weekly_book_restock") == "Restock the bookshelf"
+    # Deleted: its key in words, never the code name.
+    assert artifacts_route.workflow_label("weekly_laptop_restock") == "Weekly laptop restock"
+

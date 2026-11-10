@@ -16,6 +16,7 @@ import {
   type GoalPatch,
   type PeriodType,
 } from "@/lib/api";
+import { shownStatus } from "@/lib/goalGroups";
 import { formatRelativeTime } from "@/lib/relativeTime";
 
 // Goal rows (view / edit / delete) and the add-goal form, shared by a
@@ -43,13 +44,16 @@ export type GoalStatus = (typeof GOAL_STATUS_OPTS)[number];
 
 // A goal's status as a dot and a word, the one status pill the goal screens
 // share (a goal row, an area's summary on /goals, a department card).
+// "not_checked" is a goal no review has looked at yet (lib/goalGroups.ts).
 const GOAL_STATUS_DOT: Record<string, string> = {
   on_track: "bg-emerald-500",
   at_risk: "bg-amber-500",
   off_track: "bg-rose-500",
+  not_checked: "bg-fg-subtle",
 };
 
 export function goalStatusLabel(status: string): string {
+  if (status === "not_checked") return "not checked yet";
   return status.replace("_", " ");
 }
 
@@ -193,6 +197,7 @@ export function GoalRow({
   }, []);
 
   const stale = isStaleReview(goal.last_reviewed_at);
+  const shown = shownStatus(goal);
 
   if (!editing) {
     const progress = formatGoalProgress(goal);
@@ -221,15 +226,24 @@ export function GoalRow({
           {progress && <div className="text-[15px] text-fg-muted mt-1">{progress}</div>}
           {meta && <div className="text-sm text-fg-muted mt-1">{meta}</div>}
           <div className="text-sm text-fg-subtle mt-2 flex items-center gap-x-2 gap-y-1.5 flex-wrap">
-            <GoalStatusPill status={goal.status} />
+            <GoalStatusPill status={shown} />
             <span>{formatGoalPeriod(goal)}</span>
-            <span aria-hidden="true">·</span>
             {goal.last_reviewed_at ? (
-              <span className={cls(stale && "text-amber-400")}>
-                Last reviewed {formatRelativeTime(goal.last_reviewed_at)}
-              </span>
+              <>
+                <span aria-hidden="true">·</span>
+                <span className={cls(stale && "text-amber-400")}>
+                  Last reviewed {formatRelativeTime(goal.last_reviewed_at)}
+                </span>
+              </>
             ) : (
-              <span className="italic">Never reviewed</span>
+              // The pill already says "not checked yet" for a goal left on
+              // its default; a status someone set still notes it was never checked.
+              shown !== "not_checked" && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="italic">Never reviewed</span>
+                </>
+              )
             )}
           </div>
         </div>
