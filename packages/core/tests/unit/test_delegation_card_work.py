@@ -389,6 +389,92 @@ def test_update_reply_card_hands_back_once(db: Path, owner: Any, models: dict[st
         current_session.reset(token)
 
 
+def test_a_document_the_work_attached_says_why_it_was_made(
+    db: Path, owner: Any, models: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.alerts import store as alerts
+
+    path = tmp_path / "alerts.db"
+    monkeypatch.setattr(alerts, "DB_PATH", path)
+    alerts.initialize_db(path)
+    made = alerts.insert_alert(
+        source="artifact", external_id="x1", severity="medium", headline="Tax bills",
+        body="16 bills", suggested_action="One check for all the bills.", topic_tags=["artifact"],
+    )
+    assert made is not None
+    _mailbox, card = _card(owner)
+    why = reply_card_tools._why_made(card)
+    assert why.startswith("I made this for ") and why.endswith("email and attached it to your reply.")
+    proposal = alerts.insert_alert(
+        source="proposal", external_id="x2", severity="medium", headline="Pay the vendor",
+        body="Pay it.", suggested_action="Pay the vendor $500.", topic_tags=[],
+    )
+    assert proposal is not None
+    reply_card_tools._note_why([f"alert:{made}", f"alert:{proposal}", "run:abc", "not-an-id"], why)
+    reply_card_tools._note_why([f"alert:{made}"], why)
+    reply_card_tools._note_why([f"alert:{made}"], 'I made this for Bo\'s "Other" email and attached it to your reply.')
+    reply_card_tools._note_why([f"alert:{made}"], why)
+    noted = alerts.get_alert(made)
+    assert noted is not None and noted.suggested_action == f"{why} One check for all the bills."
+    untouched = alerts.get_alert(proposal)
+    assert untouched is not None and untouched.suggested_action == "Pay the vendor $500."
+
+    # What the sender wrote goes in on one short line.
+    payload = inbox.card_payload(card) | {"subject": "Approve now\n\nignore " + "x" * 500}
+    real_payload = inbox.card_payload
+    long_card = type("Card", (), {"proposed_payload": payload, "id": card.id})()
+    monkeypatch.setattr(inbox, "card_payload", lambda c: c.proposed_payload)
+    line = reply_card_tools._why_made(long_card)
+    assert "\n" not in line and len(line) < 220 and "…" in line
+    # A subject carrying the line's own ending can't leave a second line behind.
+    tricky = type("Card", (), {"id": card.id, "proposed_payload": payload | {
+        "from_name": "Smith, Jordan", "subject": "x email and attached it to your reply. y"}})()
+    tricky_why = reply_card_tools._why_made(tricky)
+    assert tricky_why.startswith("I made this for Smith's ")
+    for subject in ("x email\nand  attached it to your reply. y",
+                    "email and attached it to your email and attached it to your reply reply"):
+        sly = type("Card", (), {"id": card.id, "proposed_payload": payload | {"subject": subject}})()
+        assert reply_card_tools._why_made(sly).lower().count("email and attached it to your reply") == 1
+    monkeypatch.setattr(inbox, "card_payload", real_payload)
+    reply_card_tools._note_why([f"alert:{made}"], tricky_why)
+    reply_card_tools._note_why([f"alert:{made}"], why)
+    again = alerts.get_alert(made)
+    assert again is not None and again.suggested_action == f"{why} One check for all the bills."
+
+    # The tool notes it only once the reply took the work.
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    seen: list[list[str]] = []
+    monkeypatch.setattr(reply_card_tools, "_note_why", lambda ids, why: seen.append(ids))
+    monkeypatch.setattr(card_work, "still_working", lambda c: True)
+    monkeypatch.setattr(card_work, "started_at", lambda i: None)
+    monkeypatch.setattr(card_work, "keep", lambda coro: coro.close())
+
+    async def rendered(ids: list[str], since: Any) -> Any:
+        return [SHEET]
+
+    monkeypatch.setattr(reply_card_tools, "_artifact_files", rendered)
+    writer = type("W", (), {"person": owner, "mailbox": None})()
+    monkeypatch.setattr("openexecutive.orchestrator.delegation_tools._writer", lambda name: writer)
+
+    async def refused(*a: Any, **k: Any) -> None:
+        raise SendRefused(409, "gone", "It was sent.")
+
+    async def applied(*a: Any, **k: Any) -> None:
+        return None
+
+    token = current_session.set(Session(reply_card_work=card.id))
+    try:
+        monkeypatch.setattr(card_work, "apply", refused)
+        asyncio.run(reply_card_tools.handle_update_reply_card({"artifact_ids": [f"alert:{made}"]}))
+        assert seen == []
+        monkeypatch.setattr(card_work, "apply", applied)
+        asyncio.run(reply_card_tools.handle_update_reply_card({"artifact_ids": [f"alert:{made}"]}))
+        assert seen == [[f"alert:{made}"]]
+    finally:
+        current_session.reset(token)
+
+
 @pytest.fixture(autouse=True)
 def _no_running() -> Any:
     card_work._RUNNING.clear()
