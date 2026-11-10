@@ -3285,3 +3285,70 @@ def test_watching_next_lists_follow_ups_and_standing_jobs_and_stop_ends_one(
         "stopped": True,
     }
     assert [w["key"] for w in client.get("/today", headers=owner).json()["watching"]] == [f"action:{owners}"]
+
+
+def test_today_says_why_a_booking_waits_and_who_waits_on_a_held_ask(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A gated booking's card says why it waited (as recorded when held); a
+    teammate's held ask names them, and the reader's own held ask names
+    nobody."""
+    db = tmp_path / "waiting.db"
+    _setup_isolated_db(db, monkeypatch)
+
+    def card(headline: str, decision_class: str, payload: dict[str, object]) -> None:
+        decision_id = decision_ledger.create_decision_instance(
+            decision_class=decision_class, department="ops", originating_session_id=None,
+            proposed_payload=payload, idempotency_key=None, gate_mode="propose",
+            approver_person_id=5, confidence=None, db_path=db,
+        )
+        alert_store.insert_alert(
+            source="decision",
+            external_id=f"decision:{decision_id}",
+            severity="medium",
+            headline=headline,
+            body="...",
+            topic_tags=[f"decision_instance:{decision_id}", f"decision_class:{decision_class}"],
+            routed_to_person_id=5,
+            db_path=db,
+        )
+
+    card("Approve meeting: Pricing review", "meeting_scheduling",
+         {"title": "Pricing review", "waiting_because": "Someone on your team asked for it."})
+    card("Approve meeting: Older booking", "meeting_scheduling", {"title": "Older booking"})
+    card("Sam Okafor asked the Executive to: email Northgate", "department_action",
+         {"tool": "send_email", "requested_by_person_id": 9, "requested_by": "Sam Okafor"})
+    card("Waiting for your OK: save a file", "department_action",
+         {"tool": "drive_save", "requested_by_person_id": 5, "requested_by": "Jordan Avery"})
+
+    by_headline = {p["headline"]: p for p in _make_client().get("/today").json()["proposals"]}
+    booking = by_headline["Approve meeting: Pricing review"]
+    assert booking["waiting_because"] == "Someone on your team asked for it."
+    # A booking held before the reason was recorded says nothing.
+    assert by_headline["Approve meeting: Older booking"]["waiting_because"] == ""
+    assert booking["waiting_on"] == ""
+    assert by_headline["Sam Okafor asked the Executive to: email Northgate"]["waiting_on"] == "Sam Okafor"
+    own = by_headline["Waiting for your OK: save a file"]
+    assert own["waiting_on"] == ""
+    assert own["waiting_because"] == ""
+
+
+def test_a_card_that_only_names_a_held_decision_does_not_read_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A card whose tags name someone else's held decision (not routed to
+    that decision's approver) never shows who asked for it."""
+    db = tmp_path / "forged.db"
+    _setup_isolated_db(db, monkeypatch)
+    decision_id = decision_ledger.create_decision_instance(
+        decision_class="department_action", department="ops", originating_session_id=None,
+        proposed_payload={"tool": "send_email", "requested_by_person_id": 9, "requested_by": "Sam Okafor"},
+        idempotency_key=None, gate_mode="propose", approver_person_id=5, confidence=None, db_path=db,
+    )
+    alert_store.insert_alert(
+        source="email", external_id="forged-1", severity="medium", headline="Something else",
+        body="...", topic_tags=[f"decision_instance:{decision_id}", "decision_class:department_action"],
+        routed_to_person_id=9, db_path=db,
+    )
+    proposals = _make_client().get("/today").json()["proposals"]
+    assert [p["waiting_on"] for p in proposals] == [""]

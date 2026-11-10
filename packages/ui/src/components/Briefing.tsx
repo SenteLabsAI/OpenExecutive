@@ -19,7 +19,6 @@ import {
   rejectDecision,
   reopenAlert,
   rerunWorkflowRun,
-  reviewAlerts,
   snoozeAlert,
   type DoneRow,
   type ProposalItem,
@@ -49,6 +48,7 @@ import {
   groupByRequest,
   newestAnchor,
   splitOlder,
+  waitedOnFirst,
 } from "@/lib/needsYou";
 import { BRIEFING_REFRESH_INTERVAL_MS, shouldRefreshOnFocus } from "@/lib/narrativeFreshness";
 import type { SnoozeChoice } from "@/lib/snooze";
@@ -84,7 +84,6 @@ import {
 } from "./briefing/SoloPanels";
 import { DepartmentsPanelBody, PeoplePanelBody } from "./briefing/TeamPanels";
 import { buttonClass } from "./ui/Button";
-import OverflowMenu from "./ui/OverflowMenu";
 import SidePanel from "./ui/SidePanel";
 import { useWorkspace } from "./workspace/WorkspaceContext";
 import { PageSpinner } from "@/components/ui/Spinner";
@@ -164,8 +163,6 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
   const [showOlder, setShowOlder] = useState(false);
   const [clearingOlder, setClearingOlder] = useState(false);
   const [olderNotice, setOlderNotice] = useState<string | null>(null);
-  // "Re-check relevance" runs the Executive's review on demand.
-  const [recheckBusy, setRecheckBusy] = useState(false);
   // The card just snoozed, for the "Snoozed until …" notice and its Undo.
   const [snoozed, setSnoozed] = useState<{ alertId: number; short: string } | null>(null);
   // Handled-rail rows undone this session (keyed per row, see handledKey).
@@ -332,21 +329,6 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
       console.error("Bulk dismiss failed", e);
     }
   }, [actedAlertIds, refreshToday]);
-
-  // Re-check relevance: ask the Executive to review every open alert now
-  // (route / escalate / draft / merge / resolve within authority), then
-  // re-pull /today so the verdicts, chips and "handled" rail refresh.
-  const handleRecheck = useCallback(async () => {
-    setRecheckBusy(true);
-    try {
-      await reviewAlerts();
-      refreshToday();
-    } catch (e) {
-      console.error("Alert review failed", e);
-    } finally {
-      setRecheckBusy(false);
-    }
-  }, [refreshToday]);
 
   // Undo an autonomous close from the Handled panel. The rail is rebuilt
   // from the audit log on every fetch (the "closed" row persists after a
@@ -650,6 +632,8 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
     at: string;
     // Never folds: a card answered only on itself, or one being sent.
     keep?: boolean;
+    // Someone else is waiting on it: it goes first.
+    waited?: boolean;
     // Closes it the way its own Skip would, and drops it from the page.
     clear: () => Promise<void>;
     render: (emphasized: boolean) => React.ReactNode;
@@ -667,7 +651,7 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
     else await ackAlert(p.alert_id, "dismissed");
     hideAlerts([p.alert_id]);
   };
-  const queue: QueueItem[] = [
+  const queue: QueueItem[] = waitedOnFirst<QueueItem>([
     // What's waiting that has no card (mail it couldn't draft, unsent
     // drafts, chat asks): one row each, first, since it came in first.
     ...rightNowRows.map((row) => ({
@@ -721,6 +705,7 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
         return {
           key: `request-${group[0].group_key}`,
           at: newestAnchor(group),
+          waited: group.some((p) => Boolean(p.waiting_on)),
           clear: async () => {
             const results = await Promise.allSettled(group.map(clearProposal));
             if (results.some((r) => r.status === "rejected")) throw new Error("Some didn't clear");
@@ -743,6 +728,7 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
         at: ageAnchor(p),
         // A roster request is answered on its card, never swept.
         keep: Boolean(p.roster_request),
+        waited: Boolean(p.waiting_on),
         clear: () => clearProposal(p),
         render: (emphasized: boolean) => (
           <ProposalCard
@@ -770,7 +756,7 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
       clear: async () => {},
       render: () => <WaitingElsewhereRow item={item} />,
     })),
-  ];
+  ]);
   const { current: currentQueue, older: olderQueue } = splitOlder(
     queue,
     (item) => item.at,
@@ -790,14 +776,6 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
     refreshToday();
   };
 
-  const needsYouMenu = [
-    {
-      label: recheckBusy ? "Re-checking…" : "Re-check relevance",
-      onSelect: () => void handleRecheck(),
-      disabled: recheckBusy,
-    },
-  ];
-  const showNeedsYouMenu = mineProposals.length > 0;
 
   // The first week: the first-week card takes the page's top slot, so the
   // day isn't called quiet and the summary line points at it.
@@ -811,8 +789,7 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
     queue.length === 0 &&
     !snoozed &&
     !rerunNotice &&
-    !replies.notice &&
-    !showNeedsYouMenu;
+    !replies.notice;
   // The first week's empty Needs you points at the own-mailbox step only
   // while that mailbox isn't connected (null until known, so no flash).
   const [ownMailboxConnected, setOwnMailboxConnected] = useState<boolean | null>(null);
@@ -945,9 +922,6 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
                   {replies.cards.length > 0 && <InfoTip align="left">{REPLIES_WAITING_TIP}</InfoTip>}
                   {inviteCards.cards.length > 0 && <InfoTip align="left">{INVITE_CARDS_TIP}</InfoTip>}
                   {actionCards.cards.length > 0 && <InfoTip align="left">{ACTION_CARDS_TIP}</InfoTip>}
-                  <div className="ml-auto flex items-center gap-1">
-                    {showNeedsYouMenu && <OverflowMenu size="sm" label="Needs you options" items={needsYouMenu} />}
-                  </div>
                 </div>
                 {snoozed && (
                   <p className="mb-3 flex flex-wrap items-center gap-x-3 text-sm text-fg-muted" role="status">

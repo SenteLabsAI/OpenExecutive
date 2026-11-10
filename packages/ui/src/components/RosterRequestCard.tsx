@@ -4,7 +4,7 @@
 // was told their message arrived, and is held until the principal says who
 // they are. Answered here (never through chat): "Add them" opens a side
 // panel to add them as a new person or say they are someone already on the
-// list; Ignore is in the card's ⋯ menu. Their held messages are answered
+// list; Dismiss (ignore them) sits at the right, as on every card. Their held messages are answered
 // once they are added.
 
 import { useEffect, useState } from "react";
@@ -12,6 +12,7 @@ import { useEffect, useState } from "react";
 import Button from "@/components/ui/Button";
 import OverflowMenu from "@/components/ui/OverflowMenu";
 import SidePanel from "@/components/ui/SidePanel";
+import CardTopRow from "@/components/briefing/CardTopRow";
 import {
   approveRosterRequest,
   declineRosterRequest,
@@ -34,8 +35,11 @@ export default function RosterRequestCard({
   request,
   onResolved,
   emphasized = false,
+  at,
 }: {
   request: RosterRequest;
+  // When the card came (ISO), for its top row.
+  at?: string;
   // Called once the request is answered, so the briefing can drop the card.
   onResolved: () => void;
   emphasized?: boolean;
@@ -107,6 +111,7 @@ export default function RosterRequestCard({
         emphasized ? "border-accent/60 ring-1 ring-accent/25 shadow-sm" : "border-line"
       }`}
     >
+      <CardTopRow need="Who is this?" at={at} />
       <div className="text-base sm:text-[17px] font-semibold leading-snug text-fg break-words">{title}</div>
       <div className="mt-1 text-sm text-fg-muted break-all">
         {channel} · {request.channel_ref}
@@ -138,9 +143,11 @@ export default function RosterRequestCard({
               },
               disabled: busy,
             },
-            { label: "Ignore", onSelect: ignore, disabled: busy },
           ]}
         />
+        <Button variant="ghost" className="ml-auto" onClick={ignore} disabled={busy}>
+          Dismiss
+        </Button>
       </div>
 
       {/* Who they are — add as new or link to someone on the list — is

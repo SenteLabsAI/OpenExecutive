@@ -19,7 +19,7 @@ import {
   type ProposalItem,
 } from "@/lib/api";
 
-import { Chip } from "./shared";
+import CardTopRow from "./CardTopRow";
 
 // The tag a training card carries (orchestrator.take_the_lead.TRAINING_TAG).
 export const LEAD_TRAINING_TAG = "take_the_lead:training";
@@ -97,13 +97,9 @@ export default function LeadTrainingCard({
         emphasized ? "border-accent/60 ring-1 ring-accent/25 shadow-sm" : "border-line"
       }`}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 text-base sm:text-[17px] font-semibold leading-snug text-fg break-words">
-          {headline}
-        </div>
-        <span className="flex-shrink-0">
-          <Chip tone="amber">Training</Chip>
-        </span>
+      <CardTopRow need="Needs your OK" mode="take_the_lead" at={proposal.created_at} tag="In training" />
+      <div className="min-w-0 text-base sm:text-[17px] font-semibold leading-snug text-fg break-words">
+        {headline}
       </div>
       {card?.where && <p className="mt-1 text-sm leading-snug text-fg-muted">{card.where}</p>}
       {!editing && shownFields.length > 0 && (
