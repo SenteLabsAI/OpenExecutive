@@ -70,3 +70,13 @@ def test_a_malformed_url_target_reads_as_text(monkeypatch: pytest.MonkeyPatch) -
     _stub(monkeypatch, [_suggestion("https://[news] acme pricing", "x")])
     [row] = today_route._waiting_elsewhere()
     assert row.detail == "https://[news] acme pricing"
+
+
+def test_repeated_hosts_are_named_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub(monkeypatch, [_suggestion(f"https://acme.com/{p}", "x") for p in "abc"])
+    [row] = today_route._waiting_elsewhere()
+    assert row.title == "3 things I'd like to watch"
+    assert row.detail == "acme.com"
+    _stub(monkeypatch, [_suggestion(t, "x") for t in ("https://a.com/1", "https://a.com/2", "B", "C")])
+    [row] = today_route._waiting_elsewhere()
+    assert row.detail == "a.com, B and 1 more"

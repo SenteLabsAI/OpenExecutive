@@ -2799,7 +2799,7 @@ def _named(labels: list[str]) -> str:
     if not seen:
         return ""
     shown = seen[:_ELSEWHERE_NAMED]
-    rest = len(labels) - len(shown)
+    rest = len(seen) - len(shown)
     if rest > 0:
         return f"{', '.join(shown)} and {rest} more"
     return " and ".join(shown) if len(shown) == 2 else shown[0]
