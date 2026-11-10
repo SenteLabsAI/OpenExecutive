@@ -186,6 +186,29 @@ def test_the_route_lists_and_answers_offers(client: TestClient, owner: Any) -> N
     assert after["offers"] == [] and training.allowed_person(owner.id, KENJI) is not None
 
 
+def test_a_teammate_cant_answer_someone_elses_offers(client: TestClient, owner: Any) -> None:
+    from openexecutive.people import registry as people_registry
+    from openexecutive.people import store as people_store
+
+    sam = "sam@co.example"
+    people_store.upsert_person(full_name="Sam Teammate", email=sam)
+    people_registry.invalidate()
+    ttl.set_(ttl.SCOPE_EXECUTIVE, enabled=True, training=True, updated_by="t")
+    as_me_key = _as_me_unchanged(ttl.SUGGEST_AFTER)
+    training.set_(owner.id, {training.TRAINING: True}, updated_by="t")
+    _sent_unchanged(owner)
+    [as_you_key] = [o.key for o in training.offers(owner.id)]
+    headers = {"x-caller-email": sam}
+    for path in ("/approvals/offers/let-go", "/approvals/offers/keep-asking"):
+        assert client.post(path, json={"key": as_me_key}, headers=headers).status_code == 403
+        assert client.post(path, json={"key": as_you_key}, headers=headers).status_code in (403, 404)
+    assert [s.key for s in ttl.suggestions()] == [as_me_key]
+    assert [o.key for o in training.offers(owner.id)] == [as_you_key]
+    assert training.allowed_person(owner.id, KENJI) is None
+    body = client.get("/approvals/summary", headers=headers).json()
+    assert body["offers"] == []
+
+
 def test_letting_go_needs_a_provable_person(client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     training.set_(owner.id, {training.TRAINING: True}, updated_by="t")
     _sent_unchanged(owner)
