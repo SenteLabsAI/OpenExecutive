@@ -1403,6 +1403,11 @@ routing:
     takes an optional `owner_person_id` (a non-archived team member, else
     refused). The duplicate check and the 8-goal cap apply to the goals
     with no department as one group.
+    A goal's status can also be `done`. Only a person sets it (the goal
+    editor, or `update_department_goal` in chat). A done goal is left out
+    of every review prompt (`department_check_in._render_goals`,
+    `goal_review._needs_review`), `persist_goal_verdicts` drops a verdict
+    on one, and `/today`'s `goal_count` leaves it out.
     Evals: `department_goal_update_005`, `department_goal_update_006`.
     `record_decision_outcome` (orchestrator/decision_tools.py, both modes)
     records how a past decision turned out. The weekly review lists up to
@@ -10846,6 +10851,12 @@ delegation:
     person turns it on for themselves (PUT /delegation); nobody turns it on
     for anyone else. delegation_settings holds one row per
     person; missing, unreadable or 0 is off (is_enabled never raises).
+  sends_only_settled_replies: |
+    A reply goes on its own only when it leaves the person nothing to
+    answer: an open question on its card with no answer yet holds it
+    (handle_it.leaves_questions, refusal "questions"), checked at send time
+    in reply_send.send_on_its_own, so after any work card_work did first.
+    It then waits on Home like any other card.
   turn_pin: |
     pin_turn_delegation(session, speaker_text) runs at the start of every
     chat turn (stream_chat and the committee path, beside

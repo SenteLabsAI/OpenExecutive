@@ -45,11 +45,11 @@ export const APPROVALS_SENDS: Record<OutsideContentMode, { label: string; line: 
   },
   outsiders: {
     label: "Balanced",
-    line: "Replies and follow-ups go when it's sure, to the people the email was already with. Invites and suggested actions go for your team and contacts.",
+    line: "Replies and follow-ups go when it's sure and they leave nothing for you to answer, to the people the email was already with. Invites and suggested actions go for your team and contacts.",
   },
   trust: {
     label: "Hands-off",
-    line: "Replies and follow-ups go when it's sure, to the people the email was already with. Invites from people you've written to and suggested actions for anyone go too.",
+    line: "Replies and follow-ups go when it's sure and they leave nothing for you to answer, to the people the email was already with. Invites from people you've written to and suggested actions for anyone go too.",
   },
 };
 
@@ -71,7 +71,7 @@ export function reachLine(step: ReachStep, inTraining: boolean, level: OutsideCo
   if (step === "when_asked") return "Ask in chat and the draft waits in your Drafts. You send it.";
   if (inTraining) return "It drafts replies to your inbox. In training, every one waits for you until you allow that person.";
   if (level === "ask" || level === null) return "It drafts replies to your inbox. On Careful, every one waits for you.";
-  return `It drafts replies to your inbox, and on ${APPROVALS_SENDS[level].label} sends the sure ones itself.`;
+  return `On ${APPROVALS_SENDS[level].label} it sends a reply itself when it is sure and the reply leaves nothing for you to answer. The rest wait on Home.`;
 }
 
 export function sentTodayLine(n: number): string {

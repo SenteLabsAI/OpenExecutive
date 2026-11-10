@@ -8,11 +8,9 @@ import { useExecutiveStatus } from "@/components/executive/ExecutiveStatusContex
 import ActAsMeCard, { TeamSection } from "@/components/settings/ActAsMeCard";
 import AsMeCard, { useTakeTheLead } from "@/components/settings/AsMeCard";
 import BeforeAnythingCard from "@/components/settings/BeforeAnythingCard";
-import { AsYouTrainingCard } from "@/components/settings/ReachCard";
 import ReplyDisclosureCard from "@/components/settings/ReplyDisclosureCard";
 import SentCard from "@/components/settings/SentCard";
 import SettingsCard from "@/components/settings/SettingsCard";
-import { LearnedCard } from "@/components/settings/TrainingCard";
 import { useDelegation } from "@/components/settings/useDelegation";
 import { getOutsideContent, type OutsideContentSetting } from "@/lib/api";
 import { approvalsTitle, onApprovalsChanged } from "@/lib/approvalsLevel";
@@ -139,15 +137,10 @@ export default function DelegatePage() {
                           title="Say it was written with AI"
                         />
                       )}
+                      {settings.handle_it?.enabled && <SentCard handleIt={settings.handle_it} />}
                     </>
                   }
-                >
-                  {settings.enabled && (
-                    <AsYouTrainingCard settings={settings} onSettings={delegation.setSettings} />
-                  )}
-                  {settings.training && <LearnedCard training={settings.training} onSettings={delegation.setSettings} />}
-                  {settings.handle_it?.enabled && <SentCard handleIt={settings.handle_it} />}
-                </ActAsMeCard>
+                />
               )}
             </Panel>
 

@@ -100,6 +100,7 @@ _SOLO_STATUS_LABEL: dict[str, str] = {
     "on_track": "on track",
     "at_risk": "at risk",
     "off_track": "off track",
+    "done": "done",
 }
 _TARGET_CHAR_CAP = 100
 
@@ -108,6 +109,7 @@ _STATUS_LABEL: dict[str, str] = {
     "on_track": "✓",
     "at_risk": "⚠",
     "off_track": "✗",
+    "done": "done",
 }
 
 # Characters that could start a Markdown heading or break the prompt structure.

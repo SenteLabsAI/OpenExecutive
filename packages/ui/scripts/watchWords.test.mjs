@@ -5,6 +5,7 @@ import {
   loudnessInWords,
   raiseTheBar,
   triggerInWords,
+  watchTitle,
 } from "../src/lib/watchWords.ts";
 
 test("triggerInWords says when a watch tells you", () => {
@@ -49,4 +50,14 @@ test("raiseTheBar raises the severity floor one step otherwise", () => {
   assert.equal(r?.label, "Only big things");
   assert.equal(r?.done, "You'll only hear about big things from this.");
   assert.equal(raiseTheBar({ signal_type: "query", trigger_json: {}, severity_floor: "urgent" }), null);
+});
+
+test("watchTitle reads as a name, not a slug", () => {
+  assert.equal(watchTitle("page_watch", "https://www.example.com/legal/terms/", "page-watch-example-legal-terms"), "example.com/legal/terms");
+  assert.equal(watchTitle("rss", "https://blog.example.com/", "rss-blog-example-com"), "blog.example.com");
+  assert.equal(watchTitle("stock", "acme", "stock-acme"), "ACME");
+  assert.equal(watchTitle("query", "Acme Corp  layoffs OR funding", "search-acme"), "Acme Corp layoffs OR funding");
+  assert.equal(watchTitle("query", "", "search-acme-corp"), "search acme corp");
+  assert.equal(watchTitle("page_watch", "https://example.com/" + "a".repeat(80), "x").length, 48);
+  assert.equal(watchTitle("page_watch", "http://[bad", "page-watch-bad"), "http://[bad");
 });

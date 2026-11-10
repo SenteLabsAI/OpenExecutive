@@ -22,7 +22,9 @@ class AuthorityLevel(StrEnum):
     ESCALATE = "escalate"
 
 
-GoalStatus = Literal["on_track", "at_risk", "off_track"]
+# "done" is a person's call (the goals page, or telling the Executive in
+# chat): the weekly reviews neither grade a done goal nor move it back.
+GoalStatus = Literal["on_track", "at_risk", "off_track", "done"]
 PeriodType = Literal["week", "month", "quarter", "year", "ongoing"]
 
 

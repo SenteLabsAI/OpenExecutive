@@ -1979,7 +1979,7 @@ export async function updateWorkspace(update: WorkspaceUpdate): Promise<Workspac
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(update),
   });
-  if (res.status === 403) throw new Error("Only the principal can change workspace settings.");
+  if (res.status === 403) throw new Error("Only the owner can change workspace settings.");
   if (res.status === 422) {
     // FastAPI validation errors: `detail` is a list of {msg}; surface the
     // first one ("timezone 'Mars/Base' is not a known IANA zone",
@@ -3025,7 +3025,7 @@ export async function setDecisionClassMode(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ mode }),
   });
-  if (res.status === 403) throw new Error("Only the principal can change this setting.");
+  if (res.status === 403) throw new Error("Only the owner can change this setting.");
   // 409: auto-booking can't be turned on before a principal exists; the
   // backend's detail says so in plain words.
   if (res.status === 409) throw await onboardError(res, "This setting can't be turned on yet.");
@@ -4645,7 +4645,8 @@ export interface Goal {
   key_result: string;
   target: string;
   current: string;
-  status: "on_track" | "at_risk" | "off_track";
+  // "done" is a person's call; the weekly reviews leave a done goal alone.
+  status: "on_track" | "at_risk" | "off_track" | "done";
   created_at: string;
   updated_at: string;
   // When OE last graded this goal (department_check_in workflow, or
@@ -5080,7 +5081,7 @@ export async function findSlackPersonByEmail(email: string): Promise<DirectoryOp
 
 // Adding, editing and archiving people is the principal's alone (403 for anyone
 // else): the People list is also who can sign in and who the Executive emails.
-const PEOPLE_PRINCIPAL_ONLY = "Only the principal can change the People list.";
+const PEOPLE_PRINCIPAL_ONLY = "Only the owner can change the People list.";
 
 export async function createPerson(body: PersonCreate): Promise<Person> {
   const res = await fetch(`${API_BASE}/people`, {

@@ -484,7 +484,7 @@ def test_create_goal_defaults_the_period_to_the_current_one(monkeypatch: pytest.
         ({"key_result": ""}, "key_result and target"),
         ({"target": None}, "key_result and target"),
         ({"rationale": " "}, "rationale is required"),
-        ({"status": "done"}, "status must be one of"),
+        ({"status": "paused"}, "status must be one of"),
         ({"period_type": "decade"}, "period_type must be one of"),
         ({"area": "x" * 129}, "area must be at most"),
         ({"target": "x" * 513}, "target must be at most"),

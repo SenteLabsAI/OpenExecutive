@@ -30,6 +30,13 @@ def local_login(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CALLER_ASSERTION_PUBLIC_KEYS", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def settled(models: dict[str, Any]) -> None:
+    """The composed reply leaves nothing to answer: one that does always
+    waits for the person (handle_it.leaves_questions)."""
+    models["questions"] = []
+
+
 def _answer(owner: Any, mailbox: FakeInbox, thread_id: str = "t1") -> str:
     return asyncio.run(inbox.answer_thread(owner, mailbox, thread_id, now=NOW))
 
