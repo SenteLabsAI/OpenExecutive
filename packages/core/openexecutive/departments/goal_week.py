@@ -90,7 +90,8 @@ def update_line(details: dict[str, Any]) -> str | None:
     raw = details.get("new_current")
     new_current = " ".join(str(raw).split())[:CURRENT_MAX] if raw is not None else None
     changed_status = after != before
-    changed_current = bool(new_current) and str(raw) != str(details.get("prior_current") or "")
+    prior = " ".join(str(details.get("prior_current") or "").split())[:CURRENT_MAX]
+    changed_current = bool(new_current) and new_current != prior
     if changed_status and changed_current:
         return f"Marked it {status} and set it to {new_current}."
     if changed_status:
