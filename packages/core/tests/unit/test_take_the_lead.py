@@ -1581,6 +1581,8 @@ def test_what_came_of_a_step() -> None:
     assert ttl.outcome_of("run_workflow", {}, "{}") == "Started"
     assert ttl.outcome_of("update_department_goal", {}, '{"message": "Goal updated"}') == "Goal updated"
     assert ttl.outcome_of("update_department_goal", {}, "not json") == ""
+    # A connected app's own words never show: they can be someone else's text.
+    assert ttl.outcome_of("notion__update_page", {}, '{"message": "Q3 plan: cut 20%"}', mcp=True) == ""
     assert ttl.how_line("google_workspace__send_gmail_message") == "By email"
     assert ttl.how_line("create_calendar_event") == "On the calendar"
 
