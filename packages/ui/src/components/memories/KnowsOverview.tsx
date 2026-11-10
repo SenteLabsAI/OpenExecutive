@@ -167,7 +167,6 @@ export default function KnowsOverview({ pulse, lastVisit }: { pulse: PulseData; 
   const [facts, setFacts] = useState<{ rows: StandingFact[]; toApprove: number; retirable: Set<number> } | null>(null);
   // undefined while loading; null when this viewer keeps none.
   const [figures, setFigures] = useState<WorkedOutFigure[] | null | undefined>(undefined);
-  const [notes, setNotes] = useState<HistoryNote[] | null | undefined>(undefined);
   const [reflection, setReflection] = useState<ReflectionState | null | undefined>(undefined);
   // A list that couldn't be read says so, rather than looking empty.
   const [failed, setFailed] = useState<{ facts?: boolean; figures?: boolean }>({});
@@ -197,13 +196,6 @@ export default function KnowsOverview({ pulse, lastVisit }: { pulse: PulseData; 
         if (cancelled) return;
         setFailed((f) => ({ ...f, figures: true }));
         setFigures([]);
-      });
-    getHistory()
-      .then((state) => {
-        if (!cancelled) setNotes(state ? state.notes : null);
-      })
-      .catch(() => {
-        if (!cancelled) setNotes(null);
       });
     getReflection()
       .then((state) => {
@@ -334,32 +326,7 @@ export default function KnowsOverview({ pulse, lastVisit }: { pulse: PulseData; 
       )}
       <NewSinceCard since={lastVisit} />
 
-      <AboutYouCard
-        title="About you"
-        description="Learned from talking with you. Remove any line that's wrong. Only you see this."
-        footer={
-          notes ? (
-            <div>
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-fg-muted">What you said · {notes.length}</h3>
-              {notes.length === 0 ? (
-                <p className="mt-2 text-[15px] text-fg-muted">
-                  Nothing yet. What you say in chat and in replies you approve shows up here.
-                </p>
-              ) : (
-                <ul className="mt-2 rounded-xl border border-line divide-y divide-line">
-                  {notes.slice(0, PREVIEW_NOTES).map((n) => (
-                    <li key={n.id} className="flex gap-4 px-4 py-3 min-w-0">
-                      <span className="shrink-0 w-24 text-xs text-fg-muted pt-1">{formatDate(n.occurred_at || n.created_at)}</span>
-                      <span className="min-w-0 text-[15px] text-fg break-words">{n.correction || n.summary}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <MoreLink href="/memories?tab=history">{notes.length > PREVIEW_NOTES ? `All ${notes.length}` : "Open"}</MoreLink>
-            </div>
-          ) : undefined
-        }
-      />
+      <AboutYouBlock />
 
       <Card
         title="About the company"
@@ -464,5 +431,53 @@ export default function KnowsOverview({ pulse, lastVisit }: { pulse: PulseData; 
         </Link>
       )}
     </div>
+  );
+}
+
+/** About you: what it learned from talking with you, with what you said
+ *  under it in the same card. The caller's own, so anyone on the team may
+ *  be shown this block. */
+export function AboutYouBlock() {
+  const [notes, setNotes] = useState<HistoryNote[] | null | undefined>(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    getHistory()
+      .then((state) => {
+        if (!cancelled) setNotes(state ? state.notes : null);
+      })
+      .catch(() => {
+        if (!cancelled) setNotes(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return (
+    <AboutYouCard
+      title="About you"
+      description="Learned from talking with you. Remove any line that's wrong. Only you see this."
+      footer={
+        notes ? (
+          <div>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-fg-muted">What you said · {notes.length}</h3>
+            {notes.length === 0 ? (
+              <p className="mt-2 text-[15px] text-fg-muted">
+                Nothing yet. What you say in chat and in replies you approve shows up here.
+              </p>
+            ) : (
+              <ul className="mt-2 rounded-xl border border-line divide-y divide-line">
+                {notes.slice(0, PREVIEW_NOTES).map((n) => (
+                  <li key={n.id} className="flex gap-4 px-4 py-3 min-w-0">
+                    <span className="shrink-0 w-24 text-xs text-fg-muted pt-1">{formatDate(n.occurred_at || n.created_at)}</span>
+                    <span className="min-w-0 text-[15px] text-fg break-words">{n.correction || n.summary}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <MoreLink href="/memories?tab=history">{notes.length > PREVIEW_NOTES ? `All ${notes.length}` : "Open"}</MoreLink>
+          </div>
+        ) : undefined
+      }
+    />
   );
 }
