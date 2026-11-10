@@ -303,6 +303,13 @@ def test_happy_path_propose(tmp_path: Path) -> None:
     })
     assert result["status"] == "proposed"
     assert "decision_instance_id" in result
+    # Someone on the team asked (the principal asking books it), so its card
+    # on Home says that.
+    from openexecutive.memory.decision_ledger import get_decision_instance
+
+    held = get_decision_instance(result["decision_instance_id"])
+    assert held is not None
+    assert json.loads(held.proposed_payload_json)["waiting_because"].startswith("Someone on your team asked")
 
 
 def test_propose_does_not_call_mcp() -> None:
