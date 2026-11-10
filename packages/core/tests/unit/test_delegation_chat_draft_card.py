@@ -215,6 +215,21 @@ def test_a_draft_with_files_is_changed_in_the_mailbox(db: Path, owner: Any, monk
     assert not drafts.set_version(row, "not-the-version", "x")
 
 
+def test_an_edit_the_mailbox_kept_the_old_version_of_is_never_called_saved(
+    db: Path, owner: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mailbox, row = _chat_draft(owner)
+    before = drafts.get_row(row).message_id
+
+    async def unchanged(*_a: Any, **_k: Any) -> str:
+        return before
+
+    monkeypatch.setattr(mailbox, "update_draft_text", unchanged)
+    refused = _refused(chat_draft_card.set_text(owner, row, "Mine", caller=LOCAL, gmail=mailbox, now=LATER))
+    assert refused.code == "gmail_error"
+    assert drafts.get_row(row).message_id == before
+
+
 def test_delete_removes_it_from_their_drafts(db: Path, owner: Any) -> None:
     mailbox, row = _chat_draft(owner)
     gone = asyncio.run(chat_draft_card.discard(owner, row, caller=LOCAL, gmail=mailbox, now=LATER))
