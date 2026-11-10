@@ -520,22 +520,31 @@ def _defined_names(text: str) -> set[str]:
     return found
 
 
-def _matches(lesson: dict[str, Any], message: str) -> bool:
+def _matches(lesson: dict[str, Any], message: str, *, strict: bool = False) -> bool:
     """Whether ``lesson`` reaches a turn about ``message``: two shared
     content words, or the name the lesson defines, written as a name
-    mid-sentence in the message."""
-    own = _content_words(lesson["text"]) | _content_words(lesson["quote"])
-    if len(own & _content_words(message)) >= _MATCH_WORDS:
-        return True
+    mid-sentence in the message. ``strict`` is for a whole rendered prompt
+    (a brief's calendar, mail and figures), where two words in common
+    happen by chance: at least half the lesson's own words must be there."""
+    words = _content_words(message)
+    if strict:
+        own = _content_words(lesson["text"])
+        need = max(_MATCH_WORDS, (len(own) + 1) // 2)
+        if len(own & words) >= need:
+            return True
+    else:
+        own = _content_words(lesson["text"]) | _content_words(lesson["quote"])
+        if len(own & words) >= _MATCH_WORDS:
+            return True
     names = _defined_names(lesson["text"]) | _defined_names(lesson["quote"])
     return bool(names & _names(message, sentence_starts=False))
 
 
 def lessons_for(
-    person_id: int | None, message: str, *, db_path: Path | None = None
+    person_id: int | None, message: str, *, strict: bool = False, db_path: Path | None = None
 ) -> list[dict[str, Any]]:
     """The live lessons that reach this speaker's turn about ``message``:
-    the speaker's own only. Never raises."""
+    the speaker's own only (``strict``: see ``_matches``). Never raises."""
     if person_id is None:
         return []
     try:
@@ -550,7 +559,7 @@ def lessons_for(
             ).fetchall()
         finally:
             conn.close()
-        return [lesson for lesson in map(_out, rows) if _matches(lesson, message)][:MAX_PER_TURN]
+        return [lesson for lesson in map(_out, rows) if _matches(lesson, message, strict=strict)][:MAX_PER_TURN]
     except Exception:
         logger.debug("lessons: lookup failed", exc_info=True)
         return []
@@ -640,6 +649,7 @@ def build_lessons_block(
     count: bool = True,
     surface: str = SURFACE_CHAT,
     graded: bool = True,
+    strict: bool = False,
     db_path: Path | None = None,
 ) -> str:
     """Body of the ``<lessons>`` block for this speaker's turn, or "". Lives
@@ -650,7 +660,7 @@ def build_lessons_block(
     try:
         if not _enabled():
             return ""
-        lines, shown = _lines(lessons_for(person_id, message, db_path=db_path))
+        lines, shown = _lines(lessons_for(person_id, message, strict=strict, db_path=db_path))
         if not lines:
             return ""
         if count:
@@ -702,8 +712,10 @@ def with_owner_lessons(
         owner = find_principal_person()
         if owner is None or owner.id is None:
             return user_content
+        # The whole rendered prompt is the message: match strictly, so a
+        # lesson comes along (and is counted) only when the brief is about it.
         block = build_lessons_block(
-            int(owner.id), user_content, surface=surface, graded=False, db_path=db_path
+            int(owner.id), user_content, surface=surface, graded=False, strict=True, db_path=db_path
         )
     except Exception:
         logger.debug("lessons: owner block failed", exc_info=True)

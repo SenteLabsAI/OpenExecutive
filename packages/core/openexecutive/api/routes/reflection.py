@@ -214,10 +214,12 @@ def get_reflection(
     weeks = chat_review.weekly_rates(person_id=scope)
     from datetime import UTC, datetime, timedelta
 
-    week_ago = (datetime.now(UTC) - timedelta(days=7)).isoformat()
+    # Uses are kept by the day, so both numbers cover the same seven days:
+    # today and the six before it.
+    week_ago = (datetime.now(UTC) - timedelta(days=6)).date().isoformat()
     live = [lesson for lesson in learned if lesson["retired_at"] is None]
     return ReflectionOut(
-        learned_this_week=sum(1 for lesson in live if lesson["created_at"] >= week_ago),
+        learned_this_week=sum(1 for lesson in live if str(lesson["created_at"])[:10] >= week_ago),
         # Over the lessons listed, and no others: the count gives away
         # nothing about a lesson this caller may not see.
         used_this_week=lessons.used_since(week_ago, lesson_ids=[int(lesson["id"]) for lesson in live]),

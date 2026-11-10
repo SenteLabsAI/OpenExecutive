@@ -365,6 +365,19 @@ def test_a_brief_gets_the_owners_lessons(owner: Any, provider: _Capture) -> None
     assert _used(owner.lesson_id) == {"brief": 1}
 
 
+def test_a_brief_about_something_else_neither_gets_nor_counts_a_lesson(owner: Any) -> None:
+    """A brief is a long prompt: two words shared with a lesson by chance
+    (here "customer" and "pricing") don't bring it in or count a use."""
+    busy = (
+        "TODAY\n- Board meeting at 10.\n- A customer emailed for spring catalogue pricing.\n"
+        "- Payroll runs Friday."
+    )
+    assert lessons.with_owner_lessons(busy) == busy
+    assert _used(owner.lesson_id) == {}
+    # The same two words are enough in a chat turn, where the message is the ask.
+    assert lessons.lessons_for(owner.id, "customer pricing")
+
+
 def test_a_brief_renders_the_standing_facts(owner: Any) -> None:
     from openexecutive.briefing import narrative
 
