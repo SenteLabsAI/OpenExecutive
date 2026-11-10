@@ -8,7 +8,6 @@ import SettingsCard from "@/components/settings/SettingsCard";
 import Switch from "@/components/Switch";
 import {
   addLeadJob,
-  allowLeadSuggestion,
   getTakeTheLead,
   removeLeadLearned,
   setTakeTheLead,
@@ -27,8 +26,10 @@ import { PageSpinner } from "@/components/ui/Spinner";
 // (the same switch as Settings) stops it with everything else, and Approvals
 // decides each step. In training sits above Approvals: everything it would
 // do comes to you as a card on Home, with "Do this on its own next time";
-// what you allow is on the What it's learned list, with Remove. The owner's
-// alone: anyone else sees who can change it.
+// what you allow is on the What it's learned list, with Remove. What you
+// approved three times unchanged is offered on Delegate → Approvals (Could go
+// on its own) and on its next card. The owner's alone: anyone else sees who
+// can change it.
 
 // What makes it look, besides its daily look before your brief
 // (orchestrator.take_the_lead: wake and watch).
@@ -224,13 +225,13 @@ export default function AsMeCard({
               />
             }
           >
-            {(lead.training || learned.length > 0 || lead.suggested.length > 0) && (
+            {(lead.training || learned.length > 0) && (
               <div>
                 <h3 className="text-[15px] font-semibold text-fg">What it&apos;s learned</h3>
                 <p className="mt-1 text-sm text-fg-muted">
                   These go on their own, where Approvals lets them. Remove one and it asks again.
                 </p>
-                {learned.length === 0 && lead.suggested.length === 0 ? (
+                {learned.length === 0 ? (
                   <p className="mt-3 text-sm text-fg-muted">Nothing yet.</p>
                 ) : (
                   <ul className="mt-3 flex flex-col divide-y divide-line rounded-xl border border-line">
@@ -258,25 +259,6 @@ export default function AsMeCard({
                         </li>
                       );
                     })}
-                    {lead.suggested.map((item) => (
-                      <li key={item.key} className="flex min-h-touch items-center justify-between gap-3 px-4 py-2">
-                        <span className="min-w-0">
-                          <span className="block text-[15px] font-medium">{item.label}</span>
-                          <span className="mt-0.5 block text-[13px] leading-snug text-fg-muted">
-                            Suggested: you approved it {item.approvals} times unchanged
-                          </span>
-                        </span>
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => void run(() => allowLeadSuggestion(item.key))}
-                          className="flex-shrink-0 text-sm font-semibold text-accent hover:underline disabled:opacity-60"
-                          aria-label={`Allow ${item.label}`}
-                        >
-                          Allow
-                        </button>
-                      </li>
-                    ))}
                   </ul>
                 )}
               </div>

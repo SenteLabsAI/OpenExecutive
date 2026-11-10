@@ -31,7 +31,7 @@ import logging
 import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -327,3 +327,105 @@ def used(allowance: Allowed, *, db_path: Path | None = None) -> None:
     from openexecutive.orchestrator import take_the_lead
 
     take_the_lead._used(allowance.id, db_path=db_path)
+
+
+# --------------------------------------------------------------------------- #
+# Could go on its own: people whose replies they sent unchanged
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class Offer:
+    """Replies to one person ``person_id`` sent unchanged ``approvals`` times
+    in training, with nobody allowed for that address yet."""
+
+    key: str
+    address: str
+    name: str
+    approvals: int
+    last_at: str
+
+    @property
+    def label(self) -> str:
+        return f"Replies to {self.name or self.address}"
+
+
+def offers(person_id: int, *, db_path: Path | None = None) -> list[Offer]:
+    """Who ``person_id`` could let replies go to on its own: someone they
+    sent ``take_the_lead.SUGGEST_AFTER`` reply cards to unchanged in the last
+    ``SUGGEST_DAYS`` days, not allowed yet. Only while As you is in training:
+    outside it Approvals alone decides, and allowing someone changes
+    nothing. After Keep asking, or a removal, only sends since count. Never
+    raises: unreadable is none."""
+    from openexecutive.delegation.inbox import DECISION_CLASS
+    from openexecutive.memory.decision_ledger import STATUS_APPROVED_UNCHANGED, list_instances
+    from openexecutive.orchestrator import take_the_lead
+
+    try:
+        if not in_training(person_id, db_path=db_path):
+            return []
+        since = (datetime.now(UTC) - timedelta(days=take_the_lead.SUGGEST_DAYS)).isoformat()
+        after = take_the_lead.counted_since(db_path=db_path)
+        sent = list_instances(
+            DECISION_CLASS, status=STATUS_APPROVED_UNCHANGED, approver_person_id=person_id,
+            resolved_since=since, limit=500, db_path=db_path,
+        )
+    except Exception:
+        logger.warning("delegation.training: couldn't read what could go on its own", exc_info=True)
+        return []
+    counts: dict[str, int] = {}
+    names: dict[str, str] = {}
+    last: dict[str, str] = {}
+    # Each key's address as it was counted, never parsed back out of the key.
+    addresses: dict[str, str] = {}
+    for card in sent:
+        try:
+            payload = json.loads(card.proposed_payload_json or "{}")
+        except ValueError:
+            continue
+        if not isinstance(payload, dict) or payload.get("person_id") != person_id:
+            continue
+        at = card.resolved_at or ""
+        sender = _email(str(payload.get("from_email") or ""))
+        for address in {_email(a) for a in reply_goes_to(payload)} - {""}:
+            key = person_key(person_id, address)
+            if key in after and at <= after[key]:
+                continue
+            counts[key] = counts.get(key, 0) + 1
+            last[key] = max(last.get(key, ""), at)
+            addresses[key] = address
+            if address == sender and payload.get("from_name") and key not in names:
+                from openexecutive.delegation.ghostwriter import one_line
+
+                names[key] = one_line(str(payload["from_name"]), 80)
+    out: list[Offer] = []
+    for key, n in counts.items():
+        if n < take_the_lead.SUGGEST_AFTER:
+            continue
+        address = addresses[key]
+        if allowed_person(person_id, address, db_path=db_path) is not None:
+            continue
+        out.append(Offer(key=key, address=address, name=names.get(key, ""), approvals=n, last_at=last[key]))
+    return sorted(out, key=lambda o: (-o.approvals, o.label))
+
+
+def let_go(person_id: int, key: str, *, db_path: Path | None = None) -> Allowed | None:
+    """"Let it go" on one of ``person_id``'s current offers: allow that
+    person, as ticking "on its own next time" would. None when ``key``
+    isn't a current offer. Raises ``take_the_lead.RuleError`` when their
+    list is full."""
+    match = next((o for o in offers(person_id, db_path=db_path) if o.key == key), None)
+    if match is None:
+        return None
+    return allow_person(person_id, match.address, match.name, decision_id=None, db_path=db_path)
+
+
+def keep_asking(person_id: int, key: str, *, db_path: Path | None = None) -> bool:
+    """"Keep asking" on one of ``person_id``'s current offers. False when
+    ``key`` isn't one."""
+    from openexecutive.orchestrator import take_the_lead
+
+    if not any(o.key == key for o in offers(person_id, db_path=db_path)):
+        return False
+    take_the_lead.dismiss(key, person_id=person_id, db_path=db_path)
+    return True

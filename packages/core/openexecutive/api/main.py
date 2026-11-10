@@ -20,6 +20,7 @@ from openexecutive.api import caller as api_caller
 from openexecutive.api.routes import (
     agents,
     alerts,
+    approvals,
     architecture,
     artifacts,
     audit,
@@ -1000,6 +1001,7 @@ def create_app() -> FastAPI:
     app.include_router(decisions.router, tags=["decisions"])
     app.include_router(delegation.router, tags=["delegation"])
     app.include_router(take_the_lead.router, tags=["take-the-lead"])
+    app.include_router(approvals.router, tags=["delegation"])
     app.include_router(may_do.router, tags=["delegation"])
     app.include_router(history.router, tags=["memories"])
     app.include_router(reflection.router, tags=["memories"])

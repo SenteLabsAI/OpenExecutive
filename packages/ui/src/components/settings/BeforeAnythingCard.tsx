@@ -1,16 +1,22 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
+import AiLineCard from "@/components/settings/AiLineCard";
+import ApprovalsWeek from "@/components/settings/ApprovalsWeek";
+import GoOnItsOwnCard from "@/components/settings/GoOnItsOwnCard";
 import LeadRulesEditor from "@/components/settings/LeadRulesEditor";
 import OutsideContentCard from "@/components/settings/OutsideContentCard";
 import SettingsCard from "@/components/settings/SettingsCard";
+import { useApprovalsSummary } from "@/components/settings/useApprovalsSummary";
 import {
   addCompanyLeadRule,
   deleteCompanyLeadRule,
+  type DelegationSettings,
   type OutsideContentMode,
   type OutsideContentSetting,
+  type ReplyDisclosure,
   type TakeTheLead,
 } from "@/lib/api";
 import { rulesChangeLine, rulesSummary } from "@/lib/leadRules";
@@ -21,7 +27,10 @@ import { APPROVALS_LEADS, APPROVALS_SENDS } from "@/lib/reach";
 // comes as an Approve card on Home. Your rules (the owner's, POST/DELETE
 // /take-the-lead/rules) change that: a Waits rule always waits, a Goes rule
 // lets something go on its own. Careful and In training still hold
-// everything. With no rules, the level alone decides.
+// everything. With no rules, the level alone decides. Under the level, what
+// it did in the last 7 days (ApprovalsWeek); then what you approved three
+// times unchanged that Could go on its own; then Say it was written with AI,
+// with an As me row when the install has one (`aiAsMe`).
 
 const LEVELS: OutsideContentMode[] = ["ask", "outsiders", "trust"];
 
@@ -29,18 +38,27 @@ export default function BeforeAnythingCard({
   approvals,
   lead,
   setLead,
+  disclosure,
+  onDelegation,
+  aiAsMe,
 }: {
   approvals: OutsideContentSetting | null;
   lead: TakeTheLead | null;
   setLead: (next: TakeTheLead) => void;
+  disclosure: ReplyDisclosure | null;
+  onDelegation: (next: DelegationSettings) => void;
+  aiAsMe?: ReactNode;
 }) {
   const [adding, setAdding] = useState(false);
+  const summary = useApprovalsSummary();
+  const week = summary && <ApprovalsWeek week={summary.week} />;
   const rules = lead?.rules ?? [];
   const changed = rulesChangeLine(rules);
 
   return (
     <>
       <OutsideContentCard
+        after={week}
         note={
           changed && (
             <p className="mt-3 rounded-lg bg-surface-overlay px-3 py-2 text-sm text-fg-muted">
@@ -84,8 +102,10 @@ export default function BeforeAnythingCard({
           <p className="text-sm text-fg-muted leading-relaxed">
             As you: {APPROVALS_SENDS[approvals.mode].line} As me: {APPROVALS_LEADS[approvals.mode]}
           </p>
+          {week}
         </SettingsCard>
       )}
+      {summary && <GoOnItsOwnCard offers={summary.offers} />}
       {lead && (
         <SettingsCard
           title="Your rules"
@@ -116,6 +136,7 @@ export default function BeforeAnythingCard({
           )}
         </SettingsCard>
       )}
+      <AiLineCard disclosure={disclosure} onSettings={onDelegation} asMe={aiAsMe} />
       <p className="text-[15px] text-fg-muted">
         Pause, what it always does without asking, and the voice it answers in are under{" "}
         <Link href="/settings/executive" className="font-medium text-accent underline-offset-2 hover:underline">

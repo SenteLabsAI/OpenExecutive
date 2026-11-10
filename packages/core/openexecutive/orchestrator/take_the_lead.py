@@ -74,9 +74,12 @@ RULES_TABLE = "take_the_lead_rules"
 LOG_TABLE = "take_the_lead_log"
 ALLOWED_TABLE = "take_the_lead_allowed"
 JOBS_TABLE = "take_the_lead_jobs"
+# "Keep asking" on a "Could go on its own" offer (orchestrator.go_on_its_own):
+# when, by key, so only approvals after it count toward the next offer.
+DISMISSED_TABLE = "take_the_lead_dismissed"
 # Per company, like the roster the switches are keyed on (clients.slots,
 # cli.fixture_loader.reset_all_state).
-TABLES: tuple[str, ...] = (LEAD_TABLE, RULES_TABLE, LOG_TABLE, ALLOWED_TABLE, JOBS_TABLE)
+TABLES: tuple[str, ...] = (LEAD_TABLE, RULES_TABLE, LOG_TABLE, ALLOWED_TABLE, JOBS_TABLE, DISMISSED_TABLE)
 
 MONEY = "money"
 CONTRACTS = "contracts"
@@ -271,6 +274,10 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         "example TEXT NOT NULL DEFAULT '', uses INTEGER NOT NULL DEFAULT 0, last_used_at TEXT, "
         "created_by TEXT NOT NULL, created_at TEXT NOT NULL, decision_id INTEGER, removed_at TEXT, "
         "person_id INTEGER)"
+    )
+    conn.execute(
+        f"CREATE TABLE IF NOT EXISTS {DISMISSED_TABLE} ("  # noqa: S608
+        "key TEXT PRIMARY KEY, person_id INTEGER, dismissed_at TEXT NOT NULL)"
     )
     allowed_columns = {r[1] for r in conn.execute(f"PRAGMA table_info({ALLOWED_TABLE})")}  # noqa: S608
     if "person_id" not in allowed_columns:
@@ -1250,19 +1257,53 @@ class Suggestion:
     key: str
     label: str
     approvals: int
+    # When the latest of those approvals was (ISO), for "last on Nov 9".
+    last_at: str = ""
+
+
+def dismiss(key: str, *, person_id: int | None = None, db_path: Path | None = None) -> None:
+    """"Keep asking": stop offering ``key`` until ``SUGGEST_AFTER`` more
+    unchanged approvals come after now. Nothing is allowed or removed."""
+    conn = _connect(db_path)
+    try:
+        conn.execute(
+            f"INSERT INTO {DISMISSED_TABLE} (key, person_id, dismissed_at) VALUES (?, ?, ?) "  # noqa: S608
+            "ON CONFLICT(key) DO UPDATE SET dismissed_at = excluded.dismissed_at",
+            (key, person_id, datetime.now(UTC).isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def counted_since(*, db_path: Path | None = None) -> dict[str, str]:
+    """By key, the moment after which approvals count toward an offer: the
+    later of when it was last removed from What it's learned and when the
+    offer was last turned down with Keep asking."""
+    since = _removed(db_path=db_path)
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(f"SELECT key, dismissed_at FROM {DISMISSED_TABLE}").fetchall()  # noqa: S608
+    finally:
+        conn.close()
+    for r in rows:
+        if r["dismissed_at"] > since.get(r["key"], ""):
+            since[r["key"]] = r["dismissed_at"]
+    return since
 
 
 def suggestions(*, db_path: Path | None = None) -> list[Suggestion]:
     """Training cards approved unchanged ``SUGGEST_AFTER`` times or more in
     the last ``SUGGEST_DAYS`` days, for actions not allowed yet. After a
-    removal only approvals since count, so a removed one isn't suggested
-    straight back."""
+    removal, or Keep asking on the offer, only approvals since count, so it
+    isn't suggested straight back."""
     from openexecutive.memory.decision_ledger import STATUS_APPROVED_UNCHANGED, list_instances
 
     since = (datetime.now(UTC) - timedelta(days=SUGGEST_DAYS)).isoformat()
     counts: dict[str, int] = {}
     labels: dict[str, str] = {}
-    removed = _removed(db_path=db_path)
+    last: dict[str, str] = {}
+    after = counted_since(db_path=db_path)
     for instance in list_instances(
         DECISION_CLASS, status=STATUS_APPROVED_UNCHANGED, resolved_since=since, limit=500, db_path=db_path,
     ):
@@ -1273,13 +1314,15 @@ def suggestions(*, db_path: Path | None = None) -> list[Suggestion]:
         if not isinstance(grant, dict) or not isinstance(grant.get("key"), str):
             continue
         key = grant["key"]
-        if key in removed and (instance.resolved_at or "") <= removed[key]:
+        at = instance.resolved_at or ""
+        if key in after and at <= after[key]:
             continue
         counts[key] = counts.get(key, 0) + 1
         labels.setdefault(key, str(grant.get("label") or key))
+        last[key] = max(last.get(key, ""), at)
     allowed = {a.key for a in list_allowed(feature=FEATURE, db_path=db_path)}
     out = [
-        Suggestion(key=k, label=labels[k], approvals=n)
+        Suggestion(key=k, label=labels[k], approvals=n, last_at=last[k])
         for k, n in counts.items() if n >= SUGGEST_AFTER and k not in allowed
     ]
     return sorted(out, key=lambda s: (-s.approvals, s.label))

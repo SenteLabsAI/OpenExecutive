@@ -8,7 +8,6 @@ import { useExecutiveStatus } from "@/components/executive/ExecutiveStatusContex
 import ActAsMeCard, { TeamSection } from "@/components/settings/ActAsMeCard";
 import AsMeCard, { useTakeTheLead } from "@/components/settings/AsMeCard";
 import BeforeAnythingCard from "@/components/settings/BeforeAnythingCard";
-import ReplyDisclosureCard from "@/components/settings/ReplyDisclosureCard";
 import SentCard from "@/components/settings/SentCard";
 import SettingsCard from "@/components/settings/SettingsCard";
 import { useDelegation } from "@/components/settings/useDelegation";
@@ -130,13 +129,6 @@ export default function DelegatePage() {
                   side={
                     <>
                       {settings.team && <TeamSection team={settings.team} onSettings={delegation.setSettings} />}
-                      {settings.disclosure?.enabled && (
-                        <ReplyDisclosureCard
-                          disclosure={settings.disclosure}
-                          onSettings={delegation.setSettings}
-                          title="Say it was written with AI"
-                        />
-                      )}
                       {settings.handle_it?.enabled && <SentCard handleIt={settings.handle_it} />}
                     </>
                   }
@@ -159,7 +151,13 @@ export default function DelegatePage() {
               hidden={tab !== APPROVALS_ANCHOR}
               lede="One setting for both As you and As me. It decides what goes on its own and what comes to you as an Approve card on Home, the same in the app, email and every chat app."
             >
-              <BeforeAnythingCard approvals={approvals} lead={lead.lead} setLead={lead.setLead} />
+              <BeforeAnythingCard
+                approvals={approvals}
+                lead={lead.lead}
+                setLead={lead.setLead}
+                disclosure={settings?.disclosure ?? null}
+                onDelegation={delegation.setSettings}
+              />
             </Panel>
           </div>
         </div>
