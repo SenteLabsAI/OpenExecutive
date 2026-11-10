@@ -447,6 +447,8 @@ class MorningBriefWorkflow(Workflow):
                 live=live, live_window="since the last brief",
                 reflection_flags=reflection_flags, rendered_context=rendered,
                 reader=reader,
+                # Their lessons only in a brief that is theirs alone.
+                owner_lessons=private_ok,
             )
         except Exception as exc:
             logger.exception("morning_brief: synthesis failed")

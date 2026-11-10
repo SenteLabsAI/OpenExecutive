@@ -2449,7 +2449,12 @@ export interface ReflectionLesson {
   shown: number;
   fine_after: number;
   miss_after: number;
+  /** How often it was used on each surface. */
+  used_in?: Partial<Record<LessonSurface, number>>;
 }
+
+/** Where a lesson can be used. */
+export type LessonSurface = "chat" | "one_on_one" | "email" | "meeting" | "brief" | "lead";
 
 export interface ReflectionState {
   misses: ReflectionMiss[];
@@ -2460,6 +2465,10 @@ export interface ReflectionState {
   replay: ReflectionReplay;
   /** The principal also sees shared chats' misses; a teammate their own only. */
   sees_everyone: boolean;
+  /** This week, over the lessons listed: how many were learned and how often
+   * they were used on each surface. */
+  learned_this_week?: number;
+  used_this_week?: Partial<Record<LessonSurface, number>>;
 }
 
 /** The caller's misses and weekly counts; null when there is nothing for
