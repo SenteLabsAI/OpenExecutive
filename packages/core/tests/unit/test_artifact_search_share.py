@@ -37,11 +37,9 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     # The roster: 1 is the principal, 2 and 3 teammates; "left" are archived.
     by_id = {1: PRINCIPAL, 2: TEAMMATE, 3: OTHER}
     monkeypatch.setattr(
-        artifact_shares, "viewer_for_person", lambda pid: by_id.get(pid, Viewer(person_id=pid))
-    )
-    monkeypatch.setattr(
         "openexecutive.people.store.get_person",
-        lambda pid: SimpleNamespace(archived=pid in who["left"]) if pid in by_id else None,
+        lambda pid: SimpleNamespace(archived=pid in who["left"], is_principal=by_id[pid].is_principal)
+        if pid in by_id else None,
     )
 
     async def _noop(*_a: Any, **_k: Any) -> None:

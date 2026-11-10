@@ -36,6 +36,7 @@ import re
 import secrets
 from collections.abc import Iterable
 from datetime import UTC, datetime
+from typing import Literal
 
 from openexecutive.alerts.store import _get_conn
 from openexecutive.orchestrator.artifact_records import (
@@ -45,7 +46,6 @@ from openexecutive.orchestrator.artifact_records import (
     Viewer,
     load_artifact,
     parse_artifact_id,
-    viewer_for_person,
 )
 
 logger = logging.getLogger(__name__)
@@ -183,13 +183,12 @@ def load_shared(key: str) -> ArtifactRecord | None:
     if row is None or row["shared_by"] is None:
         return None
     artifact_id = str(row["artifact_id"])
-    sharer = viewer_for_person(int(row["shared_by"]))
-    on_team = _still_on_team(sharer)
-    if on_team is None:
+    sharer = _sharer(int(row["shared_by"]))
+    if sharer is None:
         # The People list couldn't be read just now: not this time, but
         # the link stays.
         return None
-    if not on_team:
+    if sharer is False:
         forget(artifact_id)
         return None
     try:
@@ -228,19 +227,20 @@ def _audit(event_type: str, summary: str, rec: ArtifactRecord, viewer: Viewer) -
         logging.getLogger(__name__).warning("artifact shares: couldn't write the audit row", exc_info=True)
 
 
-def _still_on_team(viewer: Viewer) -> bool | None:
-    """Whether the sharer is still on the team; None when the People list
-    can't be read right now (a busy database), which never ends a link."""
-    if viewer.person_id is None:
-        return False
+def _sharer(person_id: int) -> Viewer | Literal[False] | None:
+    """The sharer as a viewer, from one read of the People list: False when
+    they have left the team, None when the list can't be read right now (a
+    busy database), which never ends a link."""
     from openexecutive.people.store import get_person
 
     try:
-        person = get_person(viewer.person_id)
+        person = get_person(person_id)
     except Exception:
         logger.warning("shares: couldn't read the People list", exc_info=True)
         return None
-    return person is not None and not person.archived
+    if person is None or person.archived:
+        return False
+    return Viewer(person_id=person_id, is_principal=bool(person.is_principal))
 
 
 __all__ = [
