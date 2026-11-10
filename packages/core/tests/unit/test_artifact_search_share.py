@@ -252,6 +252,26 @@ async def test_link_ends_when_its_sharer_leaves(db: dict[str, Any]) -> None:
     assert again != key
 
 
+async def test_a_busy_people_list_doesnt_end_a_link(db: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    import sqlite3
+
+    cid = _draft(db, "a1", "Memo", "text")
+    key = _key((await artifacts_route.share_artifact(cid, _REQ))["share_path"])
+
+    def locked(pid: int) -> Any:
+        raise sqlite3.OperationalError("database is locked")
+
+    from openexecutive.people import store as people_store
+
+    on_roster = people_store.get_person
+    monkeypatch.setattr(people_store, "get_person", locked)
+    with pytest.raises(HTTPException):
+        await artifacts_route.shared_document(key, Response())
+    assert artifact_shares.share_keys([cid]) == {cid: key}
+    monkeypatch.setattr(people_store, "get_person", on_roster)
+    assert (await artifacts_route.shared_document(key, Response())).title == "Memo"
+
+
 async def test_a_new_principal_gets_a_new_link(db: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
     run = _run(db, "r1", "board_prep", "Deck", "# Deck")
     old = _key((await artifacts_route.share_artifact(run, _REQ))["share_path"])
