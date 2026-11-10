@@ -398,10 +398,13 @@ def forget_session(session_id: str, *, db_path: Path | None = None) -> None:
     """Drop everything kept from one chat (``session_store.delete_session``
     calls this): the turns, their grades and the misses. The weekly counts
     stay, since they carry no words. A DB without the table is a no-op."""
+    from openexecutive.memory import knowledge_gaps
     from openexecutive.memory.episodic import _resolve_db_path
 
     if not _resolve_db_path(db_path).exists():
         return
+    # Its questions go first, on their own tables, whatever happens to the turns.
+    knowledge_gaps.forget_session(session_id, db_path=db_path)
     try:
         conn = _connect(db_path)
     except sqlite3.Error:
@@ -414,9 +417,6 @@ def forget_session(session_id: str, *, db_path: Path | None = None) -> None:
         return
     finally:
         conn.close()
-    from openexecutive.memory import knowledge_gaps
-
-    knowledge_gaps.forget_session(session_id, db_path=db_path)
 
 
 def _schedule(session_id: str, run_at: datetime, *, db_path: Path | None) -> int | None:

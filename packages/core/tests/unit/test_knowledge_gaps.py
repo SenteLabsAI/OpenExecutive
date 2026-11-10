@@ -126,6 +126,19 @@ def test_deleting_the_chat_drops_its_asks(db: Path) -> None:
     assert [(a["question"], a["session_id"]) for a in left["asks"]] == [(REFUND, "s-1")]
 
 
+def test_deleting_the_chat_drops_its_asks_even_when_its_turns_cannot_be(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kg.note_unanswered(REFUND, person_id=1, session_id="s-1", db_path=db)
+
+    def locked(*_: Any, **__: Any) -> Any:
+        raise cr.sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(cr, "_connect", locked)
+    cr.forget_session("s-1", db_path=db)
+    assert kg.list_open(db_path=db) == []
+
+
 def test_company_sources_are_told_from_playbooks_and_the_web() -> None:
     assert not kg.has_company_source(None)
     assert not kg.has_company_source({"sources": [{"kind": "knowledge"}, {"kind": "web"}]})
