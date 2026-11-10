@@ -9,6 +9,7 @@
 
 import { useEffect, useState } from "react";
 
+import GoOnItsOwnOffer from "@/components/briefing/GoOnItsOwnOffer";
 import NextTimeTick from "@/components/NextTimeTick";
 import Button from "@/components/ui/Button";
 import {
@@ -224,6 +225,7 @@ export default function LeadTrainingCard({
               Decline
             </Button>
           </div>
+          <GoOnItsOwnOffer leadKey={card?.allow?.key ?? null} />
         </>
       )}
       {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
