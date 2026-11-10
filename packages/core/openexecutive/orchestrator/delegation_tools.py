@@ -511,6 +511,7 @@ async def _forward(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> 
         signature=stored.profile.signature,
         exec_name=get_settings().exec_display_name,
         model=composer_model(),
+        writer_person_id=writer.person.id,
     )
     draft = await writer.mailbox.create_draft(DraftSpec(
         to=to,
@@ -574,6 +575,7 @@ async def _draft(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> tu
         signature=stored.profile.signature,
         exec_name=get_settings().exec_display_name,
         model=composer_model(),
+        writer_person_id=writer.person.id,
         # How they wrote to this one person before, when Drafts in training kept it.
         writer_example=example_for(writer.person.id, recipients[0]) if len(recipients) == 1 else None,
     )

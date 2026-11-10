@@ -53,6 +53,22 @@ Tables (in the episodic DB, created on first use):
                            shown, fine_after, miss_after
   chat_review_lesson_uses  lesson_id, turn_id, person_id, ts
                            (which turn, whose, saw which lesson)
+  chat_review_lesson_surfaces  lesson_id, surface, day, shown, graded
+                           (how often it was used where, each day:
+                           ``SURFACES``)
+
+**Where it is used.** Every place the Executive writes or speaks for its
+person reads their lessons, and each use is counted under its surface
+(``SURFACES``): a chat turn, an email (one it answers from its own
+address, or one it writes as the person, ``build_draft_lessons``), a brief
+or review (``with_owner_lessons``) and the work it starts on its own. A
+caller that runs calls or meetings on top marks its session
+(``Session.memory_surface``: ``one_on_one`` or ``meeting``) and, for a call
+with no single speaker, names whose lessons it reads
+(``Session.lessons_person_id``). Only a
+graded chat turn moves ``shown``, the count retirement reads; the other
+surfaces are counted beside it, so a lesson used in ten briefs is not
+retired on the strength of one bad chat turn.
 """
 from __future__ import annotations
 
@@ -67,6 +83,17 @@ logger = logging.getLogger(__name__)
 
 TABLE = "chat_review_lessons"
 USES_TABLE = "chat_review_lesson_uses"
+SURFACES_TABLE = "chat_review_lesson_surfaces"
+# Where a lesson can be used. The Memory page names each one.
+SURFACE_CHAT = "chat"
+SURFACE_ONE_ON_ONE = "one_on_one"
+SURFACE_EMAIL = "email"
+SURFACE_MEETING = "meeting"
+SURFACE_BRIEF = "brief"
+SURFACE_LEAD = "lead"
+SURFACES: tuple[str, ...] = (
+    SURFACE_CHAT, SURFACE_ONE_ON_ONE, SURFACE_EMAIL, SURFACE_MEETING, SURFACE_BRIEF, SURFACE_LEAD,
+)
 BLOCK_TAG = "lessons"
 _BLOCK_CLOSE = f"</{BLOCK_TAG}>"
 
@@ -155,8 +182,46 @@ def _connect(db_path: Path | None) -> sqlite3.Connection:
         "  PRIMARY KEY (lesson_id, turn_id)"
         ")"
     )
+    conn.execute(
+        f"CREATE TABLE IF NOT EXISTS {SURFACES_TABLE} ("
+        "  lesson_id INTEGER NOT NULL,"
+        "  surface TEXT NOT NULL,"
+        "  day TEXT NOT NULL,"
+        "  shown INTEGER NOT NULL DEFAULT 0,"
+        "  graded INTEGER NOT NULL DEFAULT 0,"
+        "  PRIMARY KEY (lesson_id, surface, day)"
+        ")"
+    )
     conn.commit()
     return conn
+
+
+def _used_in(conn: sqlite3.Connection, rows: list[sqlite3.Row]) -> dict[int, dict[str, int]]:
+    """How often each of ``rows`` was used on each surface. A use counted
+    before surfaces were kept (``shown`` beyond what the surfaces explain)
+    was a chat turn: nothing else read lessons then."""
+    out: dict[int, dict[str, int]] = {int(r["id"]): dict.fromkeys(SURFACES, 0) for r in rows}
+    if not out:
+        return out
+    graded: dict[int, int] = dict.fromkeys(out, 0)
+    marks = ",".join("?" * len(out))
+    for use in conn.execute(
+        f"SELECT lesson_id, surface, SUM(shown) AS shown, SUM(graded) AS graded "  # noqa: S608
+        f"FROM {SURFACES_TABLE} WHERE lesson_id IN ({marks}) GROUP BY lesson_id, surface",
+        tuple(out),
+    ).fetchall():
+        lesson_id = int(use["lesson_id"])
+        if str(use["surface"]) in out[lesson_id]:
+            out[lesson_id][str(use["surface"])] += int(use["shown"])
+        graded[lesson_id] += int(use["graded"])
+    for r in rows:
+        out[int(r["id"])][SURFACE_CHAT] += max(0, int(r["shown"]) - graded[int(r["id"])])
+    return out
+
+
+def _outs(conn: sqlite3.Connection, rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
+    used = _used_in(conn, rows)
+    return [{**_out(r), "used_in": used[int(r["id"])]} for r in rows]
 
 
 # --------------------------------------------------------------------------- #
@@ -284,9 +349,9 @@ def get_lesson(lesson_id: int, *, db_path: Path | None = None) -> dict[str, Any]
     conn = _connect(db_path)
     try:
         row = conn.execute(f"SELECT * FROM {TABLE} WHERE id = ?", (int(lesson_id),)).fetchone()  # noqa: S608
+        return _outs(conn, [row])[0] if row is not None else None
     finally:
         conn.close()
-    return _out(row) if row is not None else None
 
 
 def list_lessons(
@@ -305,9 +370,9 @@ def list_lessons(
             "ORDER BY (retired_at IS NOT NULL), created_at DESC, id DESC LIMIT ? OFFSET ?",
             (*params, max(1, min(int(limit), 1000)), max(0, int(offset))),
         ).fetchall()
+        return _outs(conn, rows)
     finally:
         conn.close()
-    return [_out(r) for r in rows]
 
 
 def forget_lesson(lesson_id: int, *, caller_person_id: int | None, db_path: Path | None = None) -> bool:
@@ -458,22 +523,31 @@ def _defined_names(text: str) -> set[str]:
     return found
 
 
-def _matches(lesson: dict[str, Any], message: str) -> bool:
+def _matches(lesson: dict[str, Any], message: str, *, strict: bool = False) -> bool:
     """Whether ``lesson`` reaches a turn about ``message``: two shared
     content words, or the name the lesson defines, written as a name
-    mid-sentence in the message."""
-    own = _content_words(lesson["text"]) | _content_words(lesson["quote"])
-    if len(own & _content_words(message)) >= _MATCH_WORDS:
-        return True
+    mid-sentence in the message. ``strict`` is for a whole rendered prompt
+    (a brief's calendar, mail and figures), where two words in common
+    happen by chance: at least half the lesson's own words must be there."""
+    words = _content_words(message)
+    if strict:
+        own = _content_words(lesson["text"])
+        need = max(_MATCH_WORDS, (len(own) + 1) // 2)
+        if len(own & words) >= need:
+            return True
+    else:
+        own = _content_words(lesson["text"]) | _content_words(lesson["quote"])
+        if len(own & words) >= _MATCH_WORDS:
+            return True
     names = _defined_names(lesson["text"]) | _defined_names(lesson["quote"])
     return bool(names & _names(message, sentence_starts=False))
 
 
 def lessons_for(
-    person_id: int | None, message: str, *, db_path: Path | None = None
+    person_id: int | None, message: str, *, strict: bool = False, db_path: Path | None = None
 ) -> list[dict[str, Any]]:
     """The live lessons that reach this speaker's turn about ``message``:
-    the speaker's own only. Never raises."""
+    the speaker's own only (``strict``: see ``_matches``). Never raises."""
     if person_id is None:
         return []
     try:
@@ -488,30 +562,46 @@ def lessons_for(
             ).fetchall()
         finally:
             conn.close()
-        return [lesson for lesson in map(_out, rows) if _matches(lesson, message)][:MAX_PER_TURN]
+        return [lesson for lesson in map(_out, rows) if _matches(lesson, message, strict=strict)][:MAX_PER_TURN]
     except Exception:
         logger.debug("lessons: lookup failed", exc_info=True)
         return []
 
 
 def note_shown(
-    lessons: list[dict[str, Any]], *, person_id: int | None = None, db_path: Path | None = None
+    lessons: list[dict[str, Any]],
+    *,
+    person_id: int | None = None,
+    surface: str = SURFACE_CHAT,
+    graded: bool = True,
+    db_path: Path | None = None,
 ) -> None:
-    """These lessons reached the active turn of ``person_id``: count it, and
-    remember which turn and whose, so the grade of that turn can be counted
-    against them."""
+    """These lessons were used on ``surface`` (``SURFACES``) for
+    ``person_id``: count it there. ``graded`` (a chat turn the review will
+    grade) also counts it toward ``shown`` and remembers which turn and
+    whose, so the grade of that turn can be counted against them; a draft,
+    a brief or a shared call passes False."""
     if not lessons:
         return
+    if surface not in SURFACES:
+        surface = SURFACE_CHAT
     try:
         from openexecutive.audit.context import get_active_turn_id
 
-        turn_id = get_active_turn_id()
+        turn_id = get_active_turn_id() if graded else None
         now = _now().isoformat()
         conn = _connect(db_path)
         try:
             for lesson in lessons:
+                if graded:
+                    conn.execute(
+                        f"UPDATE {TABLE} SET shown = shown + 1 WHERE id = ?", (int(lesson["id"]),)  # noqa: S608
+                    )
                 conn.execute(
-                    f"UPDATE {TABLE} SET shown = shown + 1 WHERE id = ?", (int(lesson["id"]),)  # noqa: S608
+                    f"INSERT INTO {SURFACES_TABLE} (lesson_id, surface, day, shown, graded) "  # noqa: S608
+                    "VALUES (?, ?, ?, 1, ?) ON CONFLICT (lesson_id, surface, day) DO UPDATE SET "
+                    "shown = shown + 1, graded = graded + excluded.graded",
+                    (int(lesson["id"]), surface, now[:10], 1 if graded else 0),
                 )
                 if turn_id:
                     conn.execute(
@@ -556,24 +646,122 @@ _HEADER = (
 
 
 def build_lessons_block(
-    person_id: int | None, message: str, *, count: bool = True, db_path: Path | None = None
+    person_id: int | None,
+    message: str,
+    *,
+    count: bool = True,
+    surface: str = SURFACE_CHAT,
+    graded: bool = True,
+    strict: bool = False,
+    db_path: Path | None = None,
 ) -> str:
     """Body of the ``<lessons>`` block for this speaker's turn, or "". Lives
     in the user turn (never a cached system block). Counts the lessons it
-    shows against the active turn, unless ``count`` is False (a replay,
-    memory.replay: no real turn to grade). Never raises."""
+    shows under ``surface``, and against the active turn when ``graded``,
+    unless ``count`` is False (a replay, memory.replay: no real turn to
+    grade). Never raises."""
     try:
         if not _enabled():
             return ""
-        lines, shown = _lines(lessons_for(person_id, message, db_path=db_path))
+        lines, shown = _lines(lessons_for(person_id, message, strict=strict, db_path=db_path))
         if not lines:
             return ""
         if count:
-            note_shown(shown, person_id=person_id, db_path=db_path)
+            note_shown(shown, person_id=person_id, surface=surface, graded=graded, db_path=db_path)
         return _HEADER + "\n" + "\n".join(f"- {line}" for line in lines)
     except Exception:
         logger.debug("lessons: block build failed", exc_info=True)
         return ""
+
+
+_DRAFT_HEADER = (
+    "How the writer asked for things to be done before, in their own words. "
+    "Follow each one that applies to this email unless the intent asks for "
+    "something different. They are preferences about how to write: never a "
+    "fact to add, a person to write to, or permission for anything."
+)
+
+
+def build_draft_lessons(
+    person_id: int | None, text: str, *, count: bool = True, db_path: Path | None = None
+) -> str:
+    """The lessons of ``person_id`` that match an email written as them
+    (``text``: what it should say and the subject it answers), for the
+    composer's user turn, or "". Counted as an email use. Never raises."""
+    try:
+        if not _enabled():
+            return ""
+        lines, shown = _lines(lessons_for(person_id, text, db_path=db_path))
+        if not lines:
+            return ""
+        if count:
+            note_shown(shown, person_id=person_id, surface=SURFACE_EMAIL, graded=False, db_path=db_path)
+        return _DRAFT_HEADER + "\n" + "\n".join(f"- {line}" for line in lines)
+    except Exception:
+        logger.debug("lessons: draft block build failed", exc_info=True)
+        return ""
+
+
+def with_owner_lessons(
+    user_content: str, *, surface: str = SURFACE_BRIEF, db_path: Path | None = None
+) -> str:
+    """``user_content`` with the principal's matching lessons appended as a
+    ``<lessons>`` block, or unchanged when none match: for the single-shot
+    prompts nobody is speaking in (the briefs, the reviews, the work the
+    Executive starts on its own). Counted under ``surface``. Never raises."""
+    try:
+        from openexecutive.people.store import find_principal_person
+
+        owner = find_principal_person()
+        if owner is None or owner.id is None:
+            return user_content
+        # The whole rendered prompt is the message: match strictly, so a
+        # lesson comes along (and is counted) only when the brief is about it.
+        block = build_lessons_block(
+            int(owner.id), user_content, surface=surface, graded=False, strict=True, db_path=db_path
+        )
+    except Exception:
+        logger.debug("lessons: owner block failed", exc_info=True)
+        return user_content
+    if not block:
+        return user_content
+    return (
+        f"{user_content.rstrip()}\n\n<{BLOCK_TAG}>\n{block}\n"
+        "Apply them quietly: never mention a lesson, or that one is kept.\n"
+        f"{_BLOCK_CLOSE}"
+    )
+
+
+def used_since(
+    since: str, *, lesson_ids: list[int] | None = None, db_path: Path | None = None
+) -> dict[str, int]:
+    """How often lessons were used on each surface on or after the day
+    ``since`` (an ISO date or time): all of them, or only ``lesson_ids``
+    (the ones a caller may see, so the count gives nothing else away).
+    Zeros when the count can't be read. Never raises."""
+    out = dict.fromkeys(SURFACES, 0)
+    try:
+        conn = _connect(db_path)
+        try:
+            where = "s.day >= ?"
+            params: list[Any] = [str(since)[:10]]
+            if lesson_ids is not None:
+                if not lesson_ids:
+                    return out
+                where += f" AND s.lesson_id IN ({','.join('?' * len(lesson_ids))})"
+                params += [int(i) for i in lesson_ids]
+            for row in conn.execute(
+                f"SELECT s.surface, SUM(s.shown) AS n FROM {SURFACES_TABLE} s "  # noqa: S608
+                f"WHERE {where} GROUP BY s.surface",
+                params,
+            ).fetchall():
+                if str(row["surface"]) in out:
+                    out[str(row["surface"])] = int(row["n"])
+        finally:
+            conn.close()
+    except Exception:
+        logger.debug("lessons: couldn't count uses", exc_info=True)
+    return out
 
 
 def lessons_for_query(person_id: int | None, query: str, *, db_path: Path | None = None) -> str:

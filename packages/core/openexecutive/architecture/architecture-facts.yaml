@@ -5520,6 +5520,17 @@ chat:
     shown against the active turn id), each specialist call under its
     <failure_cases> block (router._lessons_for_call). A lesson reaches its
     own person's turns only, wherever it was learned.
+    Every surface reads lessons and counts the use under its surface in
+    chat_review_lesson_surfaces (lesson, surface, day, shown, graded;
+    SURFACES: chat, one_on_one, email, meeting, brief, lead): a chat turn
+    under Session.memory_surface, else email or chat (executive._turn_lessons);
+    an email written as a person gets writer_lessons and writer_knows blocks
+    (ghostwriter.writer_memory; compose requires writer_person_id; a fact is
+    picked by the writer's side only, never by an outside sender's words); a shared
+    call reads the lessons of Session.lessons_person_id only; briefs, the
+    digest, the weekly review and the morning reflection append the
+    principal's (lessons.with_owner_lessons). Only a graded chat turn moves
+    shown. tests/unit/test_memory_reach.py holds one test per surface.
     When the review grades a turn that saw a lesson, note_outcome bumps
     fine_after or miss_after for the lesson's own person's turns only;
     shown 5+ times with more misses than fine it retires itself

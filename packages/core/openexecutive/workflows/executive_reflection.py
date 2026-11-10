@@ -908,6 +908,17 @@ class ExecutiveReflectionWorkflow(Workflow):
             surface="executive reflection", private=private_context,
         )
         handlers = grounding.guard(handlers)
+        # How the principal asked for things to be done (memory.lessons), so
+        # what this pass starts on its own is done the way they taught it.
+        # Added after the grounding scope is built: a name or figure in a
+        # lesson is no evidence for anything this pass sends. Not gated on
+        # who reads the output, unlike the briefs: this pass runs for the
+        # principal and acts for them, and every send passes Approvals.
+        from openexecutive.memory import lessons as lessons_store
+
+        user_content = await asyncio.to_thread(
+            lessons_store.with_owner_lessons, user_content, surface=lessons_store.SURFACE_LEAD
+        )
         # Build the system prompt for the SAME configured set, so the
         # audience rule never names a DM channel the model can't use.
         reflection_system = (

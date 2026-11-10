@@ -837,6 +837,66 @@ def render_facts_for_prompt(
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
+DRAFT_MAX_FACTS = 6
+DRAFT_MAX_CHARS = 1500
+_DRAFT_FACTS_HEADER = (
+    "What the writer's company has on record about what this email touches, "
+    "the closest first. Use one only to get right a name, a term, a date or a "
+    "figure the email already has to mention; where the intent says otherwise, "
+    "the intent wins. Never add one the email does not need, never list them, "
+    "and never mention that they are kept."
+)
+
+
+def render_facts_for_draft(
+    query: str,
+    *,
+    max_facts: int = DRAFT_MAX_FACTS,
+    max_chars: int = DRAFT_MAX_CHARS,
+    db_path: Path | None = None,
+) -> str:
+    """The active facts that share a word with ``query`` (what an email
+    written as someone should say, and the thread it answers), for the
+    composer's user turn; "" when none do. Only matching facts, and few: an
+    email goes to someone outside, so it carries what it needs and no more.
+    Never raises."""
+    from openexecutive.memory.lessons import _stems
+
+    want = _stems(query or "")
+    if not want:
+        return ""
+    rows = _read_only_rows(
+        "SELECT * FROM facts WHERE status='active' AND kind!='profile' "
+        "ORDER BY created_at DESC, id DESC LIMIT ?",
+        (RANK_POOL_FACTS,),
+        db_path,
+    )
+    scored: list[tuple[int, int, sqlite3.Row]] = []
+    for i, r in enumerate(rows):
+        try:
+            shared = len(want & _stems(f"{r['subject']} {r['statement']}"))
+        except Exception:  # noqa: BLE001 - a bad row is skipped, as in _rank_for.
+            continue
+        # Two shared words, as a lesson needs: one common word matches too much.
+        if shared >= 2:
+            scored.append((-shared, i, r))
+    now = datetime.now(UTC)
+    lines: list[str] = []
+    used = len(_DRAFT_FACTS_HEADER)
+    for *_, r in sorted(scored, key=lambda t: (t[0], t[1]))[: max(1, max_facts)]:
+        try:
+            f = _row(r)
+        except Exception:  # noqa: BLE001 - one bad row must not cost the draft its facts.
+            continue
+        line = f"- {_safe(f.subject, SUBJECT_MAX)}: {_safe(f.statement, STATEMENT_MAX)}"
+        line += _attribution(f) + _dated(f.created_at, now)
+        if used + len(line) + 1 > max_chars:
+            break
+        lines.append(line)
+        used += len(line) + 1
+    return "\n".join([_DRAFT_FACTS_HEADER, *lines]) if lines else ""
+
+
 def render_teammate_changes(
     since: datetime,
     *,
@@ -1039,6 +1099,7 @@ __all__ = [
     "get_fact",
     "list_facts",
     "record_fact",
+    "render_facts_for_draft",
     "render_facts_for_prompt",
     "retire_fact",
     "subject_key",

@@ -60,6 +60,16 @@ class Session:
     # as the web app's. Inbound vocabulary — see `normalize_channel`.
     origin_channel: str = ""
     origin_channel_ref: str = ""
+    # Where this session's turns count a lesson as used (`memory.lessons`
+    # `SURFACES`): set by a caller whose turns are not a plain chat, such as
+    # a one-to-one call ("one_on_one") or a team meeting ("meeting"). Empty
+    # means a chat, or an email when `origin_channel` says so.
+    memory_surface: str = ""
+    # Whose lessons a turn with no single speaker reads: the person a shared
+    # call belongs to. Only lessons follow this id. Figures the Executive
+    # worked out and what it knows about a person stay with a turn that
+    # person speaks alone (`person_id`).
+    lessons_person_id: int | None = None
     # True only for a session minted by the web chat route. `origin_channel`
     # cannot stand in for this: alert review, the CLI, the MCP server, the
     # scheduler and the unattended workflows all leave it empty while being

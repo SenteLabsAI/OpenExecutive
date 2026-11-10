@@ -971,6 +971,33 @@ def _speaker_text(memory_text: str | None, user_message: str) -> str:
     return memory_text if memory_text is not None else user_message
 
 
+def _turn_lessons(session: Session, person_id: int | None, text: str) -> str:
+    """The ``<lessons>`` body for this turn (``memory.lessons``), counted
+    under the surface the turn is on: the session's ``memory_surface`` when
+    its caller set one, an email for a turn that answers one, else a chat.
+    A turn with no single speaker (a shared call) reads the lessons of
+    ``session.lessons_person_id``, whoever the call belongs to, and is not
+    graded against them: nobody there is that person speaking alone."""
+    from openexecutive.memory import lessons as lessons_store
+
+    surface = str(getattr(session, "memory_surface", "") or "")
+    if surface not in lessons_store.SURFACES:
+        surface = (
+            lessons_store.SURFACE_EMAIL
+            if getattr(session, "origin_channel", "") == "email"
+            else lessons_store.SURFACE_CHAT
+        )
+    owner_id = getattr(session, "lessons_person_id", None)
+    shared = person_id is None and owner_id is not None
+    return lessons_store.build_lessons_block(
+        owner_id if shared else person_id,
+        text,
+        count=not chat_replay.is_replay(session),
+        surface=surface,
+        graded=not shared,
+    )
+
+
 def _lookup_text(memory_text: str | None, user_message: str) -> str:
     """What the memory lookups (lessons, figures, standing facts) rank
     against: the speaker's own words when the caller gave them, so notes put
@@ -1543,14 +1570,12 @@ class Executive:
                     reasoning_level=peer_memory_reasoning_level,
                 )
             from openexecutive.attunement.style import build_style_block
-            from openexecutive.memory.lessons import build_lessons_block
 
             working_style = build_style_block(person_id)
             # What this workspace asked for differently before (memory.lessons):
             # a SQLite read, off the event loop like the facts.
             lessons = await asyncio.to_thread(
-                build_lessons_block, person_id, _lookup_text(memory_text, user_message),
-                count=not chat_replay.is_replay(session)
+                _turn_lessons, session, person_id, _lookup_text(memory_text, user_message)
             )
             from openexecutive.memory.worked_out import build_worked_out_block
 
@@ -1962,12 +1987,10 @@ class Executive:
                 reasoning_level=peer_memory_reasoning_level,
             )
         from openexecutive.attunement.style import build_style_block
-        from openexecutive.memory.lessons import build_lessons_block
 
         working_style = build_style_block(person_id)
         lessons = await asyncio.to_thread(
-            build_lessons_block, person_id, _lookup_text(memory_text, user_message),
-                count=not chat_replay.is_replay(session)
+            _turn_lessons, session, person_id, _lookup_text(memory_text, user_message)
         )
         from openexecutive.memory.worked_out import build_worked_out_block
 

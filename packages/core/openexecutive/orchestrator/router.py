@@ -199,6 +199,9 @@ def _lessons_for_call(query: str) -> str:
 
     session = current_session.get()
     person_id = getattr(session, "caller_person_id", None) if session is not None else None
+    if person_id is None and session is not None:
+        # A shared call: the lessons of the person it belongs to.
+        person_id = getattr(session, "lessons_person_id", None)
     return lessons_for_query(person_id, query)
 
 

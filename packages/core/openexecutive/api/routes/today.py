@@ -1686,6 +1686,7 @@ def _build_activity(
         logger.warning("activity: couldn't read As me's rows", exc_info=True)
         led = []
     jobs = take_the_lead.jobs_by_id() if led else {}
+    answers = _answers([(r.to_person_id, r.at) for r in led if r.to_person_id is not None])
     for row in led:
         if row.status not in ("done", "approved"):
             continue
@@ -1710,7 +1711,7 @@ def _build_activity(
             at=row.at,
             mail_subject=row.mail_subject,
             mail_to=row.mail_to,
-            lead_line=_lead_line(row, jobs),
+            lead_line=_lead_line(row, jobs, answers),
         ))
 
     # Operational alerts the Executive raised. For the rail, all statuses are
@@ -2503,6 +2504,8 @@ async def _regen_briefing_narrative_locked(
                     rendered_context=context,
                     mode=mode,
                     reader=reader,
+                    # The principal's own header only, never the company one.
+                    owner_lessons=expected_scope == narrative_cache.DEFAULT_SCOPE,
                 ),
                 # 25 s for the draft, plus the rewrite's own budget.
                 timeout=25.0 + REWRITE_TIMEOUT_S,
@@ -2783,7 +2786,7 @@ def _done_for_you(request: Request, caller: int | None, now: datetime) -> list[D
     return rows[:_DONE_MAX]
 
 
-def _lead_line(row: Any, jobs: dict[int, Any]) -> str:
+def _lead_line(row: Any, jobs: dict[int, Any], answers: dict[tuple[int, str], str]) -> str:
     """Done for you's second line for something As me did: how it did it,
     what made it look (or the standing job it was for) and what came of it.
     "By email, as me · When new mail came in · Riley Park answered at
@@ -2798,7 +2801,7 @@ def _lead_line(row: Any, jobs: dict[int, Any]) -> str:
             parts.append(f"For your standing job: {job.text}")
         elif row.prompted_by:
             parts.append(row.prompted_by)
-        answered = _answered(row.to_person_id, row.at) if row.to_person_id is not None else ""
+        answered = answers.get((row.to_person_id, row.at), "") if row.to_person_id is not None else ""
         if answered:
             parts.append(answered)
         elif row.outcome:
@@ -2809,38 +2812,62 @@ def _lead_line(row: Any, jobs: dict[int, Any]) -> str:
         return ""
 
 
-def _answered(person_id: int, sent_at: str) -> str:
-    """"Riley answered at 9:40 AM" when the person a message went to
-    replied to it (``outbound_context`` consumed after it was sent); "".
-    Never raises."""
+def _answers(sent: list[tuple[int, str]]) -> dict[tuple[int, str], str]:
+    """"Riley answered at 9:40 AM" for each (person, sent at) whose message
+    was replied to (``outbound_context`` recorded beside the send, then
+    consumed). One query for the whole feed; a message with no answer is
+    left out, and one that can't be named doesn't cost the others. Never
+    raises."""
     from openexecutive.memory.episodic import _get_conn, _resolve_db_path
     from openexecutive.memory.workspace_settings import get_user_timezone
     from openexecutive.people.store import get_person
 
+    out: dict[tuple[int, str], str] = {}
+    window = timedelta(minutes=2)
+    when = {(pid, at): _parse_aware(at) for pid, at in sent}
+    times = [t for t in when.values() if t is not None]
+    if not times:
+        return out
     try:
-        sent = _parse_aware(sent_at)
         path = _resolve_db_path(None)
-        if sent is None or not path.exists():
-            return ""
+        if not path.exists():
+            return out
+        people = sorted({pid for pid, _ in when})
         with _get_conn(path) as conn:
-            row = conn.execute(
-                "SELECT consumed_at FROM outbound_context WHERE recipient_person_id = ? "
+            rows = conn.execute(
+                "SELECT recipient_person_id, created_at, consumed_at FROM outbound_context "
+                f"WHERE recipient_person_id IN ({','.join('?' * len(people))}) "
                 "AND created_at >= ? AND created_at <= ? AND consumed_at IS NOT NULL "
-                "ORDER BY created_at LIMIT 1",
-                # The message As me sent is recorded beside its log row: a
-                # later message to the same person, answered, isn't this one.
-                (person_id, (sent - timedelta(minutes=2)).isoformat(),
-                 (sent + timedelta(minutes=2)).isoformat()),
-            ).fetchone()
-        replied = _parse_aware(row["consumed_at"]) if row is not None else None
-        if replied is None:
-            return ""
-        person = get_person(person_id)
-        name = (person.full_name or "").split()[0] if person is not None and person.full_name else "They"
-        local = replied.astimezone(get_user_timezone())
-        return f"{name} answered at {local.strftime('%I:%M %p').lstrip('0')}"
+                "ORDER BY created_at",
+                (*people, (min(times) - window).isoformat(), (max(times) + window).isoformat()),
+            ).fetchall()
+        zone = get_user_timezone()
     except Exception:
-        return ""
+        logger.warning("today: couldn't read who answered", exc_info=True)
+        return out
+    replies = [(r["recipient_person_id"], _parse_aware(r["created_at"]), _parse_aware(r["consumed_at"]))
+               for r in rows]
+    # The message As me sent is recorded beside its log row, so each reply
+    # belongs to the send nearest it (within the window), and to one only:
+    # two messages to Riley a minute apart, one answered, give one line.
+    matched: dict[tuple[int, str], datetime] = {}
+    for p, made, consumed in replies:
+        if made is None or consumed is None:
+            continue
+        near = [(abs(made - t), key) for key, t in when.items()
+                if key[0] == p and t is not None and abs(made - t) <= window and key not in matched]
+        if near:
+            matched[min(near)[1]] = consumed
+    names: dict[int, str] = {}
+    for (pid, at), replied in matched.items():
+        try:
+            if pid not in names:
+                person = get_person(pid)
+                names[pid] = (person.full_name or "").split()[0] if person is not None and person.full_name else "They"
+            out[(pid, at)] = f"{names[pid]} answered at {replied.astimezone(zone).strftime('%I:%M %p').lstrip('0')}"
+        except Exception:
+            logger.warning("today: couldn't name who answered", exc_info=True)
+    return out
 
 
 # Home's Watching next: the follow-ups and nudges it will send, then the
@@ -3093,20 +3120,30 @@ async def stop_watching(body: StopWatchingRequest, request: Request) -> dict[str
     owner = _caller_is_principal_or_unclaimed(request)
     if kind == "job":
         # The owner's alone, the same check as DELETE /take-the-lead/jobs.
-        if not caller_is_principal(request) or take_the_lead.stop_job(item_id) is None:
+        job = take_the_lead.stop_job(item_id) if caller_is_principal(request) else None
+        if job is None:
             raise HTTPException(status_code=404, detail="That isn't there any more.")
-        audit_log("take_the_lead_changed", "Standing job stopped from Home", actor="user",
-                  details={"job_id": item_id})
+        if job.stopped_at is None:
+            audit_log("take_the_lead_changed", "Standing job stopped from Home", actor="user",
+                      details={"job_id": item_id})
         return {"stopped": True}
     if kind != "action":
         raise HTTPException(status_code=404, detail="That isn't there any more.")
     action = get_scheduled_action(item_id)
     if (
-        action is None or action.kind not in _WATCHING_KINDS
+        action is None or action.kind not in _WATCHING_KINDS or action.channel == "__internal__"
         or (not owner and (caller is None or action.created_by_person_id != caller))
     ):
         raise HTTPException(status_code=404, detail="That isn't there any more.")
-    if cancel_scheduled_action(item_id) != "cancelled":
+    result = cancel_scheduled_action(item_id)
+    if result == "not_found":
+        raise HTTPException(status_code=404, detail="That isn't there any more.")
+    if result != "cancelled":
+        # Stopped already (another tab) is a stop that worked; anything else
+        # ran or is running.
+        current = get_scheduled_action(item_id)
+        if current is not None and current.status == "cancelled":
+            return {"stopped": True}
         raise HTTPException(status_code=409, detail="It already went out.")
     audit_log(
         "scheduled_action_cancelled",
