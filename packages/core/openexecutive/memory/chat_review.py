@@ -1303,8 +1303,9 @@ def _note_questions(
             if answer == "covered":
                 # Only an answer a company document backed closes a line: the
                 # grader's word alone (a reply that echoed the asker) doesn't.
-                if documented:
-                    knowledge_gaps.note_answered(question, db_path=db_path)
+                if documented and knowledge_gaps.note_answered(question, db_path=db_path):
+                    _audit(session_id, "a question it couldn't answer was answered from a document",
+                           {"op": "knowledge_question", "closed": "answered", "turn_row_id": rid})
             elif not documented:
                 try:
                     surface = json.loads(row["surface"] or "{}")

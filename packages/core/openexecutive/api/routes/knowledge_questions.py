@@ -77,15 +77,19 @@ def _name(person_id: int, principal_id: int) -> str:
     return person_name(person_id) or "Someone"
 
 
-def _shown(request: Request, principal_id: int) -> list[tuple[dict[str, Any], QuestionOut]]:
-    """Each open line the principal may see, with what they see of it: built
-    only from the asks in chats they may open (their own, or one
-    ``_Readable`` lets them read). A line with none isn't shown, so a
-    teammate's own chat never reaches them through a line it shares."""
+def _shown(request: Request, principal_id: int) -> list[tuple[list[int], QuestionOut]]:
+    """The rows the principal sees, each with the lines it stands for.
+
+    A line is one person's asks of one question (``memory.knowledge_gaps``).
+    Of each, only the asks in chats the principal may open count (their own,
+    or one ``_Readable`` lets them read); a line with none isn't shown. Lines
+    whose readable wording asks the same question then show as one row:
+    the first wording, who asked last, where, when, and how many times.
+    Nothing a hidden ask said or when it came decides a row."""
     from openexecutive.api.routes.reflection import _Readable
 
     readable = _Readable(request, principal_id)
-    out: list[tuple[dict[str, Any], QuestionOut]] = []
+    groups: list[tuple[list[int], list[dict[str, Any]]]] = []
     for line in knowledge_gaps.list_open():
         asks = [
             a for a in line["asks"]
@@ -94,9 +98,21 @@ def _shown(request: Request, principal_id: int) -> list[tuple[dict[str, Any], Qu
         ]
         if not asks:
             continue
+        group = next(
+            (g for g in groups if knowledge_gaps.same_question(g[1][0]["question"], asks[0]["question"])),
+            None,
+        )
+        if group is None:
+            groups.append(([int(line["id"])], list(asks)))
+        else:
+            group[0].append(int(line["id"]))
+            group[1].extend(asks)
+    out: list[tuple[list[int], QuestionOut]] = []
+    for ids, asks in groups:
+        asks.sort(key=lambda a: a["asked_at"])
         first, last = asks[0], asks[-1]
-        out.append((line, QuestionOut(
-            id=line["id"], question=first["question"],
+        out.append((ids, QuestionOut(
+            id=min(ids), question=first["question"],
             asked_by=_name(last["person_id"], principal_id), place=last["place"],
             last_asked_at=last["asked_at"], times=len(asks),
         )))
@@ -113,13 +129,13 @@ def list_questions(request: Request) -> QuestionsOut:
     return QuestionsOut(questions=questions, count=len(questions))
 
 
-def _open_line(request: Request, line_id: int) -> QuestionOut:
-    """The line as the principal sees it; 403 for anyone else, 404 when it
-    isn't on their list."""
+def _open_line(request: Request, row_id: int) -> tuple[list[int], QuestionOut]:
+    """A row as the principal sees it, with its lines; 403 for anyone else,
+    404 when it isn't on their list."""
     principal = _principal(request)
     if principal is None:
         raise HTTPException(status_code=403, detail="Only the owner can manage these questions")
-    found = next((shown for line, shown in _shown(request, int(principal.id)) if line["id"] == line_id), None)
+    found = next((pair for pair in _shown(request, int(principal.id)) if pair[1].id == row_id), None)
     if found is None:
         raise HTTPException(status_code=404, detail="That question is no longer on the list")
     return found
@@ -140,7 +156,7 @@ def answer_question(line_id: int, body: AnswerIn, request: Request) -> Questions
     the line off the list."""
     from openexecutive.memory.facts import record_fact
 
-    line = _open_line(request, line_id)
+    ids, line = _open_line(request, line_id)
     answer = " ".join(body.answer.split())
     if not answer:
         raise HTTPException(status_code=422, detail="Say what the answer is")
@@ -151,7 +167,8 @@ def answer_question(line_id: int, body: AnswerIn, request: Request) -> Questions
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
-    knowledge_gaps.close(line_id, "taught")
+    for one in ids:
+        knowledge_gaps.close(one, "taught")
     _audit(f"Answered a question it couldn't answer: {line.question[:80]}",
            {"op": "answer", "line_id": line_id, "fact_id": fact.id})
     return list_questions(request)
@@ -160,8 +177,9 @@ def answer_question(line_id: int, body: AnswerIn, request: Request) -> Questions
 @router.post("/{line_id}/document", response_model=QuestionsOut)
 def document_added(line_id: int, request: Request) -> QuestionsOut:
     """A document was added for the question: take the line off the list."""
-    line = _open_line(request, line_id)
-    knowledge_gaps.close(line_id, "document")
+    ids, line = _open_line(request, line_id)
+    for one in ids:
+        knowledge_gaps.close(one, "document")
     _audit(f"Added a document for a question: {line.question[:80]}",
            {"op": "document", "line_id": line_id})
     return list_questions(request)
@@ -170,7 +188,8 @@ def document_added(line_id: int, request: Request) -> QuestionsOut:
 @router.post("/{line_id}/dismiss", response_model=QuestionsOut)
 def dismiss_question(line_id: int, request: Request) -> QuestionsOut:
     """Take the line off the list; it doesn't come back for whoever asked it."""
-    line = _open_line(request, line_id)
-    knowledge_gaps.close(line_id, "dismissed")
+    ids, line = _open_line(request, line_id)
+    for one in ids:
+        knowledge_gaps.close(one, "dismissed")
     _audit(f"Dismissed a question: {line.question[:80]}", {"op": "dismiss", "line_id": line_id})
     return list_questions(request)

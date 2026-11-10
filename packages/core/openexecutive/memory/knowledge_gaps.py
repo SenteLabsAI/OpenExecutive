@@ -17,13 +17,13 @@ Only turns the review already reads are seen (verified speakers in chat and
 chat apps), and never a turn kept private to its person (one that read their
 own mail): those stay out of this list entirely.
 
-**One line per question.** A question that matches an open line (the same
-content words, give or take) adds to that line's count instead of adding a
-new one. A line leaves the list when the owner adds a document for it, tells
+**One line per question.** A question that matches one of its asker's lines
+(the same content words, give or take) is kept as another ask on it instead
+of a new line. Lines are per person; the Knowledge page shows lines that ask
+the same question as one row. A line leaves the list when the owner adds a document for it, tells
 the answer (kept as a standing fact, ``memory.facts``), or dismisses it, and
 also when a later turn asks the same question and the reply knew it. A
-dismissed question doesn't come back for anyone who had already asked it;
-someone new asking it opens the line again.
+dismissed question doesn't come back for whoever asked it.
 
 **Who sees it.** The principal, on the Knowledge page. Each asking is kept
 on its own (who, which chat, their wording, where, when), and what the
@@ -35,7 +35,7 @@ Deleting a chat drops its asks (``forget_session``); a line with no asks
 left goes.
 
 Tables (in the episodic DB, created on first use):
-  knowledge_gaps      id, match_key, status (open/resolved/dismissed),
+  knowledge_gaps      id, match_key, person_id, status (open/resolved/dismissed),
                       dismissed_for, closed_at, closed_how
   knowledge_gap_asks  id, line_id, person_id, session_id, question, place,
                       asked_at
@@ -95,6 +95,7 @@ def _connect(db_path: Path | None) -> sqlite3.Connection:
         f"CREATE TABLE IF NOT EXISTS {TABLE} ("  # noqa: S608 — constant table name
         "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
         "  match_key TEXT NOT NULL,"
+        "  person_id INTEGER NOT NULL,"
         "  status TEXT NOT NULL DEFAULT 'open',"
         "  dismissed_for TEXT NOT NULL DEFAULT '[]',"
         "  closed_at TEXT,"
@@ -192,12 +193,15 @@ def _load(text: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
-def _find(conn: sqlite3.Connection, question: str) -> sqlite3.Row | None:
-    """The line one of whose asks asks the same question, whatever its state;
-    the most recently asked first."""
+def _find(conn: sqlite3.Connection, question: str, person_id: int) -> sqlite3.Row | None:
+    """This person's line one of whose asks asks the same question, whatever
+    its state; the most recently asked first. Lines are per person, so no one
+    else's asking (which the viewer may not be allowed to read) decides where
+    an ask goes."""
     rows = conn.execute(
         f"SELECT l.*, a.question AS asked FROM {TABLE} l JOIN {ASKS} a ON a.line_id = l.id "  # noqa: S608
-        "ORDER BY a.asked_at DESC, a.id DESC"
+        "WHERE l.person_id = ? ORDER BY a.asked_at DESC, a.id DESC",
+        (int(person_id),),
     ).fetchall()
     for row in rows:
         if same_question(str(row["asked"]), question):
@@ -225,9 +229,12 @@ def note_unanswered(
         when = (asked_at or _now()).isoformat()
         conn = _connect(db_path)
         try:
-            row = _find(conn, text)
+            row = _find(conn, text, int(person_id))
             if row is None:
-                cur = conn.execute(f"INSERT INTO {TABLE} (match_key) VALUES (?)", (key,))  # noqa: S608
+                cur = conn.execute(
+                    f"INSERT INTO {TABLE} (match_key, person_id) VALUES (?, ?)",  # noqa: S608
+                    (key, int(person_id)),
+                )
                 line_id = int(cur.lastrowid or 0)
             else:
                 line_id = int(row["id"])

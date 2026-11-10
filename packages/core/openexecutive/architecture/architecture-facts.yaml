@@ -5493,8 +5493,8 @@ chat:
     not answer (memory/knowledge_gaps.py): a not_known question backed by
     half its content words in their message, whose reply's saved sources name
     no company document, from a turn not private to its person, goes on
-    knowledge_gaps; a matching question is kept as another ask on one line
-    (knowledge_gap_asks); a covered answer that drew on a company document,
+    knowledge_gaps; a matching question from the same person is kept as
+    another ask on their line (knowledge_gap_asks); a covered answer that drew on a company document,
     a document added, a taught answer (a standing fact) or a dismiss closes
     it. The principal sees each open line built only from its asks in chats
     they may open (GET /knowledge/questions), so a teammate's own chat never

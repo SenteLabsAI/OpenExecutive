@@ -68,14 +68,16 @@ def roster() -> SimpleNamespace:
 
 def test_the_same_question_asked_again_adds_to_one_line(db: Path) -> None:
     first = kg.note_unanswered(REFUND, person_id=1, session_id="s-1", asked_at=NOW, db_path=db)
-    again = kg.note_unanswered("what's the refund policy on our annual plans", person_id=2,
+    again = kg.note_unanswered("what's the refund policy on our annual plans", person_id=1,
                                session_id="s-2", asked_at=NOW + timedelta(hours=1), db_path=db)
     other = kg.note_unanswered("Who signs off on vendor contracts over $10,000?", person_id=1,
                                session_id="s-1", db_path=db)
-    assert first == again and other != first
+    # Lines are per person: someone else's asking never joins this one.
+    theirs = kg.note_unanswered(REFUND, person_id=2, session_id="s-3", db_path=db)
+    assert first == again and other != first and theirs not in (first, other)
     lines = kg.list_open(db_path=db)
     refund = next(x for x in lines if x["id"] == first)
-    assert [(a["person_id"], a["session_id"]) for a in refund["asks"]] == [(1, "s-1"), (2, "s-2")]
+    assert [(a["person_id"], a["session_id"]) for a in refund["asks"]] == [(1, "s-1"), (1, "s-2")]
     assert refund["asks"][0]["question"] == REFUND
 
 
@@ -99,12 +101,11 @@ def test_a_line_leaves_and_a_dismissed_one_stays_gone_for_who_asked(db: Path) ->
     assert kg.list_open(db_path=db) == []
     assert kg.note_unanswered(REFUND, person_id=1, session_id="s-3", db_path=db) is None
     assert kg.list_open(db_path=db) == []
-    # Someone new asking it brings it back.
-    assert kg.note_unanswered(REFUND, person_id=2, session_id="s-4", db_path=db) == line
-    [back] = kg.list_open(db_path=db)
-    assert [a["person_id"] for a in back["asks"]] == [2]
-    assert kg.close(line, "taught", db_path=db)
-    assert not kg.close(line, "document", db_path=db)
+    # Someone else asking it is their own line.
+    theirs = kg.note_unanswered(REFUND, person_id=2, session_id="s-4", db_path=db)
+    assert theirs not in (None, line)
+    assert kg.close(theirs, "taught", db_path=db)
+    assert not kg.close(theirs, "document", db_path=db)
 
 
 def test_a_later_answer_that_knew_it_takes_it_off(db: Path) -> None:
@@ -277,6 +278,27 @@ def test_a_shared_line_shows_only_the_asks_the_owner_may_read(client: TestClient
     assert shown["question"] == "What is our severance policy on layoffs?"
     assert (shown["asked_by"], shown["place"], shown["times"]) == ("You", "chat", 1)
     assert shown["last_asked_at"] == (NOW - timedelta(hours=1)).isoformat()
+
+
+def test_rows_join_only_on_wording_the_owner_may_read(client: TestClient, roster: SimpleNamespace) -> None:
+    """The owner's probe never lands on a teammate's hidden line, and two
+    readable lines asking the same thing show (and close) as one row."""
+    session_store.create_session("web-ben", "Pay", NOW.isoformat(), roster.teammate.id)
+    kg.note_unanswered("What is the severance policy if I resign before March planning?",
+                       person_id=roster.teammate.id, session_id="web-ben", asked_at=NOW)
+    mine = kg.note_unanswered("severance policy layoffs?", person_id=roster.principal.id,
+                              session_id="s-1", asked_at=NOW + timedelta(minutes=5))
+    [row] = client.get("/knowledge/questions", headers=OWNER).json()["questions"]
+    assert (row["id"], row["times"], row["question"]) == (mine, 1, "severance policy layoffs?")
+    session_store.create_session("slack:channel:C7:ts1", "Ops", NOW.isoformat(), roster.teammate.id)
+    kg.note_unanswered("Who signs off on vendor contracts?", person_id=roster.principal.id,
+                       session_id="s-1", asked_at=NOW)
+    kg.note_unanswered("who signs off on our vendor contracts", person_id=roster.teammate.id,
+                       session_id="slack:channel:C7:ts1", asked_at=NOW + timedelta(hours=1), place="Slack")
+    rows = client.get("/knowledge/questions", headers=OWNER).json()["questions"]
+    vendor = next(r for r in rows if "vendor" in r["question"])
+    assert (vendor["times"], vendor["asked_by"], vendor["place"]) == (2, "Ben Teammate", "Slack")
+    assert client.post(f"/knowledge/questions/{vendor['id']}/dismiss", headers=OWNER).json()["count"] == 1
 
 
 def test_an_answer_too_long_for_a_fact_is_refused(client: TestClient, roster: SimpleNamespace) -> None:
