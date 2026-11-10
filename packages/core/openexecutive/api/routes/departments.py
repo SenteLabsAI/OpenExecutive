@@ -376,6 +376,10 @@ def _patch_goal(slug: str | None, goal_id: int, body: GoalPatch) -> Goal:
         if body.department_slug and store.get_department(body.department_slug) is None:
             raise HTTPException(status_code=422, detail="Unknown department")
         moves["department_slug"] = body.department_slug or None
+    # A person changing the status grades the goal: it counts as checked, so
+    # a goal they move back to on track doesn't read "not checked yet".
+    if body.status is not None and body.status != existing.status:
+        moves["last_reviewed_at"] = datetime.now(UTC).isoformat()
     store.update_goal(
         goal_id,
         period_type=body.period_type,

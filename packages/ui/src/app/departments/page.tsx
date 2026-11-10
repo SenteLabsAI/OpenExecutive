@@ -171,7 +171,7 @@ export default function DepartmentsPage() {
                     {atRisk > 0 && <GoalStatusPill status="at_risk" />}
                     {offTrack > 0 && <GoalStatusPill status="off_track" />}
                     {counts.not_checked > 0 && <GoalStatusPill status="not_checked" />}
-                    {counts.on_track > 0 && atRisk === 0 && offTrack === 0 && counts.not_checked === 0 && (
+                    {counts.on_track > 0 && atRisk === 0 && offTrack === 0 && (
                       <GoalStatusPill status="on_track" />
                     )}
                   </div>

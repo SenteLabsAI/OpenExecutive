@@ -51,7 +51,7 @@ export function DeptCard({
         {dept.at_risk_count > 0 && <Chip tone="amber">{dept.at_risk_count} at risk</Chip>}
         {dept.off_track_count > 0 && <Chip tone="rose">{dept.off_track_count} off track</Chip>}
         {(dept.unchecked_count ?? 0) > 0 && <Chip tone="neutral">{dept.unchecked_count} not checked yet</Chip>}
-        {!hasIssues && dept.goal_count > 0 && !dept.unchecked_count && <Chip tone="emerald">on track</Chip>}
+        {!hasIssues && dept.goal_count > (dept.unchecked_count ?? 0) && <Chip tone="emerald">on track</Chip>}
         {dept.awaiting_count > 0 && <Chip tone="sky">{dept.awaiting_count} awaiting</Chip>}
       </div>
       {/* The actual off-track / at-risk goals, inline — so the row is

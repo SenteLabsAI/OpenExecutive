@@ -332,6 +332,16 @@ def test_patch_and_delete_reach_any_goal(client: TestClient) -> None:
     assert client.delete(f"/goals/{gid}").status_code == 404
 
 
+def test_a_person_changing_the_status_counts_as_a_check(client: TestClient) -> None:
+    gid = client.post("/goals", json={"key_result": "Launch"}).json()["id"]
+    assert store.get_goal(gid).last_reviewed_at == ""  # type: ignore[union-attr]
+    # An edit that leaves the status alone is not a check.
+    client.patch(f"/goals/{gid}", json={"status": "on_track", "current": "Half done"})
+    assert store.get_goal(gid).last_reviewed_at == ""  # type: ignore[union-attr]
+    client.patch(f"/goals/{gid}", json={"status": "at_risk"})
+    assert store.get_goal(gid).last_reviewed_at != ""  # type: ignore[union-attr]
+
+
 def test_department_routes_still_reach_only_their_own_goals(client: TestClient) -> None:
     store.create_department("Sales")
     loose = _goal(None)
