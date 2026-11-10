@@ -1571,9 +1571,7 @@ def test_wake_reasons_read_as_done_for_you_words() -> None:
     assert ttl.arrival_reason("email") == "new mail came in"
     assert ttl.arrival_reason("slack") == "a message came in on Slack"
     assert ttl.prompted_line("") == ttl.DAILY_LOOK
-    assert ttl.wake_reason("As me: look over what's new (the task “Send the deck” went overdue).") == (
-        "the task “Send the deck” went overdue"
-    )
+    assert ttl.wake_reason("As me: look over what's new (a task went overdue).") == "a task went overdue"
     assert ttl.wake_reason("Something else") == ""
 
 
@@ -1616,13 +1614,18 @@ def test_a_slipping_goal_failed_workflow_overdue_task_or_ended_meeting_wakes_it(
     assert ttl.watch(NOW + timedelta(seconds=10)) is None  # throttled
     dept_store.update_goal(goal, status="at_risk")
     later = NOW + timedelta(minutes=2)
-    assert ttl.watch(later) == "the goal “Ramp gate” slipped"
+    assert ttl.watch(later) == "a goal slipped"
     [wake] = _wakes()
-    assert ttl.wake_reason(get_scheduled(wake["id"]).intent_text) == "the goal “Ramp gate” slipped"
+    row = get_scheduled(wake["id"])
+    assert ttl.wake_reason(row.intent_text) == "a goal slipped"
+    assert "Ramp gate" not in row.intent_text  # the row names the kind of event only
 
     ttl._LAST_WAKE.clear()
     persistence.create_run("r1", "board_prep", "Board prep", {})
     persistence.fail_run("r1", "boom")
+    # A teammate's own run is theirs alone: it doesn't wake the company's look.
+    persistence.create_run("r2", "board_prep", "Dana's prep", {}, owner_person_id=7)
+    persistence.fail_run("r2", "boom")
     monkeypatch.setattr(open_loops, "list_open_loops", lambda **_: [
         SimpleNamespace(description="Send the deck", due_at=(later + timedelta(minutes=1)).isoformat()),
     ])
@@ -1631,7 +1634,12 @@ def test_a_slipping_goal_failed_workflow_overdue_task_or_ended_meeting_wakes_it(
     ])
     reason = ttl.watch(later + timedelta(minutes=3))
     assert reason is not None
-    assert reason.startswith("the workflow “Board prep” failed") and "(and 2 more)" in reason
+    assert reason == "a workflow failed (and 2 more)"
+    assert "Supplier sync" not in str([get_scheduled(w["id"]).intent_text for w in _wakes()])
+
+
+def test_standing_jobs_are_wiped_with_the_rest() -> None:
+    assert ttl.JOBS_TABLE in ttl.TABLES
 
 
 def test_it_only_watches_while_as_me_is_on(monkeypatch: pytest.MonkeyPatch, watched: None) -> None:
@@ -1644,3 +1652,12 @@ def get_scheduled(action_id: int) -> Any:
     from openexecutive.memory.episodic import get_scheduled_action
 
     return get_scheduled_action(action_id)
+
+
+def test_a_standing_job_from_chat_waits_for_a_tap() -> None:
+    """A job is replayed into every look, so adding one from chat is a card."""
+    from openexecutive.orchestrator import app_control, app_control_catalog  # noqa: F401
+
+    action = app_control.CATALOG.actions["add_standing_job"]
+    assert action.confirm and action.card is not None
+    assert not app_control.CATALOG.actions["stop_standing_job"].confirm

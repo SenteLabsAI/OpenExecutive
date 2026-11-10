@@ -76,7 +76,7 @@ ALLOWED_TABLE = "take_the_lead_allowed"
 JOBS_TABLE = "take_the_lead_jobs"
 # Per company, like the roster the switches are keyed on (clients.slots,
 # cli.fixture_loader.reset_all_state).
-TABLES: tuple[str, ...] = (LEAD_TABLE, RULES_TABLE, LOG_TABLE, ALLOWED_TABLE)
+TABLES: tuple[str, ...] = (LEAD_TABLE, RULES_TABLE, LOG_TABLE, ALLOWED_TABLE, JOBS_TABLE)
 
 MONEY = "money"
 CONTRACTS = "contracts"
@@ -2206,7 +2206,7 @@ DAILY_LOOK = "Before your morning brief"
 
 
 def prompted_line(reason: str) -> str:
-    """"When the goal “Ramp gate” slipped": a wake's reason as Done for
+    """"When a goal slipped": a wake's reason as Done for
     you's words; the daily look's own line when there is none."""
     reason = " ".join((reason or "").split())
     return f"When {reason}"[:160] if reason else DAILY_LOOK
@@ -2542,8 +2542,11 @@ def _failed_runs(since: datetime) -> list[str]:
         return []
     with persistence._get_conn(path) as conn:
         rows = conn.execute(
+            # A teammate's own run is theirs alone (run_visible_to), so only
+            # the company's runs count.
             "SELECT title FROM workflow_runs WHERE status = 'error' AND updated_at > ? "
-            "AND workflow_name != 'executive_reflection' ORDER BY updated_at",
+            "AND workflow_name != 'executive_reflection' AND owner_person_id IS NULL "
+            "ORDER BY updated_at",
             (since.isoformat(),),
         ).fetchall()
     return [str(r["title"]) for r in rows]
@@ -2601,17 +2604,20 @@ def watch(now: datetime | None = None) -> str | None:
         logger.warning("take_the_lead: couldn't read the goals", exc_info=True)
         goals = {}
     if since is not None:
-        for goal_id, (status, key_result) in goals.items():
+        for goal_id, (status, _) in goals.items():
             before = _WATCHED.goals.get(goal_id)
             if before is not None and _GOAL_RANK.get(status, 0) > _GOAL_RANK.get(before, 0):
-                reasons.append(f"the goal “{_one_line(key_result, 60)}” slipped")
+                reasons.append("a goal slipped")
+        # The reason is stored on the scheduled row and read back into the
+        # look's own turn, so it names the kind of event only, never a title
+        # someone else wrote (a meeting invite, a task, a run).
         for check, label in (
-            (lambda: _failed_runs(since), "the workflow “{}” failed"),
-            (lambda: _overdue_tasks(since, current), "the task “{}” went overdue"),
-            (lambda: _ended_meetings(since, current), "the meeting “{}” ended"),
+            (lambda: _failed_runs(since), "a workflow failed"),
+            (lambda: _overdue_tasks(since, current), "a task went overdue"),
+            (lambda: _ended_meetings(since, current), "a meeting ended"),
         ):
             try:
-                reasons += [label.format(_one_line(name, 60)) for name in check()]
+                reasons += [label for _ in check()]
             except Exception:
                 logger.warning("take_the_lead: a watch check failed", exc_info=True)
     _WATCHED.at = current

@@ -874,7 +874,8 @@ _ACTIONS = (
     # Standing jobs: each step for one still goes through Approvals.
     Action("add_standing_job", "new_standing_job",
            "Give As me a standing job, something to keep doing in its own name (use id \"new\")",
-           _add_job, value="what to keep doing, in the person's words"),
+           _add_job, confirm=True, value="what to keep doing, in the person's words",
+           card="Give As me the standing job: {value}"),
     Action("stop_standing_job", "standing_job", "Stop a standing job", _stop_job),
     Action("check_inbox_now", "inbox", "Check the person's inbox for emails to draft replies to now (use id \"inbox\")",
            _check_inbox),

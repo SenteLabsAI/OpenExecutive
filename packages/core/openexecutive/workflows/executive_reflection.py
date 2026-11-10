@@ -886,7 +886,8 @@ class ExecutiveReflectionWorkflow(Workflow):
             user_content += _LEAD_NOTE + take_the_lead.learned_note()
             look = take_the_lead.current_look()
             if look is not None and look.prompted_by and look.prompted_by != take_the_lead.DAILY_LOOK:
-                # A wake: what made it look (names quoted from the records).
+                # A wake: what made it look. Only the kind of event (a
+                # channel, "a meeting ended"), never text someone else wrote.
                 user_content += f"\n\nWhy you are looking now: {look.prompted_by}."
             jobs = take_the_lead.jobs_note()
             if jobs:
