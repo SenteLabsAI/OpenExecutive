@@ -219,6 +219,19 @@ def test_deleting_the_chat_forgets_its_asks_and_open_offer(db):
     conn = sqlite3.connect(db)
     assert conn.execute("SELECT session_id FROM repeat_asks ORDER BY id").fetchall() == [("s0",), ("s1",)]
     conn.close()
+    # An answered offer keeps only its words once its chat is gone.
+    later = None
+    for week in range(3, 6):
+        later = repeat_asks.note_ask(
+            "cash position update", session=SimpleNamespace(session_id=f"t{week}"), person_id=7,
+            now=_monday(week), zone=NY, db_path=db,
+        )
+    assert later is not None
+    repeat_asks.answer_offer(later["id"], 7, accept=False, now=_monday(5), db_path=db)
+    repeat_asks.forget_session("t5", db_path=db)
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT ask FROM repeat_ask_offers WHERE id = ?", (later["id"],)).fetchone() == ("",)
+    conn.close()
 
 
 def test_an_id_too_big_for_the_database_is_refused(db, monkeypatch):

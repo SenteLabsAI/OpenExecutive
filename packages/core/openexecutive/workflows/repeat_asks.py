@@ -361,6 +361,12 @@ def forget_session(session_id: str, *, db_path: Path | None = None) -> None:
                 f"DELETE FROM {OFFERS_TABLE} WHERE session_id = ? AND status = 'open'",  # noqa: S608
                 (session_id,),
             )
+            # An answered one stays only to hold the same offer back, which
+            # needs its words, not the sentence they typed.
+            conn.execute(
+                f"UPDATE {OFFERS_TABLE} SET ask = '' WHERE session_id = ?",  # noqa: S608
+                (session_id,),
+            )
             conn.commit()
         finally:
             conn.close()
