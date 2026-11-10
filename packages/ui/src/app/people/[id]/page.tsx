@@ -57,7 +57,7 @@ const ALL_SCOPES = [
   { value: "legal_sign", label: "Legal", hint: "Receives proposals with legal implications." },
   { value: "board_comms", label: "Board", hint: "Receives proposals before board communications." },
   { value: "meeting_scheduling", label: "Meetings", hint: "Receives meetings the Executive wants to book." },
-  { value: "wildcard", label: "All (wildcard)", hint: "Receives anything no one else is scoped for — usually the principal." },
+  { value: "wildcard", label: "All (wildcard)", hint: "Receives anything no one else is scoped for, usually the owner." },
 ];
 
 const CHANNELS = [
