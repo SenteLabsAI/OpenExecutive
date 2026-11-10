@@ -342,11 +342,11 @@ export default function WatchDetailPage() {
             </div>
             <div className="flex flex-wrap items-center justify-between gap-4 pt-4">
               <div>
-                <div className="text-[15px] font-semibold text-fg">When it fires</div>
+                <div className="text-[15px] font-semibold text-fg">When something changes</div>
                 <p className="text-sm text-fg-muted">
                   {item.mode === "active"
-                    ? "Signals can become alerts in your briefing."
-                    : "Shadow mode (dry_run): polls and records signals, never alerts."}
+                    ? "When something important changes, it tells you in your briefing."
+                    : "It keeps watching quietly and doesn't tell you."}
                 </p>
               </div>
               <div
@@ -357,7 +357,7 @@ export default function WatchDetailPage() {
                 {(
                   [
                     ["active", "Alert me"],
-                    ["dry_run", "Shadow only"],
+                    ["dry_run", "Watch quietly"],
                   ] as const
                 ).map(([value, label]) => (
                   <button
@@ -416,7 +416,7 @@ export default function WatchDetailPage() {
               </dd>
               <dt className="text-fg-muted">Specialist</dt>
               <dd className="text-fg">{item.route_to_specialist || "—"}</dd>
-              <dt className="text-fg-muted">Fired count</dt>
+              <dt className="text-fg-muted">Times it told you</dt>
               <dd className="text-fg">{item.fired_count}</dd>
               <dt className="text-fg-muted">Dismissed</dt>
               <dd className="text-fg">{item.dismiss_count}</dd>
@@ -424,7 +424,7 @@ export default function WatchDetailPage() {
               <dd className="text-fg">{item.trust_score.toFixed(2)}</dd>
               <dt className="text-fg-muted">Last polled</dt>
               <dd className="text-fg">{formatRelTime(item.last_polled_at)}</dd>
-              <dt className="text-fg-muted">Last fired</dt>
+              <dt className="text-fg-muted">Last told you</dt>
               <dd className="text-fg">{formatRelTime(item.last_fired_at)}</dd>
               {item.origin === "research" && (
                 <>
