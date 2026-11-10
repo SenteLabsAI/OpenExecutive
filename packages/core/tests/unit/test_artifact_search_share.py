@@ -48,6 +48,12 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         return None
 
     monkeypatch.setattr("openexecutive.orchestrator.artifact_tools.unindex_artifact", _noop)
+    audited: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        "openexecutive.audit.log_event",
+        lambda event_type, summary, **kw: audited.append((event_type, kw)),
+    )
+    who["audited"] = audited
     return who
 
 
@@ -226,6 +232,36 @@ async def test_link_ends_when_its_sharer_leaves(db: dict[str, Any]) -> None:
     db["left"].add(2)
     with pytest.raises(HTTPException):
         await artifacts_route.shared_document(key, Response())
+    # Ended, not paused: coming back doesn't bring the old link back.
+    db["left"].discard(2)
+    with pytest.raises(HTTPException):
+        await artifacts_route.shared_document(key, Response())
+    assert artifact_shares.share_keys([cid]) == {}
+    # Sharing again makes a new link.
+    again = _key((await artifacts_route.share_artifact(cid, _REQ))["share_path"])
+    assert again != key
+
+
+async def test_a_new_principal_gets_a_new_link(db: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    run = _run(db, "r1", "board_prep", "Deck", "# Deck")
+    old = _key((await artifacts_route.share_artifact(run, _REQ))["share_path"])
+    successor = Viewer(person_id=3, is_principal=True)
+    db["viewer"] = successor
+    new = _key((await artifacts_route.share_artifact(run, _REQ))["share_path"])
+    assert new != old
+    with pytest.raises(HTTPException):
+        await artifacts_route.shared_document(old, Response())
+
+
+async def test_share_and_stop_are_audited(db: dict[str, Any]) -> None:
+    db["viewer"] = TEAMMATE
+    cid = _draft(db, "a1", "Their memo", "text", owner_person_id=2)
+    await artifacts_route.share_artifact(cid, _REQ)
+    await artifacts_route.share_artifact(cid, _REQ)  # asking again is not a new share
+    await artifacts_route.stop_sharing_artifact(cid, _REQ)
+    await artifacts_route.stop_sharing_artifact(cid, _REQ)  # nothing left to stop
+    events = [(e, kw["details"]["artifact_id"], kw["private_to_person"]) for e, kw in db["audited"]]
+    assert events == [("document_shared", cid, 2), ("document_share_stopped", cid, 2)]
 
 
 async def test_a_revision_is_not_on_the_old_link(db: dict[str, Any]) -> None:

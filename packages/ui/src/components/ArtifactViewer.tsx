@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 
 import type { ArtifactFormat } from "@/lib/api";
 import { buttonClass } from "@/components/ui/Button";
+import { loadsInline } from "@/lib/markdownImages";
 import { hostOf } from "@/lib/url";
 
 // Blocks every network fetch and all script from inside an HTML artifact.
@@ -40,6 +41,18 @@ export function MarkdownArticle({ markdown }: { markdown: string }) {
           a: ({ node: _node, ...props }) => (
             <a {...props} rel="noopener noreferrer nofollow" target="_blank" />
           ),
+          // An image from another site never loads by itself: a document can
+          // quote mail or a web page, and the image's URL could carry what it
+          // quotes to that site, with no click (also on a page shared by link).
+          img: ({ src, alt }) =>
+            loadsInline(src) ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={src as string} alt={alt ?? ""} />
+            ) : typeof src === "string" && src ? (
+              <a href={src} target="_blank" rel="noopener noreferrer nofollow">
+                {alt || "Image"} ({hostOf(src)})
+              </a>
+            ) : null,
         }}
       >
         {markdown}

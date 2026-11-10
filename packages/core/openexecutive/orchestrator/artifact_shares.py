@@ -18,9 +18,13 @@ The link is ``public_path(key)`` on the app's own address.
   document is archived the link answers not found, and it works again on
   restore.
 * **It ends with its sharer.** A link only opens while the person who shared
-  it is still on the team and could still open the document themselves
-  (``load_shared``), so someone leaving the team, or losing sight of it,
-  takes their links down with them.
+  it is still on the team and could still open and share the document
+  themselves. The first open after that deletes it (``load_shared``), so it
+  never comes back if they return, and sharing the document again makes a
+  new link (``share``).
+* **On the record.** Sharing and stopping each write an audit row
+  (``document_shared`` / ``document_share_stopped``), private to the person
+  the document belongs to (the team's: visible as the team's).
 * **Nothing else leaks.** ``load_shared`` returns the one record; the public
   route turns it into the title, kind and text only, never who made it,
   which workflow, or any id.
@@ -120,16 +124,20 @@ def share(composite_id: str, *, viewer: Viewer) -> str:
     initialize_db()
     with _get_conn() as conn:
         row = conn.execute(
-            "SELECT share_key FROM artifact_shares WHERE artifact_id = ?", (rec.id,)
+            "SELECT share_key, shared_by FROM artifact_shares WHERE artifact_id = ?", (rec.id,)
         ).fetchone()
-        if row is not None:
+        if row is not None and row["shared_by"] == viewer.person_id:
             return str(row["share_key"])
+        # Someone else's link (a principal before this one): it no longer
+        # counts, and this share is a new link.
+        conn.execute("DELETE FROM artifact_shares WHERE artifact_id = ?", (rec.id,))
         key = secrets.token_urlsafe(_KEY_BYTES)
         conn.execute(
             "INSERT INTO artifact_shares (artifact_id, share_key, shared_by, created_at) "
             "VALUES (?, ?, ?, ?)",
             (rec.id, key, viewer.person_id, datetime.now(UTC).isoformat()),
         )
+    _audit("document_shared", f"Shared a document by link: {rec.title}", rec, viewer)
     return key
 
 
@@ -139,7 +147,10 @@ def stop_share(composite_id: str, *, viewer: Viewer) -> bool:
     rec = load_artifact(composite_id, viewer=viewer)
     if not may_share(rec, viewer):
         raise ArtifactNotFound(f"Artifact {composite_id!r} not found")
-    return forget(rec.id)
+    stopped = forget(rec.id)
+    if stopped:
+        _audit("document_share_stopped", f"Stopped sharing a document by link: {rec.title}", rec, viewer)
+    return stopped
 
 
 def forget(artifact_id: str) -> bool:
@@ -164,17 +175,45 @@ def load_shared(key: str) -> ArtifactRecord | None:
         ).fetchone()
     if row is None or row["shared_by"] is None:
         return None
+    artifact_id = str(row["artifact_id"])
     sharer = viewer_for_person(int(row["shared_by"]))
     if not _still_on_team(sharer):
+        forget(artifact_id)
         return None
     try:
-        parse_artifact_id(row["artifact_id"])
-        rec = load_artifact(row["artifact_id"], viewer=sharer)
+        parse_artifact_id(artifact_id)
+        rec = load_artifact(artifact_id, viewer=sharer)
     except (ArtifactNotFound, MalformedArtifactId):
+        # Gone, or the sharer can't open it any more: the link ends.
+        forget(artifact_id)
         return None
-    if rec.archived_at is not None or not may_share(rec, sharer):
+    if not may_share(rec, sharer):
+        forget(artifact_id)
+        return None
+    if rec.archived_at is not None:
+        # Paused while archived; it opens again on restore.
         return None
     return rec
+
+
+def _audit(event_type: str, summary: str, rec: ArtifactRecord, viewer: Viewer) -> None:
+    """An audit row for a share or a stop, private to the document's owner
+    when it has one. Never fails the share."""
+    import logging
+
+    try:
+        from openexecutive.audit import log_event
+
+        log_event(
+            event_type,
+            summary[:200],
+            actor="user",
+            details={"artifact_id": rec.id, "by_person_id": viewer.person_id},
+            private=rec.owner_person_id is not None,
+            private_to_person=rec.owner_person_id,
+        )
+    except Exception:
+        logging.getLogger(__name__).warning("artifact shares: couldn't write the audit row", exc_info=True)
 
 
 def _still_on_team(viewer: Viewer) -> bool:
