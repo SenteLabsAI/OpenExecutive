@@ -157,8 +157,8 @@ async def test_watchlist_pass_adds_grounded_proposal_directly(
     assert row is not None
     assert row.origin == "research" and row.mode == "active"
     assert row.notes == "watch stock-tsla"
-    # Quiet defaults, not the handler's 15min/low.
-    assert row.cadence == "daily" and row.severity_floor.value == "medium"
+    # Quiet defaults, not the handler's 15min.
+    assert row.cadence == "daily" and row.severity_floor.value == "low"
     assert row.trigger_json == {"abs_change_pct_gte": 5}
 
 

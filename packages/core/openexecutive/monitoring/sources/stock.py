@@ -56,6 +56,7 @@ from openexecutive.monitoring.sources._http import (
     fetch_bounded,
     validate_target_url,
 )
+from openexecutive.monitoring.sources.base import COULD_NOT_REACH, observe
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,7 @@ class StockSource:
                 "stock: fetch failed for %s (%s): %s",
                 item.slug, ticker, exc,
             )
+            observe(item, COULD_NOT_REACH)
             return []
         except FetchOverflowError:
             logger.warning(
@@ -133,6 +135,11 @@ class StockSource:
         # the watchlist's own definition.
         threshold = _coerce_threshold(item.trigger_json.get("abs_change_pct_gte"))
         if abs(change_pct) < threshold:
+            way = "Up" if change_pct >= 0 else "Down"
+            observe(
+                item,
+                f"{way} {abs(change_pct):.1f}% today. Under {threshold:g}%, so it stayed quiet.",
+            )
             return []
 
         severity = _severity_for_move(abs(change_pct))

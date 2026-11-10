@@ -657,11 +657,11 @@ async def test_query_material_hit_graded_clears_medium_floor(
 
 
 @pytest.mark.asyncio
-async def test_query_low_relevance_still_suppressed_below_floor(
+async def test_query_low_relevance_hit_still_reaches_the_person(
     db: Path, install_fake_query_source, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A low-relevance query hit stays LOW after grading, so a medium floor
-    still filters it as noise — grading rescues material hits, not all of them."""
+    """There is no floor: a hit that matches the watch is passed on with a
+    low hint. A watch that asks for big changes only holds it back."""
     promoted: list[Any] = []
     monkeypatch.setattr(mp, "schedule_evaluation", lambda e: promoted.append(e))
     monkeypatch.setattr(mp, "build_company_context", lambda db_path=None: "CTX")
@@ -674,13 +674,25 @@ async def test_query_low_relevance_still_suppressed_below_floor(
     install_fake_query_source([_query_signal()])
     wl_id = ms.insert_watchlist_item(
         slug="q-funding", signal_type="query", target="humanoid VC funding",
-        severity_floor=AlertSeverity.MEDIUM, db_path=db,
+        db_path=db,
     )
-
     await mp.run_external_monitor_scan(db_path=db)
 
-    assert promoted == []
+    assert len(promoted) == 1
+    assert "Severity hint: low" in promoted[0].body
     sigs = ms.list_signals_for_watchlist(wl_id, db_path=db)
+    assert sigs[0]["processed_outcome"] == OUTCOME_ALERTED
+
+    install_fake_query_source([_query_signal(dedup_key="query:other")])
+    big_id = ms.insert_watchlist_item(
+        slug="q-big", signal_type="query", target="humanoid VC funding",
+        trigger={"only_big": True}, db_path=db,
+    )
+    ms.mark_polled(wl_id, datetime.now(UTC), db_path=db)
+    await mp.run_external_monitor_scan(db_path=db)
+
+    assert len(promoted) == 1
+    sigs = ms.list_signals_for_watchlist(big_id, db_path=db)
     assert sigs[0]["processed_outcome"] == OUTCOME_SUPPRESSED_BELOW_FLOOR
 
 

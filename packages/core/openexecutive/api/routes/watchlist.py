@@ -21,7 +21,14 @@ from openexecutive.alerts.models import AlertSeverity
 from openexecutive.api import caller as api_caller
 from openexecutive.audit import log_event as audit_log
 from openexecutive.monitoring import store as ms
-from openexecutive.monitoring.describe import DescribeError, WatchDraft, describe_watch
+from openexecutive.monitoring.describe import (
+    DescribeError,
+    WatchDraft,
+    checks_line,
+    describe_watch,
+    trigger_line,
+    watch_title,
+)
 from openexecutive.monitoring.models import (
     DECLINE_KIND_EXPLICIT,
     DECLINE_REASON_NOT_RELEVANT,
@@ -98,6 +105,10 @@ class WatchlistPatch(BaseModel):
     severity_ceiling: str | None = None
     trigger: dict[str, Any] | None = None
     notes: str | None = Field(default=None, max_length=500)
+    # What the watch is for: a goal's id, and the person it tells (their
+    # People id). Null clears it; no person means the owner.
+    goal_id: int | None = None
+    person_id: int | None = None
     # Stop asking whether this watch is too noisy, for the alerts it has
     # raised so far (monitoring.noise).
     quiet_noise_nudge: bool | None = None
@@ -110,18 +121,129 @@ class WatchlistDescribe(BaseModel):
     text: str = ""
 
 
-class WatchlistDetail(WatchlistItem):
+class LastTold(BaseModel):
+    """The newest thing a watch told the person."""
+
+    at: str
+    summary: str
+    url: str = ""
+
+
+class WatchlistView(WatchlistItem):
+    """A watch as the screens show it: the row plus its name, what makes it
+    speak and how often it checks in words, the last thing it said, and the
+    goal and person it is for."""
+
+    title: str = ""
+    tells_you_when: str = ""
+    checks: str = ""
+    last_told: LastTold | None = None
+    goal_title: str = ""
+    # Who it tells, when that is a teammate ("" = the owner), and their role.
+    person_name: str = ""
+    person_role: str = ""
+    department_title: str = ""
+
+
+class WatchlistDetail(WatchlistView):
     """One watch plus how noisy its recent alerts were (the detail page's
     "only tell you about bigger changes?" line)."""
 
     noise: WatchNoise = Field(default_factory=WatchNoise)
 
 
+class _Names:
+    """Goal, person and department names for a batch of watches, each
+    looked up once. A missing store or a deleted row reads as no name."""
+
+    def __init__(self) -> None:
+        self._goals: dict[int, str] | None = None
+        self._departments: dict[str, str] | None = None
+        self._people: dict[int, tuple[str, str]] = {}
+        self.last_told = ms.last_told_by_watch()
+
+    def goal(self, goal_id: int | None) -> str:
+        if goal_id is None:
+            return ""
+        if self._goals is None:
+            try:
+                from openexecutive.departments import store as departments
+
+                self._goals = {g.id: g.key_result for g in departments.list_all_goals() if g.id is not None}
+            except Exception:
+                logger.debug("watchlist: goals unavailable", exc_info=True)
+                self._goals = {}
+        return self._goals.get(goal_id, "")
+
+    def department(self, slug: str) -> str:
+        if not slug:
+            return ""
+        if self._departments is None:
+            try:
+                from openexecutive.departments import store as departments
+
+                self._departments = {d.config.slug: d.config.title for d in departments.list_departments()}
+            except Exception:
+                logger.debug("watchlist: departments unavailable", exc_info=True)
+                self._departments = {}
+        return self._departments.get(slug, "")
+
+    def person(self, person_id: int | None) -> tuple[str, str]:
+        """``(name, role)`` of a current teammate, else two empty strings."""
+        if person_id is None:
+            return "", ""
+        if person_id not in self._people:
+            found_name, role = "", ""
+            try:
+                from openexecutive.people import store as people
+
+                found = people.get_person(person_id)
+                if found is not None and not found.archived and found.kind == "team":
+                    found_name, role = found.full_name, found.role or ""
+            except Exception:
+                logger.debug("watchlist: person unavailable", exc_info=True)
+            self._people[person_id] = (found_name, role)
+        return self._people[person_id]
+
+
+def _view(item: WatchlistItem, names: _Names) -> dict[str, Any]:
+    told = names.last_told.get(item.id or 0)
+    person_name, person_role = names.person(item.route_to_person_id)
+    return {
+        **item.model_dump(),
+        "title": watch_title(item),
+        "tells_you_when": trigger_line(item.signal_type, item.trigger_json),
+        "checks": checks_line(item.signal_type, item.cadence),
+        "last_told": LastTold(
+            at=str(told.get("processed_at") or told.get("captured_at") or ""),
+            summary=_told_summary(str(told.get("normalized_summary") or "")),
+            url=str(told.get("provenance_url") or ""),
+        ) if told else None,
+        "goal_title": names.goal(item.goal_id),
+        "person_name": person_name,
+        "person_role": person_role,
+        "department_title": names.department(item.route_to_department),
+    }
+
+
+def _told_summary(text: str) -> str:
+    """A signal's summary without the ``[label]`` the adapter leads with:
+    it is shown under the watch's own name."""
+    line = " ".join(text.split())
+    if line.startswith("[") and "] " in line[:90]:
+        line = line.split("] ", 1)[1]
+    return line[:1].upper() + line[1:]
+
+
+def _one(item: WatchlistItem) -> WatchlistView:
+    return WatchlistView(**_view(item, _Names()))
+
+
 class DeclineBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     # not_relevant → the entity is blacklisted; too_noisy → the watch goes
-    # live anyway but quieter (high floor); wrong_source → only this target
+    # live anyway but quieter (big changes only); wrong_source → only this target
     # is blacklisted. See monitoring.research.watch_policy.
     reason: str = DECLINE_REASON_NOT_RELEVANT
 
@@ -130,7 +252,8 @@ class DeclineResponse(BaseModel):
     slug: str
     reason: str
     # "removed" (declined + deleted) or "kept_high_floor" (too_noisy: goes
-    # live as a research watch that only surfaces high-severity signals).
+    # live as a research watch that only tells the person about big changes;
+    # the value's name predates that).
     result: str
 
 
@@ -168,12 +291,16 @@ class SignalRow(BaseModel):
 # --------------------------------------------------------------------------- #
 
 
-@router.get("/watchlist", response_model=list[WatchlistItem])
+@router.get("/watchlist", response_model=list[WatchlistView])
 def list_watchlist(
     enabled_only: bool = False,
     signal_type: str | None = None,
-) -> list[WatchlistItem]:
-    return ms.list_watchlist(enabled_only=enabled_only, signal_type=signal_type)
+) -> list[WatchlistView]:
+    names = _Names()
+    return [
+        WatchlistView(**_view(item, names))
+        for item in ms.list_watchlist(enabled_only=enabled_only, signal_type=signal_type)
+    ]
 
 
 @router.get("/watchlist/{slug}", response_model=WatchlistDetail)
@@ -181,17 +308,21 @@ def get_watchlist_entry(slug: str) -> WatchlistDetail:
     item = ms.get_watchlist_item_by_slug(slug)
     if item is None:
         raise HTTPException(status_code=404, detail=f"Watchlist entry {slug!r} not found")
-    return WatchlistDetail(**item.model_dump(), noise=watch_noise(item))
+    return WatchlistDetail(**_view(item, _Names()), noise=watch_noise(item))
 
 
 @router.get("/watchlist/{slug}/signals", response_model=list[SignalRow])
-def get_watchlist_signals(slug: str, limit: int = _SIGNALS_DEFAULT_LIMIT) -> list[SignalRow]:
+def get_watchlist_signals(
+    slug: str, limit: int = _SIGNALS_DEFAULT_LIMIT, told: bool = False,
+) -> list[SignalRow]:
+    """A watch's recent signals, newest first. ``told=true`` keeps only the
+    ones it told the person about (the watch page's "What it told you")."""
     item = ms.get_watchlist_item_by_slug(slug)
     if item is None:
         raise HTTPException(status_code=404, detail=f"Watchlist entry {slug!r} not found")
     assert item.id is not None
     bounded = max(1, min(limit, _SIGNALS_MAX_LIMIT))
-    rows = ms.list_signals_for_watchlist(item.id, limit=bounded)
+    rows = ms.list_signals_for_watchlist(item.id, limit=bounded, told_only=told)
     return [SignalRow(**row) for row in rows]
 
 
@@ -217,10 +348,10 @@ async def describe_watchlist_entry(body: WatchlistDescribe, request: Request) ->
 
 @router.post(
     "/watchlist",
-    response_model=WatchlistItem,
+    response_model=WatchlistView,
     status_code=status.HTTP_201_CREATED,
 )
-async def create_watchlist_entry(body: WatchlistCreate) -> WatchlistItem:
+async def create_watchlist_entry(body: WatchlistCreate) -> WatchlistView:
     slug = body.slug.strip()
     signal_type = body.signal_type.strip()
     target = body.target.strip()
@@ -327,11 +458,26 @@ async def create_watchlist_entry(body: WatchlistCreate) -> WatchlistItem:
     created = ms.get_watchlist_item(new_id)
     if created is None:
         raise HTTPException(status_code=500, detail="watchlist entry vanished after insert")
-    return created
+    return _one(created)
 
 
-@router.patch("/watchlist/{slug}", response_model=WatchlistItem)
-def patch_watchlist_entry(slug: str, body: WatchlistPatch) -> WatchlistItem:
+def _check_goal(goal_id: int) -> None:
+    from openexecutive.departments import store as departments
+
+    if departments.get_goal(goal_id) is None:
+        raise HTTPException(status_code=422, detail="That goal no longer exists.")
+
+
+def _check_person(person_id: int) -> None:
+    from openexecutive.people import store as people
+
+    person = people.get_person(person_id)
+    if person is None or person.archived or person.kind != "team":
+        raise HTTPException(status_code=422, detail="Pick someone on your team.")
+
+
+@router.patch("/watchlist/{slug}", response_model=WatchlistView)
+def patch_watchlist_entry(slug: str, body: WatchlistPatch) -> WatchlistView:
     item = ms.get_watchlist_item_by_slug(slug)
     if item is None:
         raise HTTPException(status_code=404, detail=f"Watchlist entry {slug!r} not found")
@@ -379,6 +525,16 @@ def patch_watchlist_entry(slug: str, body: WatchlistPatch) -> WatchlistItem:
     if "notes" in raw and body.notes is not None:
         fields["notes"] = body.notes[:500]
         changes.append("notes updated")
+    if "goal_id" in raw:
+        if body.goal_id is not None:
+            _check_goal(body.goal_id)
+        fields["goal_id"] = body.goal_id
+        changes.append("goal set" if body.goal_id is not None else "goal cleared")
+    if "person_id" in raw:
+        if body.person_id is not None:
+            _check_person(body.person_id)
+        fields["route_to_person_id"] = body.person_id
+        changes.append("person set" if body.person_id is not None else "person cleared")
     quiet_nudge = bool(body.quiet_noise_nudge)
 
     if not fields and not quiet_nudge:
@@ -411,7 +567,7 @@ def patch_watchlist_entry(slug: str, body: WatchlistPatch) -> WatchlistItem:
     updated = ms.get_watchlist_item(item.id)
     if updated is None:
         raise HTTPException(status_code=500, detail="watchlist entry vanished after update")
-    return updated
+    return _one(updated)
 
 
 def _record_decline(item: WatchlistItem, reason: str) -> None:
@@ -481,8 +637,8 @@ def _pending_suggestion_or_409(slug: str) -> WatchlistItem:
     return item
 
 
-@router.post("/watchlist/{slug}/approve", response_model=WatchlistItem)
-def approve_watchlist_suggestion(slug: str) -> WatchlistItem:
+@router.post("/watchlist/{slug}/approve", response_model=WatchlistView)
+def approve_watchlist_suggestion(slug: str) -> WatchlistView:
     """Turn a research suggestion into a live watch (origin=research)."""
     from openexecutive.monitoring.research import watch_policy
 
@@ -501,15 +657,15 @@ def approve_watchlist_suggestion(slug: str) -> WatchlistItem:
     updated = ms.get_watchlist_item(item.id)
     if updated is None:
         raise HTTPException(status_code=500, detail="watchlist entry vanished after approve")
-    return updated
+    return _one(updated)
 
 
 @router.post("/watchlist/{slug}/decline", response_model=DeclineResponse)
 def decline_watchlist_suggestion(slug: str, body: DeclineBody | None = None) -> DeclineResponse:
     """Decline a research suggestion. The reason picks the remedy:
     not_relevant / wrong_source remove it and blacklist (entity / target);
-    too_noisy keeps the source, live, but only high-severity signals ever
-    surface — the one way a suggestion goes live without an approve."""
+    too_noisy keeps the source, live, telling the person about big changes
+    only — the one way a suggestion goes live without an approve."""
     from openexecutive.monitoring.research import watch_policy
 
     reason = (body.reason if body else DECLINE_REASON_NOT_RELEVANT)

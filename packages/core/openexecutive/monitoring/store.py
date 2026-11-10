@@ -39,6 +39,7 @@ from openexecutive.monitoring.models import (
     ORIGIN_MANUAL,
     ORIGIN_RESEARCH,
     ORIGIN_RESEARCH_PROPOSED,
+    OUTCOME_ALERTED,
     OUTCOME_HELD_DIGEST,
     OUTCOME_SUPPRESSED_BASELINE,
     Signal,
@@ -204,6 +205,10 @@ def initialize_db(db_path: Path | None = None) -> None:
         # new headlines it added. '[]' on rows from before the column: the
         # next poll records the links without reporting any as new.
         _ensure_column(conn, "page_watch_state", "links_json", "TEXT NOT NULL DEFAULT '[]'")
+        # The goal a watch is for, and what its last check found in words.
+        _ensure_column(conn, "watchlist", "goal_id", "INTEGER")
+        _ensure_column(conn, "watchlist", "last_check_note", "TEXT NOT NULL DEFAULT ''")
+        _migrate_floor_to_trigger(conn)
 
 
 def _migrate_baselined_at(conn: sqlite3.Connection) -> None:
@@ -284,6 +289,40 @@ def _migrate_vendor_status_rekey(conn: sqlite3.Connection) -> None:
         raise
 
 
+_MIGRATION_FLOOR_TO_TRIGGER = "severity_floor_to_only_big"
+
+
+def _migrate_floor_to_trigger(conn: sqlite3.Connection) -> None:
+    """One-time: the severity floor stops being a filter.
+
+    A floor of high or urgent was a person's "only big things" (the too-noisy
+    remedies wrote it), so it becomes ``only_big`` in the trigger, where the
+    "Tells you when" sentence says it. Every other floor was a default nobody
+    chose and is dropped. All floors are reset to low so nothing reads as a
+    setting that no longer does anything.
+    """
+    already = conn.execute(
+        "SELECT 1 FROM monitoring_migrations WHERE name = ?",
+        (_MIGRATION_FLOOR_TO_TRIGGER,),
+    ).fetchone()
+    if already is not None:
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if _apply_once(conn, _MIGRATION_FLOOR_TO_TRIGGER):
+            conn.execute(
+                "UPDATE watchlist SET trigger_json = json_set("
+                "CASE WHEN json_valid(trigger_json) THEN trigger_json ELSE '{}' END, "
+                "'$.only_big', json('true')) "
+                "WHERE severity_floor IN ('high', 'urgent') AND signal_type != 'stock'"
+            )
+            conn.execute("UPDATE watchlist SET severity_floor = 'low' WHERE severity_floor != 'low'")
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
 def _ensure_column(
     conn: sqlite3.Connection, table: str, column: str, decl: str
 ) -> bool:
@@ -346,6 +385,7 @@ def insert_watchlist_item(
     enabled: bool = True,
     notes: str = "",
     origin: str = ORIGIN_MANUAL,
+    goal_id: int | None = None,
     db_path: Path | None = None,
 ) -> int:
     """Insert a new watchlist row. Returns its id.
@@ -364,8 +404,8 @@ def insert_watchlist_item(
             "(slug, signal_type, target, config_json, trigger_json, cadence, "
             "severity_floor, severity_ceiling, route_to_specialist, "
             "route_to_department, route_to_person_id, mode, enabled, "
-            "created_at, notes, origin) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "created_at, notes, origin, goal_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 slug,
                 signal_type,
@@ -385,6 +425,7 @@ def insert_watchlist_item(
                 now,
                 notes,
                 origin,
+                goal_id,
             ),
         )
         return int(cursor.lastrowid or 0)
@@ -453,6 +494,17 @@ def mark_polled(
         )
 
 
+def set_last_check_note(
+    item_id: int, note: str, db_path: Path | None = None,
+) -> None:
+    """Record what the last check found, in plain words."""
+    with _get_conn(db_path) as conn:
+        conn.execute(
+            "UPDATE watchlist SET last_check_note = ? WHERE id = ?",
+            (note[:300], item_id),
+        )
+
+
 def mark_fired(
     item_id: int,
     at: datetime,
@@ -513,6 +565,8 @@ _ALLOWED_UPDATE_COLUMNS: frozenset[str] = frozenset({
     "notes",
     "config_json",
     "route_to_specialist",
+    "route_to_person_id",
+    "goal_id",
     "origin",
 })
 
@@ -705,10 +759,12 @@ def delete_pending_suggestion(item_id: int, db_path: Path | None = None) -> bool
 
 def quiet_pending_suggestion(item_id: int, db_path: Path | None = None) -> bool:
     """The too_noisy remedy: a pending suggestion goes live as a research
-    watch with a high severity floor. Conditional on it still being pending."""
+    watch that only tells the person about big changes (``only_big`` in its
+    trigger). Conditional on it still being pending."""
     with _get_conn(db_path) as conn:
         cursor = conn.execute(
-            "UPDATE watchlist SET mode = ?, origin = ?, enabled = 1, severity_floor = 'high' "
+            "UPDATE watchlist SET mode = ?, origin = ?, enabled = 1, "
+            "trigger_json = json_set(trigger_json, '$.only_big', json('true')) "
             "WHERE id = ? AND origin = ? AND mode = ?",
             (MODE_ACTIVE, ORIGIN_RESEARCH, item_id, ORIGIN_RESEARCH_PROPOSED, MODE_DRY_RUN),
         )
@@ -1108,10 +1164,39 @@ def list_recent_signals(
     return [_row_to_signal_dict(row) for row in rows]
 
 
+def last_told_by_watch(db_path: Path | None = None) -> dict[int, dict[str, Any]]:
+    """``{watchlist id: newest signal it told the person about}``: the row's
+    ``captured_at``, ``normalized_summary`` and ``provenance_url``. One query
+    for the whole list."""
+    resolved = _resolve_db_path(db_path)
+    if not resolved.exists():
+        return {}
+    with _get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT s.watchlist_id, s.captured_at, s.processed_at, s.normalized_summary, "
+            "s.provenance_url FROM external_signals s JOIN ("
+            "SELECT watchlist_id, MAX(id) AS id FROM external_signals "
+            "WHERE processed_outcome = ? GROUP BY watchlist_id"
+            ") newest ON newest.id = s.id",
+            (OUTCOME_ALERTED,),
+        ).fetchall()
+    return {int(row["watchlist_id"]): dict(row) for row in rows}
+
+
+def watches_for_goals(db_path: Path | None = None) -> dict[int, list[WatchlistItem]]:
+    """``{goal id: its watches}``, suggestions left out."""
+    out: dict[int, list[WatchlistItem]] = {}
+    for item in list_watchlist(db_path=db_path):
+        if item.goal_id is not None and item.origin != ORIGIN_RESEARCH_PROPOSED:
+            out.setdefault(item.goal_id, []).append(item)
+    return out
+
+
 def list_signals_for_watchlist(
     watchlist_id: int,
     *,
     limit: int = 50,
+    told_only: bool = False,
     db_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Recent signals for one monitor, newest first.
@@ -1127,12 +1212,11 @@ def list_signals_for_watchlist(
         rows = conn.execute(
             "SELECT * FROM external_signals "
             "WHERE watchlist_id = ? "
-            "ORDER BY captured_at DESC LIMIT ?",
+            + ("AND processed_outcome = 'alerted' " if told_only else "")
+            + "ORDER BY captured_at DESC LIMIT ?",
             (watchlist_id, limit),
         ).fetchall()
     return [_row_to_signal_dict(row) for row in rows]
-
-
 
 
 def list_held_signals(
@@ -1188,8 +1272,11 @@ __all__ = [
     "mark_signal_processed",
     "recent_alert_statuses",
     "remove_watchlist_config_key",
+    "last_told_by_watch",
     "set_enabled",
+    "set_last_check_note",
     "set_signal_severity",
+    "watches_for_goals",
     "set_watchlist_config_key",
     "update_signal_enrichment",
     "update_watchlist_fields",

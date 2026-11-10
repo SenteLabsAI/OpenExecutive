@@ -88,6 +88,12 @@ EXPLICIT_DECLINE_REASONS = frozenset({
     DECLINE_REASON_NOT_RELEVANT, DECLINE_REASON_TOO_NOISY, DECLINE_REASON_WRONG_SOURCE,
 })
 
+# Trigger key every source understands: tell the person only about big
+# changes. It is the one way a watch is made quieter beyond its own trigger,
+# and it is part of the "Tells you when" sentence the person reads, so what
+# holds a change back is always what the watch says about itself.
+TRIGGER_ONLY_BIG = "only_big"
+
 # Watchlist row "cadence" hints — used by the briefing/digest layer in
 # PR-C to decide whether a signal surfaces real-time vs in a digest.
 # Kept as opaque strings here; pipeline ignores them in PR-A.
@@ -117,6 +123,10 @@ class WatchlistItem(BaseModel):
     config_json: dict[str, Any] = Field(default_factory=dict)
     trigger_json: dict[str, Any] = Field(default_factory=dict)
     cadence: str = "15min"
+    # Kept on the row but no longer a filter: the pipeline never holds a
+    # change back for being under the floor. A watch tells the person
+    # whenever its trigger is met (see TRIGGER_ONLY_BIG for the quieter
+    # version). The ceiling still caps the severity recorded on a signal.
     severity_floor: AlertSeverity = AlertSeverity.LOW
     severity_ceiling: AlertSeverity = AlertSeverity.URGENT
     route_to_specialist: str = ""
@@ -138,6 +148,13 @@ class WatchlistItem(BaseModel):
     trust_score: float = 1.0  # 0..1, decays on dismiss; full trust at creation
     notes: str = ""
     origin: str = ORIGIN_MANUAL
+    # The goal this watch is for (``department_goals.id``), when it has one.
+    # Who it is for is ``route_to_person_id`` (None = the principal).
+    goal_id: int | None = None
+    # What the last check found, in plain words, and why it stayed quiet
+    # when it did ("Down 1.1% today. Under 5%, so it stayed quiet."). Written
+    # by the scan after every poll; "" until the first one.
+    last_check_note: str = ""
 
 
 class WatchlistDecline(BaseModel):
@@ -206,9 +223,12 @@ class Signal(BaseModel):
 # overnight" is a simple SQL query.
 OUTCOME_ALERTED = "alerted"
 OUTCOME_SUPPRESSED_DRY_RUN = "suppressed_dry_run"
-OUTCOME_SUPPRESSED_BELOW_FLOOR = "suppressed_below_floor"
+OUTCOME_SUPPRESSED_BELOW_FLOOR = "suppressed_below_floor"  # see note below
 OUTCOME_SUPPRESSED_DUP = "suppressed_dup"
 OUTCOME_SUPPRESSED_TRIAGE = "suppressed_triage"
+# Held back because the watch asks for big changes only (TRIGGER_ONLY_BIG)
+# and this one was not graded big. The name predates that: it used to mean
+# "under the row's severity floor", a second filter that no longer exists.
 # Captured + enriched, but the capture-time relevance score fell below the
 # configured floor (external_monitor_enrichment_min_relevance). Recorded, not
 # promoted — the gate is opt-in (default threshold 0.0 = off) until calibrated.

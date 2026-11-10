@@ -37,6 +37,24 @@ from openexecutive.monitoring.models import Signal, WatchlistItem
 logger = logging.getLogger(__name__)
 
 
+# What an adapter saw on a poll that emitted nothing, in plain words for the
+# person ("Down 1.1% today. Under 5%, so it stayed quiet."). The scan takes
+# it right after ``poll`` returns and keeps it on the watch as its last-check
+# note. Keyed by slug; one scan polls a row at a time, and an overlapping
+# scan would only overwrite it with an equally current reading.
+COULD_NOT_REACH = "Could not reach it this time. It will try again."
+_OBSERVED: dict[str, str] = {}
+
+
+def observe(item: WatchlistItem, text: str) -> None:
+    """Say what this poll found when it has nothing to report."""
+    _OBSERVED[item.slug] = text
+
+
+def take_observation(item: WatchlistItem) -> str:
+    return _OBSERVED.pop(item.slug, "")
+
+
 class Source(Protocol):
     """Adapter contract — see module docstring for invariants."""
 

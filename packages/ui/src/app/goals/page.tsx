@@ -109,6 +109,7 @@ export default function GoalsPage() {
     const parts: string[] = [];
     if (by !== "owner" && g.owner_name) parts.push(g.owner_id === viewerId ? `${g.owner_name} (you)` : g.owner_name);
     if (by !== "department" && g.department_title) parts.push(g.department_title);
+    if (g.watching?.length) parts.push(`Watching: ${g.watching.join(", ")}`);
     return parts.join(" · ");
   };
 
