@@ -230,6 +230,17 @@ async def test_who_may_share(db: dict[str, Any]) -> None:
     # The principal shares the team's run.
     db["viewer"] = PRINCIPAL
     await artifacts_route.share_artifact(team_run, _REQ)
+    # A teammate who can open it never sees its link.
+    db["viewer"] = TEAMMATE
+    listed = {a.id: a for a in (await artifacts_route.list_artifacts(_REQ))["artifacts"]}
+    assert listed[team_run].can_share is False and listed[team_run].share_path is None
+
+
+async def test_a_malformed_id_is_a_bad_request(db: dict[str, Any]) -> None:
+    for call in (artifacts_route.share_artifact, artifacts_route.stop_sharing_artifact):
+        with pytest.raises(HTTPException) as exc:
+            await call("not-an-id", _REQ)
+        assert exc.value.status_code == 400
 
 
 async def test_link_ends_when_its_sharer_leaves(db: dict[str, Any]) -> None:
@@ -304,3 +315,16 @@ def test_record_loader_is_unchanged_for_viewers(db: dict[str, Any]) -> None:
     cid = _draft(db, "a1", "Memo", "text", owner_person_id=2)
     with pytest.raises(artifact_records.ArtifactNotFound):
         artifact_records.load_artifact(cid, viewer=PRINCIPAL)
+
+
+async def test_reading_links_never_writes(db: dict[str, Any]) -> None:
+    import sqlite3
+
+    _draft(db, "a1", "Memo", "text")
+    await artifacts_route.list_artifacts(_REQ)
+    with pytest.raises(HTTPException):
+        await artifacts_route.shared_document("a" * 32, Response())
+    assert artifact_shares.forget("alert:1") is False
+    with sqlite3.connect(db["path"]) as conn:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert "artifact_shares" not in tables

@@ -34,6 +34,7 @@ from __future__ import annotations
 import logging
 import re
 import secrets
+import sqlite3
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Literal
@@ -62,6 +63,8 @@ class ShareRefused(ValueError):
 
 
 def initialize_db() -> None:
+    """Make the table. Only sharing does this; the reads (the list page, a
+    public open) never write, and a missing table means no links yet."""
     with _get_conn() as conn:
         conn.execute(
             """
@@ -73,6 +76,10 @@ def initialize_db() -> None:
             )
             """
         )
+
+
+def _no_table(exc: sqlite3.OperationalError) -> bool:
+    return "no such table" in str(exc)
 
 
 def public_path(key: str) -> str:
@@ -98,17 +105,21 @@ def share_keys(artifact_ids: Iterable[str]) -> dict[str, str]:
     ids = list(dict.fromkeys(artifact_ids))
     if not ids:
         return {}
-    initialize_db()
     found: dict[str, str] = {}
     # SQLite caps bound parameters; the list page holds at most a few hundred.
     for start in range(0, len(ids), 500):
         chunk = ids[start : start + 500]
-        with _get_conn() as conn:
-            rows = conn.execute(
-                "SELECT artifact_id, share_key FROM artifact_shares "
-                f"WHERE artifact_id IN ({', '.join('?' * len(chunk))})",
-                chunk,
-            ).fetchall()
+        try:
+            with _get_conn() as conn:
+                rows = conn.execute(
+                    "SELECT artifact_id, share_key FROM artifact_shares "
+                    f"WHERE artifact_id IN ({', '.join('?' * len(chunk))})",
+                    chunk,
+                ).fetchall()
+        except sqlite3.OperationalError as exc:
+            if _no_table(exc):
+                return {}
+            raise
         found.update({r["artifact_id"]: r["share_key"] for r in rows})
     return found
 
@@ -163,10 +174,14 @@ def stop_share(composite_id: str, *, viewer: Viewer) -> bool:
 def forget(artifact_id: str) -> bool:
     """Drop a document's link, whoever shared it (the document is being
     deleted). True when there was one."""
-    initialize_db()
-    with _get_conn() as conn:
-        cur = conn.execute("DELETE FROM artifact_shares WHERE artifact_id = ?", (artifact_id,))
-        return cur.rowcount > 0
+    try:
+        with _get_conn() as conn:
+            cur = conn.execute("DELETE FROM artifact_shares WHERE artifact_id = ?", (artifact_id,))
+            return cur.rowcount > 0
+    except sqlite3.OperationalError as exc:
+        if _no_table(exc):
+            return False
+        raise
 
 
 def load_shared(key: str) -> ArtifactRecord | None:
@@ -175,11 +190,15 @@ def load_shared(key: str) -> ArtifactRecord | None:
     open or share it."""
     if not KEY_PATTERN.fullmatch(key or ""):
         return None
-    initialize_db()
-    with _get_conn() as conn:
-        row = conn.execute(
-            "SELECT artifact_id, shared_by FROM artifact_shares WHERE share_key = ?", (key,)
-        ).fetchone()
+    try:
+        with _get_conn() as conn:
+            row = conn.execute(
+                "SELECT artifact_id, shared_by FROM artifact_shares WHERE share_key = ?", (key,)
+            ).fetchone()
+    except sqlite3.OperationalError as exc:
+        if _no_table(exc):
+            return None
+        raise
     if row is None or row["shared_by"] is None:
         return None
     artifact_id = str(row["artifact_id"])
@@ -210,8 +229,6 @@ def load_shared(key: str) -> ArtifactRecord | None:
 def _audit(event_type: str, summary: str, rec: ArtifactRecord, viewer: Viewer) -> None:
     """An audit row for a share or a stop, private to the document's owner
     when it has one. Never fails the share."""
-    import logging
-
     try:
         from openexecutive.audit import log_event
 
@@ -224,7 +241,7 @@ def _audit(event_type: str, summary: str, rec: ArtifactRecord, viewer: Viewer) -
             private_to_person=rec.owner_person_id,
         )
     except Exception:
-        logging.getLogger(__name__).warning("artifact shares: couldn't write the audit row", exc_info=True)
+        logger.warning("artifact shares: couldn't write the audit row", exc_info=True)
 
 
 def _sharer(person_id: int) -> Viewer | Literal[False] | None:
