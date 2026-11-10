@@ -2876,24 +2876,28 @@ def _watching(request: Request, caller: int | None) -> list[WatchingItem]:
     soonest first, then, for the owner while As me is on, the standing
     jobs with when it looks next. Never raises."""
     from openexecutive.api.routes.chat import _caller_is_principal_or_unclaimed
+    from openexecutive.api.routes.people import caller_is_principal
     from openexecutive.memory.episodic import list_pending_scheduled_actions
     from openexecutive.orchestrator import take_the_lead
     from openexecutive.people.store import list_people
 
     try:
         owner = _caller_is_principal_or_unclaimed(request)
+        # Standing jobs are the owner's alone, as on the As me tab.
+        principal = caller_is_principal(request)
     except Exception:
-        owner = False
+        owner = principal = False
     if not owner and caller is None:
         return []
     items: list[WatchingItem] = []
     try:
         names = {p.id: p.full_name for p in list_people(include_archived=True) if p.id is not None}
         lookup = _build_channel_lookup()
-        for action in list_pending_scheduled_actions(limit=100):
-            if action.kind not in _WATCHING_KINDS or action.id is None:
-                continue
-            if not owner and action.created_by_person_id != caller:
+        mine = None if owner else caller
+        for action in list_pending_scheduled_actions(
+            limit=_WATCHING_MAX, kinds=_WATCHING_KINDS, created_by_person_id=mine,
+        ):
+            if action.id is None:
                 continue
             target = names.get(action.assigned_to_person_id) if action.assigned_to_person_id else None
             target = target or _resolve_channel_target(lookup, action.channel, action.channel_ref or "")
@@ -2908,7 +2912,7 @@ def _watching(request: Request, caller: int | None) -> list[WatchingItem]:
     except Exception:
         logger.warning("today: reading follow-ups for Watching next failed", exc_info=True)
     items = items[:_WATCHING_MAX]
-    if owner:
+    if principal:
         try:
             if take_the_lead.executive_on():
                 look = _next_look()
@@ -3075,6 +3079,7 @@ async def stop_watching(body: StopWatchingRequest, request: Request) -> dict[str
         _caller_is_principal_or_unclaimed,
         _resolve_caller_person_id,
     )
+    from openexecutive.api.routes.people import caller_is_principal
     from openexecutive.audit import log_event as audit_log
     from openexecutive.memory.episodic import cancel_scheduled_action, get_scheduled_action
     from openexecutive.orchestrator import take_the_lead
@@ -3087,7 +3092,8 @@ async def stop_watching(body: StopWatchingRequest, request: Request) -> dict[str
     caller = _resolve_caller_person_id(request)
     owner = _caller_is_principal_or_unclaimed(request)
     if kind == "job":
-        if not owner or take_the_lead.stop_job(item_id) is None:
+        # The owner's alone, the same check as DELETE /take-the-lead/jobs.
+        if not caller_is_principal(request) or take_the_lead.stop_job(item_id) is None:
             raise HTTPException(status_code=404, detail="That isn't there any more.")
         audit_log("take_the_lead_changed", "Standing job stopped from Home", actor="user",
                   details={"job_id": item_id})

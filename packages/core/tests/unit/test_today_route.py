@@ -3268,6 +3268,12 @@ def test_watching_next_lists_follow_ups_and_standing_jobs_and_stop_ends_one(
         run_at=soon, channel="__internal__", channel_ref="principal", intent_text="x", kind="dept_cadence",
     )
     job = take_the_lead.add_job("Chase overdue tasks every morning", created_by="t")
+    # Plenty of other work due sooner doesn't push the follow-ups out.
+    sooner = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    for n in range(110):
+        episodic.insert_scheduled_action(
+            run_at=sooner, channel="slack_dm", channel_ref="U9", intent_text=f"other {n}", kind="dept_cadence",
+        )
 
     client = _make_client()
     owner = {"x-caller-email": "jordan@example.com"}
