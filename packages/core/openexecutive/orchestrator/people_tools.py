@@ -995,6 +995,18 @@ def _new_way_to_reach(existing: Any, tool_input: dict[str, Any], aliases: list[s
     return False
 
 
+
+def _is_store_refusal(exc: BaseException) -> bool:
+    """True for a rule the people store refuses a write with: a plain
+    ``ValueError`` or one of its named refusals. Other ``ValueError``
+    subclasses (a pydantic or JSON error, say) are faults, not refusals."""
+    from openexecutive.people import store as people_store
+
+    return type(exc) is ValueError or isinstance(
+        exc, (people_store.AddressInUseError, people_store.PrincipalContactError)
+    )
+
+
 async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
     from openexecutive.people import registry as people_registry
     from openexecutive.people import store as people_store
@@ -1158,7 +1170,7 @@ async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
         if details is not None:
             people_store.set_person_details(new_id, details, source="chat_tool")
     except Exception as exc:
-        if isinstance(exc, ValueError):
+        if _is_store_refusal(exc):
             # A rule the store explains (address already on someone, bad
             # alias, too many addresses): the reason goes back to the model
             # and the person, so it is not a fault worth an error report. The

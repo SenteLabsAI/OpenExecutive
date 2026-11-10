@@ -877,3 +877,26 @@ def test_upsert_refusal_is_a_warning_not_an_error(monkeypatch: pytest.MonkeyPatc
     })
     assert result["error"] == "that address is already on another person"
     assert calls == ["warning"]
+
+
+def test_upsert_unexpected_failure_is_still_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failure that isn't one of the store's refusals keeps its error report."""
+    from openexecutive.orchestrator import people_tools
+
+    calls: list[str] = []
+
+    class _Logger:
+        def warning(self, *args: Any, **kwargs: Any) -> None:
+            calls.append("warning")
+
+        def exception(self, *args: Any, **kwargs: Any) -> None:
+            calls.append("exception")
+
+    def _broken(*args: Any, **kwargs: Any) -> int:
+        raise json.JSONDecodeError("bad row", "{", 0)  # a ValueError subclass, not a refusal
+
+    monkeypatch.setattr(people_tools, "logger", _Logger())
+    monkeypatch.setattr(people_store, "upsert_person", _broken)
+    result = _call(handle_upsert_person, {"full_name": "Lee Park"})
+    assert "error" in result
+    assert calls == ["exception"]
