@@ -394,6 +394,16 @@ def _configure(monkeypatch: pytest.MonkeyPatch, *integrations: str) -> None:
 
 
 _UNATTENDED_SOLO_ONLY = ("create_calendar_event", "create_instant_meeting", "run_workflow")
+# A whole call for each: one missing who or what goes back to the model
+# instead of onto a card (take_the_lead.missing_args).
+_HELD_INPUT: dict[str, dict[str, Any]] = {
+    "create_calendar_event": {
+        "title": "Sync with X", "start": "2026-11-12T15:00:00Z", "end": "2026-11-12T15:30:00Z",
+        "attendee_person_ids": [9],
+    },
+    "create_instant_meeting": {"title": "Sync with X", "attendee_person_ids": [9]},
+    "run_workflow": {"workflow": "weekly_review"},
+}
 
 
 def _stub_handlers(monkeypatch: pytest.MonkeyPatch, names: tuple[str, ...]) -> list[str]:
@@ -453,7 +463,7 @@ def test_solo_reflection_holds_booking_and_workflows(
     provider = _CapturingProvider([
         _Resp(
             [
-                _ToolUse(n, {"title": "Sync with X", "attendee_person_ids": [9]}, f"tu-{n}")
+                _ToolUse(n, _HELD_INPUT[n], f"tu-{n}")
                 for n in _UNATTENDED_SOLO_ONLY
             ],
             "tool_use",
@@ -482,7 +492,7 @@ def test_solo_research_holds_booking_and_workflows(
     provider = _CapturingProvider([
         _Resp(
             [
-                _ToolUse(n, {"title": "Sync with X", "attendee_person_ids": [9]}, f"tu-{n}")
+                _ToolUse(n, _HELD_INPUT[n], f"tu-{n}")
                 for n in _UNATTENDED_SOLO_ONLY
             ],
             "tool_use",
