@@ -190,6 +190,12 @@ async def _save(
                 raise SendRefused(
                     502, "gmail_error", "Couldn't save the change in your mailbox. Try again in a moment.",
                 ) from exc
+            if version == row.message_id:
+                # The mailbox answered with the version it already had: the
+                # edit didn't land, and Send would send the old words.
+                raise SendRefused(
+                    502, "gmail_error", "Couldn't save the change in your mailbox. Try again in a moment.",
+                )
             if not drafts.set_version(row.id, row.message_id, version):
                 raise SendRefused(409, "draft_gone", "That draft was sent or changed meanwhile. Look at it again.")
             _audit("delegation_chat_draft_edited", f"Person {person.id} changed a chat draft on its card", {
