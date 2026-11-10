@@ -462,6 +462,21 @@ async def _validated_target(
     return slug, signal_type, target, config, trigger
 
 
+def _principal_asked() -> bool:
+    from openexecutive.orchestrator.people_tools import is_principal_on_verified_surface
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    return is_principal_on_verified_surface(current_session.get())
+
+
+def _own_words(note: str) -> str:
+    """A watch's last-check note when it is the scan's own wording. A note
+    that quotes what a feed or page said ("Told you: ...", "Noticed: ...")
+    is left out: that text comes from outside and this tool's result is
+    read as the Executive's own data."""
+    return "" if note.startswith(("Told you:", "Noticed:")) else note
+
+
 def _for_ids(tool: str, tool_input: dict[str, Any]) -> dict[str, int | None] | str:
     """The ``for_goal_id`` / ``for_person_id`` a call passed, checked against
     the goals and the team, as watchlist columns. Returns the JSON error
@@ -476,6 +491,10 @@ def _for_ids(tool: str, tool_input: dict[str, Any]) -> dict[str, int | None] | s
             continue
         if isinstance(raw, bool) or not isinstance(raw, int):
             return _err(tool, f"{key} must be an integer id")
+        if column == "route_to_person_id" and not _principal_asked():
+            # What a watch finds is sent to that person, so only the
+            # principal, on a surface that verified them, picks who.
+            return _err(tool, "only the principal can choose who a watch tells; they can set it on the watch's page")
         if column == "goal_id":
             from openexecutive.departments import store as departments
 
@@ -656,7 +675,7 @@ async def handle_list_watchlist(tool_input: dict[str, Any]) -> str:
             "enabled": i.enabled,
             "title": watch_title(i),
             "tells_you_when": trigger_line(i.signal_type, i.trigger_json),
-            "last_check": i.last_check_note,
+            "last_check": _own_words(i.last_check_note),
             "for_goal_id": i.goal_id,
             "for_person_id": i.route_to_person_id,
             "route_to_specialist": i.route_to_specialist,
@@ -746,7 +765,7 @@ async def handle_tune_watchlist_entry(tool_input: dict[str, Any]) -> str:
     changes: list[str] = []
 
     if item.origin == ORIGIN_RESEARCH_PROPOSED and any(
-        k in tool_input for k in ("mode", "enabled", "cadence", "trigger")
+        k in tool_input for k in ("mode", "enabled", "cadence", "trigger", "for_person_id")
     ):
         # A pending research suggestion leaves the pending state only through
         # the principal's approve / decline — never by a tune from a model —

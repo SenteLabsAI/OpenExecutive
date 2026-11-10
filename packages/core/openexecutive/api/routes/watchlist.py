@@ -217,13 +217,19 @@ def _view(item: WatchlistItem, names: _Names) -> dict[str, Any]:
         "last_told": LastTold(
             at=str(told.get("processed_at") or told.get("captured_at") or ""),
             summary=_told_summary(str(told.get("normalized_summary") or "")),
-            url=str(told.get("provenance_url") or ""),
+            url=_web_link(str(told.get("provenance_url") or "")),
         ) if told else None,
         "goal_title": names.goal(item.goal_id),
         "person_name": person_name,
         "person_role": person_role,
         "department_title": names.department(item.route_to_department),
     }
+
+
+def _web_link(url: str) -> str:
+    """The link when it is a plain web address, else nothing: it comes from
+    the feed and the screens open it."""
+    return url if url.lower().startswith(("https://", "http://")) else ""
 
 
 def _told_summary(text: str) -> str:
@@ -323,7 +329,10 @@ def get_watchlist_signals(
     assert item.id is not None
     bounded = max(1, min(limit, _SIGNALS_MAX_LIMIT))
     rows = ms.list_signals_for_watchlist(item.id, limit=bounded, told_only=told)
-    return [SignalRow(**row) for row in rows]
+    return [
+        SignalRow(**{**row, "provenance_url": _web_link(str(row.get("provenance_url") or ""))})
+        for row in rows
+    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -477,7 +486,7 @@ def _check_person(person_id: int) -> None:
 
 
 @router.patch("/watchlist/{slug}", response_model=WatchlistView)
-def patch_watchlist_entry(slug: str, body: WatchlistPatch) -> WatchlistView:
+def patch_watchlist_entry(slug: str, body: WatchlistPatch, request: Request) -> WatchlistView:
     item = ms.get_watchlist_item_by_slug(slug)
     if item is None:
         raise HTTPException(status_code=404, detail=f"Watchlist entry {slug!r} not found")
@@ -531,6 +540,12 @@ def patch_watchlist_entry(slug: str, body: WatchlistPatch) -> WatchlistView:
         fields["goal_id"] = body.goal_id
         changes.append("goal set" if body.goal_id is not None else "goal cleared")
     if "person_id" in raw:
+        # What the watch finds is sent to that person, so who it tells is
+        # the principal's call.
+        from openexecutive.api.routes.chat import _caller_is_principal_or_unclaimed
+
+        if not _caller_is_principal_or_unclaimed(request):
+            raise HTTPException(status_code=403, detail="Only the owner can choose who a watch tells.")
         if body.person_id is not None:
             _check_person(body.person_id)
         fields["route_to_person_id"] = body.person_id
@@ -561,7 +576,7 @@ def patch_watchlist_entry(slug: str, body: WatchlistPatch) -> WatchlistView:
     _audit(
         "watchlist.patch", True,
         f"watchlist.patch: {slug} -> {', '.join(changes)}",
-        {"slug": slug, "watchlist_id": item.id, "changes": changes},
+        {"slug": slug, "watchlist_id": item.id, "changes": changes, "by": api_caller.actor(request)},
     )
 
     updated = ms.get_watchlist_item(item.id)

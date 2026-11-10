@@ -236,3 +236,46 @@ def test_big_changes_only_is_part_of_tells_you_when(client: TestClient, db: Path
     assert res.json()["tells_you_when"] == (
         "There's a new post that mentions “pricing”, and only when it is a big change"
     )
+
+
+def test_only_the_owner_chooses_who_a_watch_tells(
+    client: TestClient, db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.departments import store as departments
+    from openexecutive.people import store as people
+
+    monkeypatch.setattr(departments, "DB_PATH", db)
+    monkeypatch.setattr(people, "DB_PATH", db)
+    people.initialize_db(db)
+    departments.initialize_db(db)
+    people.upsert_person(full_name="Jordan Avery", email="jordan@acme.example", is_principal=True, db_path=db)
+    sam_id = people.upsert_person(full_name="Sam Okafor", email="sam@acme.example", db_path=db)
+    ms.insert_watchlist_item(slug="rss-acme", signal_type="rss", target="https://acme.example/feed", db_path=db)
+
+    as_sam = {"x-caller-email": "sam@acme.example"}
+    res = client.patch("/watchlist/rss-acme", json={"person_id": sam_id}, headers=as_sam)
+    assert res.status_code == 403
+    row = ms.get_watchlist_item_by_slug("rss-acme", db_path=db)
+    assert row is not None and row.route_to_person_id is None
+    # A teammate can still change the rest.
+    assert client.patch("/watchlist/rss-acme", json={"notes": "ours"}, headers=as_sam).status_code == 200
+
+    as_owner = {"x-caller-email": "jordan@acme.example"}
+    assert client.patch("/watchlist/rss-acme", json={"person_id": sam_id}, headers=as_owner).status_code == 200
+
+
+def test_a_link_that_is_not_a_web_address_is_not_passed_on(client: TestClient, db: Path) -> None:
+    from datetime import UTC, datetime
+
+    from openexecutive.monitoring.models import Signal
+
+    watch_id = ms.insert_watchlist_item(slug="rss-acme", signal_type="rss", target="https://acme.example/feed", db_path=db)
+    signal_id = ms.insert_signal(Signal(
+        watchlist_id=watch_id, source_kind="rss", source_external_id="1",
+        captured_at=datetime.now(UTC).isoformat(), normalized_summary="[Acme] new post",
+        provenance_url="javascript:alert(1)", dedup_key="rss:1",
+    ), db_path=db)
+    assert signal_id is not None
+    ms.mark_signal_processed(signal_id, "alerted", db_path=db)
+    assert client.get("/watchlist/rss-acme").json()["last_told"]["url"] == ""
+    assert client.get("/watchlist/rss-acme/signals").json()[0]["provenance_url"] == ""
