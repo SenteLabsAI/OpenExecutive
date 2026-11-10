@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Button from "@/components/ui/Button";
 import OverflowMenu from "@/components/ui/OverflowMenu";
@@ -21,9 +21,12 @@ const chipCls =
 export default function StartHere({
   readyMadeCount,
   onBrowseReadyMade,
+  top,
 }: {
   readyMadeCount: number;
   onBrowseReadyMade: () => void;
+  /** Shown above the question: the offer to schedule a repeated ask. */
+  top?: ReactNode;
 }) {
   const router = useRouter();
   const { mode } = useWorkspace();
@@ -42,6 +45,7 @@ export default function StartHere({
 
   return (
     <section className="mb-8 rounded-2xl border border-line bg-surface-elevated p-5 shadow-sm sm:p-7">
+      {top && <div className="mb-6">{top}</div>}
       <h1 className="text-2xl font-bold tracking-tight text-fg sm:text-3xl">
         What do you want to get done?
       </h1>

@@ -665,7 +665,7 @@ async def run_script_tool(
         if saved is None and tools is not None:
             yield _done({
                 "error": f"{str(tool_name)[:60]!r} is not turned on for workflows; the owner "
-                "turns it on in Settings → Advanced → Custom tools",
+                "turns it on in Settings → Advanced → Tools I built",
             }, True)
             return
         if saved is None or not saved.enabled:
@@ -746,10 +746,10 @@ async def run_script_tool(
                     # Workflows run only a version the owner turned on.
                     "workflows": (
                         f"version {kept.workflow_version} is on for workflows; this one runs there "
-                        "once the owner turns it on in Settings → Advanced → Custom tools"
+                        "once the owner turns it on in Settings → Advanced → Tools I built"
                         if kept.workflow_version not in (None, kept.version)
                         else "on" if kept.workflow_version == kept.version
-                        else "off until the owner turns it on in Settings → Advanced → Custom tools"
+                        else "off until the owner turns it on in Settings → Advanced → Tools I built"
                     ),
                 }
                 if not kept.enabled:

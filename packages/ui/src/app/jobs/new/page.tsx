@@ -19,12 +19,16 @@ import {
   createCustomWorkflow,
   getCustomWorkflow,
   getWorkflowDesignerSession,
+  listCustomWorkflows,
   listPeople,
   listSkills,
+  listWorkflows,
   type SkillMeta,
   updateCustomWorkflow,
 } from "@/lib/api";
 import { PageSpinner } from "@/components/ui/Spinner";
+import { describeCadenceLocal, newStepId, workflowNameFromTitle } from "@/lib/workflowChanges";
+import { DYNAMIC_SPECIALIST_AREAS, MAX_WORKFLOW_STEPS, STEP_KIND_LABELS } from "@/lib/workflowEditorWords";
 
 const SECTIONS: WorkflowSection[] = [
   "Board",
@@ -38,8 +42,8 @@ const SECTIONS: WorkflowSection[] = [
 
 type StepKind = DynamicStep["kind"];
 
-function newStep(kind: StepKind, idx: number): DynamicStep {
-  const id = `step_${idx + 1}`;
+function newStep(kind: StepKind, existing: readonly DynamicStep[]): DynamicStep {
+  const id = newStepId(existing.map((s) => s.id));
   if (kind === "specialist")
     return { kind, id, title: "", specialist: "cso", goal: "", rag_query: "" };
   if (kind === "approval_gate")
@@ -139,7 +143,7 @@ function coerceSteps(raw: unknown): DynamicStep[] | null {
     if (typeof kind !== "string" || !STEP_KINDS.has(kind)) return;
     // Start from the kind's defaults so missing optional keys stay valid,
     // then overlay whatever the proposal supplied.
-    const base = newStep(kind as StepKind, i) as unknown as Record<string, unknown>;
+    const base = newStep(kind as StepKind, []) as unknown as Record<string, unknown>;
     const merged = { ...base, ...rec, kind } as unknown as DynamicStep;
     if (typeof merged.id !== "string" || !merged.id) merged.id = `step_${i + 1}`;
     out.push(merged);
@@ -165,14 +169,15 @@ function BuilderInner() {
   const [estimatedMinutes, setEstimatedMinutes] = useState(4);
   const [fields, setFields] = useState<DynamicInputField[]>([]);
   const [steps, setSteps] = useState<DynamicStep[]>([
-    newStep("specialist", 0),
-    newStep("synthesis", 1),
+    newStep("specialist", []),
+    { ...newStep("synthesis", []), id: "step_2" },
   ]);
   const [cadenceEnabled, setCadenceEnabled] = useState(false);
   const [cadence, setCadence] = useState("weekly@mon@09:00");
   const [cadencePersonId, setCadencePersonId] = useState<number>(0);
 
   const [stage, setStage] = useState(0);
+  const atStepLimit = steps.length >= MAX_WORKFLOW_STEPS;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(!!editName || !!designerId);
@@ -237,37 +242,27 @@ function BuilderInner() {
     formId: "workflow_builder",
     title: editName ? "Edit workflow" : "New workflow",
     description:
-      "Builds a reusable workflow from specialist steps, optional approval gates, and a final synthesis step.",
+      "Set the steps yourself: what to do, where it waits for your OK, and what it hands you at the end.",
     getFields: (): PageFormField[] => [
-      {
-        name: "name",
-        label: "Name (snake_case, unique)",
-        type: "text",
-        value: name,
-        required: true,
-        description: editName
-          ? "Immutable — this workflow already exists."
-          : "snake_case unique identifier, e.g. weekly_competitor_watch.",
-      },
       { name: "title", label: "Title", type: "text", value: title, required: true },
       { name: "description", label: "Description", type: "text", value: description },
       {
         name: "section",
-        label: "Section",
+        label: "Kind of work",
         type: "select",
         options: [...SECTIONS],
         value: section,
       },
       {
         name: "estimated_minutes",
-        label: "Estimated minutes",
+        label: "About how long it takes (minutes)",
         type: "number",
         value: estimatedMinutes,
         description: "1-120.",
       },
       {
         name: "input_fields",
-        label: "Input fields",
+        label: "Inputs",
         type: "json",
         value: fields,
         description: INPUT_FIELDS_SCHEMA,
@@ -288,14 +283,14 @@ function BuilderInner() {
       },
       {
         name: "cadence",
-        label: "Cadence",
+        label: "When it runs",
         type: "text",
         value: cadence,
-        description: "daily@HH:MM / weekly@DOW@HH:MM / quarterly@DD-HH:MM, UTC.",
+        description: "daily@HH:MM / weekly@DOW@HH:MM / quarterly@DD-HH:MM, in UTC.",
       },
       {
         name: "cadence_person_id",
-        label: "Deliver document to (person id)",
+        label: "Send what it makes to (person id)",
         type: "number",
         value: cadencePersonId,
         description:
@@ -312,8 +307,8 @@ function BuilderInner() {
       for (const [key, raw] of Object.entries(values)) {
         switch (key) {
           case "name":
-            if (editName || typeof raw !== "string") skipped.push(key);
-            else { setName(raw); applied.push(key); }
+            // Made from the title when the workflow is created; never typed.
+            skipped.push(key);
             break;
           case "title":
             if (typeof raw !== "string") skipped.push(key);
@@ -415,8 +410,19 @@ function BuilderInner() {
   async function handleSave() {
     setError(null);
     setSaving(true);
+    // A new workflow's stored name is made from its title; an existing one
+    // keeps its own.
+    let storedName = name.trim();
+    if (!editName) {
+      const taken = new Set<string>();
+      await Promise.all([
+        listWorkflows().then((ws) => ws.forEach((w) => taken.add(w.name))).catch(() => {}),
+        listCustomWorkflows().then((ws) => ws.forEach((w) => taken.add(w.name))).catch(() => {}),
+      ]);
+      storedName = workflowNameFromTitle(title.trim(), taken);
+    }
     const def: DynamicWorkflowDef = {
-      name: name.trim(),
+      name: storedName,
       title: title.trim(),
       description: description.trim(),
       section,
@@ -484,26 +490,14 @@ function BuilderInner() {
       {stage === 0 && (
       <section className="space-y-4">
         <h2 className="text-lg font-semibold text-fg">Details</h2>
-        <div className="grid sm:grid-cols-2 gap-4">
-          <div>
-            <label className={labelCls}>Name (snake_case, unique)</label>
-            <input
-              className={`${inputCls} ${suggestedCls("name")}`}
-              value={name}
-              disabled={!!editName}
-              onChange={(e) => { setName(e.target.value); clearSuggested("name"); }}
-              placeholder="weekly_competitor_watch"
-            />
-          </div>
-          <div>
-            <label className={labelCls}>Title</label>
-            <input
-              className={`${inputCls} ${suggestedCls("title")}`}
-              value={title}
-              onChange={(e) => { setTitle(e.target.value); clearSuggested("title"); }}
-              placeholder="Weekly Competitor Watch"
-            />
-          </div>
+        <div>
+          <label className={labelCls}>Title</label>
+          <input
+            className={`${inputCls} ${suggestedCls("title")}`}
+            value={title}
+            onChange={(e) => { setTitle(e.target.value); clearSuggested("title"); }}
+            placeholder="Weekly Competitor Watch"
+          />
         </div>
         <div>
           <label className={labelCls}>Description</label>
@@ -516,7 +510,7 @@ function BuilderInner() {
         </div>
         <div className="grid sm:grid-cols-2 gap-4">
           <div>
-            <label className={labelCls}>Section</label>
+            <label className={labelCls}>Kind of work</label>
             <select
               className={`${inputCls} ${suggestedCls("section")}`}
               value={section}
@@ -530,7 +524,7 @@ function BuilderInner() {
             </select>
           </div>
           <div>
-            <label className={labelCls}>Estimated minutes</label>
+            <label className={labelCls}>About how long it takes (minutes)</label>
             <input
               type="number"
               min={1}
@@ -551,7 +545,7 @@ function BuilderInner() {
         onInput={() => clearSuggested("input_fields")}
       >
         <div className="flex items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold text-fg">Input fields</h2>
+          <h2 className="text-lg font-semibold text-fg">Inputs</h2>
           <Button
             onClick={() =>
               setFields((fs) => [
@@ -560,15 +554,15 @@ function BuilderInner() {
               ])
             }
           >
-            + Add field
+            + Add an input
           </Button>
         </div>
         <p className="text-sm text-fg-muted">
-          Free-text fields the user fills when running. Reference them in step
-          goals with <code>{"{field_name}"}</code>.
+          What you fill in each time you start it. Use one in a step by writing
+          its short name in curly brackets, like <code>{"{topic}"}</code>.
         </p>
         {fields.length === 0 && (
-          <p className="text-sm text-fg-subtle">No input fields.</p>
+          <p className="text-sm text-fg-subtle">Nothing to fill in.</p>
         )}
         {fields.map((f, i) => (
           <div
@@ -576,7 +570,7 @@ function BuilderInner() {
             className="rounded-xl border border-line bg-surface p-4 grid sm:grid-cols-[1fr_1fr_auto] gap-3 items-end"
           >
             <div>
-              <label className={labelCls}>Field name</label>
+              <label className={labelCls}>Short name (used in steps)</label>
               <input
                 className={inputCls}
                 value={f.name}
@@ -604,10 +598,10 @@ function BuilderInner() {
                 Required
               </label>
               <OverflowMenu
-                label={`More for field ${f.label || i + 1}`}
+                label={`More for input ${f.label || i + 1}`}
                 items={[
                   {
-                    label: "Remove field",
+                    label: "Remove input",
                     danger: true,
                     onSelect: () => setFields((fs) => fs.filter((_, idx) => idx !== i)),
                   },
@@ -629,32 +623,38 @@ function BuilderInner() {
           <h2 className="text-lg font-semibold text-fg">Steps</h2>
           <div className="flex flex-wrap gap-2">
             <Button
-              onClick={() =>
-                setSteps((ss) => [...ss, newStep("specialist", ss.length)])
-              }
+              disabled={atStepLimit}
+              onClick={() => setSteps((ss) => [...ss, newStep("specialist", ss)])}
             >
-              + Specialist
+              + {STEP_KIND_LABELS.specialist}
             </Button>
             <Button
-              onClick={() => setSteps((ss) => [...ss, newStep("action", ss.length)])}
+              disabled={atStepLimit}
+              onClick={() => setSteps((ss) => [...ss, newStep("action", ss)])}
             >
-              + Action
+              + {STEP_KIND_LABELS.action}
             </Button>
             <Button
-              onClick={() =>
-                setSteps((ss) => [...ss, newStep("approval_gate", ss.length)])
-              }
+              disabled={atStepLimit}
+              onClick={() => setSteps((ss) => [...ss, newStep("approval_gate", ss)])}
             >
-              + Approval gate
+              + {STEP_KIND_LABELS.approval_gate}
             </Button>
           </div>
         </div>
         <p className="text-sm text-fg-muted">
-          Steps run in order. <b>Specialist</b> steps analyze and write;{" "}
-          <b>action</b> steps get things done with the tools you choose. The last
-          step must be a <b>synthesis</b> step that assembles the result. Place any
-          approval gate just before it.
+          Steps run in order. <b>{STEP_KIND_LABELS.specialist}</b> looks into
+          something and writes it up. <b>{STEP_KIND_LABELS.action}</b> gets things
+          done with the apps you choose. <b>{STEP_KIND_LABELS.approval_gate}</b>{" "}
+          asks someone before going on. The last step,{" "}
+          <b>{STEP_KIND_LABELS.synthesis}</b>, puts it all together into what you
+          get at the end. Put any wait for an OK just before it.
         </p>
+        {atStepLimit && (
+          <p className="text-sm text-fg-subtle">
+            A workflow can have up to {MAX_WORKFLOW_STEPS} steps. Remove one to add another.
+          </p>
+        )}
         {steps.map((s, i) => (
           <StepEditor
             key={i}
@@ -687,18 +687,20 @@ function BuilderInner() {
         {cadenceEnabled && (
           <div className="grid sm:grid-cols-2 gap-4">
             <div>
-              <label className={labelCls}>
-                Cadence (daily@HH:MM / weekly@DOW@HH:MM / quarterly@DD-HH:MM, UTC)
-              </label>
+              <label className={labelCls}>When it runs</label>
               <input
                 className={`${inputCls} ${suggestedCls("cadence")}`}
                 value={cadence}
                 onChange={(e) => { setCadence(e.target.value); clearSuggested("cadence"); }}
                 placeholder="weekly@mon@09:00"
               />
+              <p className="mt-1.5 text-sm text-fg-subtle">
+                {describeCadenceLocal(cadence)}. Write it as daily@09:00,
+                weekly@mon@09:00 or quarterly@01-09:00, in UTC.
+              </p>
             </div>
             <div>
-              <label className={labelCls}>Deliver document to</label>
+              <label className={labelCls}>Send what it makes to</label>
               <select
                 className={`${inputCls} ${suggestedCls("cadence_person_id")}`}
                 value={cadencePersonId}
@@ -713,14 +715,14 @@ function BuilderInner() {
               </select>
             </div>
             <p className="sm:col-span-2 text-sm text-fg-subtle">
-              Scheduled runs supply no inputs, so a scheduled workflow must have
-              no <b>required</b> input fields.
+              Nobody fills in inputs on a scheduled run, so none of them can be
+              <b> required</b>.
             </p>
           </div>
         )}
         {!cadenceEnabled && (
           <p className="text-sm text-fg-subtle">
-            Off: the workflow runs when someone starts it.
+            Off: it runs when someone starts it.
           </p>
         )}
       </section>
@@ -781,7 +783,7 @@ function StepEditor({
     <div className="rounded-xl border border-line bg-surface p-4 space-y-3">
       <div className="flex items-center justify-between gap-2">
         <span className="text-sm font-semibold uppercase tracking-wide text-fg-muted">
-          {index + 1}. {step.kind.replace("_", " ")}
+          {index + 1}. {STEP_KIND_LABELS[step.kind]}
         </span>
         <OverflowMenu
           label={`More for step ${index + 1}`}
@@ -793,29 +795,19 @@ function StepEditor({
         />
       </div>
 
-      <div className="grid sm:grid-cols-2 gap-3">
-        <div>
-          <label className={labelCls}>Step id</label>
-          <input
-            className={inputCls}
-            value={step.id}
-            onChange={(e) => onChange({ id: e.target.value })}
-          />
-        </div>
-        <div>
-          <label className={labelCls}>Title</label>
-          <input
-            className={inputCls}
-            value={step.title}
-            onChange={(e) => onChange({ title: e.target.value })}
-          />
-        </div>
+      <div>
+        <label className={labelCls}>Title</label>
+        <input
+          className={inputCls}
+          value={step.title}
+          onChange={(e) => onChange({ title: e.target.value })}
+        />
       </div>
 
       {step.kind === "specialist" && (
         <>
           <div>
-            <label className={labelCls}>Specialist</label>
+            <label className={labelCls}>Area to look at it from</label>
             <select
               className={inputCls}
               value={step.specialist}
@@ -823,13 +815,13 @@ function StepEditor({
             >
               {DYNAMIC_SPECIALISTS.map((s) => (
                 <option key={s} value={s}>
-                  {s}
+                  {DYNAMIC_SPECIALIST_AREAS[s]}
                 </option>
               ))}
             </select>
           </div>
           <div>
-            <label className={labelCls}>Goal (use {"{field}"} placeholders)</label>
+            <label className={labelCls}>What to look into (you can use {"{inputs}"})</label>
             <textarea
               className={`${inputCls} min-h-[80px]`}
               value={step.goal}
@@ -837,7 +829,7 @@ function StepEditor({
             />
           </div>
           <div>
-            <label className={labelCls}>Knowledge base query (optional)</label>
+            <label className={labelCls}>What to search your documents for (optional)</label>
             <input
               className={inputCls}
               value={step.rag_query ?? ""}
@@ -870,7 +862,7 @@ function StepEditor({
         <>
           <div>
             <label className={labelCls}>
-              Goal — what to get done, and where (use {"{field}"} placeholders)
+              What to get done, and where (you can use {"{inputs}"})
             </label>
             <textarea
               className={`${inputCls} min-h-[80px]`}
@@ -881,7 +873,7 @@ function StepEditor({
           </div>
           <div>
             <label className={labelCls}>
-              Tools this step may use — saving the workflow approves them
+              Apps and tools this step may use. Saving the workflow approves them
             </label>
             <ToolPicker
               value={step.tools}
@@ -890,7 +882,7 @@ function StepEditor({
             />
           </div>
           <div className="sm:w-48">
-            <label className={labelCls}>Max tool calls per run</label>
+            <label className={labelCls}>Most actions it may take in one run</label>
             <input
               type="number"
               min={1}
@@ -913,7 +905,7 @@ function StepEditor({
       {step.kind === "approval_gate" && (
         <>
           <div>
-            <label className={labelCls}>Ask which person</label>
+            <label className={labelCls}>Who gives the OK</label>
             <select
               className={inputCls}
               value={step.person_id}
@@ -928,7 +920,7 @@ function StepEditor({
             </select>
           </div>
           <div>
-            <label className={labelCls}>Question</label>
+            <label className={labelCls}>What to ask them</label>
             <textarea
               className={`${inputCls} min-h-[60px]`}
               value={step.question}
@@ -937,7 +929,7 @@ function StepEditor({
           </div>
           <div className="grid sm:grid-cols-2 gap-3">
             <div>
-              <label className={labelCls}>Timeout (hours)</label>
+              <label className={labelCls}>Wait this many hours</label>
               <input
                 type="number"
                 min={1}
@@ -948,7 +940,7 @@ function StepEditor({
               />
             </div>
             <div>
-              <label className={labelCls}>On timeout</label>
+              <label className={labelCls}>If there is no answer by then</label>
               <select
                 className={inputCls}
                 value={step.on_timeout ?? "escalate"}
@@ -958,9 +950,9 @@ function StepEditor({
                   })
                 }
               >
-                <option value="escalate">escalate</option>
-                <option value="auto_proceed">auto_proceed</option>
-                <option value="fail">fail</option>
+                <option value="escalate">Stop and flag it</option>
+                <option value="auto_proceed">Go on without the OK</option>
+                <option value="fail">Stop the run</option>
               </select>
             </div>
           </div>
@@ -970,7 +962,7 @@ function StepEditor({
       {step.kind === "synthesis" && (
         <>
           <div>
-            <label className={labelCls}>Synthesis specialist</label>
+            <label className={labelCls}>Area that puts it together</label>
             <select
               className={inputCls}
               value={step.specialist ?? "cso"}
@@ -978,14 +970,14 @@ function StepEditor({
             >
               {DYNAMIC_SPECIALISTS.map((s) => (
                 <option key={s} value={s}>
-                  {s}
+                  {DYNAMIC_SPECIALIST_AREAS[s]}
                 </option>
               ))}
             </select>
           </div>
           <div>
             <label className={labelCls}>
-              Instructions (optional — leave blank to just concatenate sections)
+              How to put it together (optional; leave blank to place the parts one after another)
             </label>
             <textarea
               className={`${inputCls} min-h-[60px]`}
@@ -1015,8 +1007,8 @@ function AdvancedBuilderPage() {
               {editing ? "Edit workflow" : "New workflow"}
             </h1>
             <p className="text-[15px] text-fg-muted">
-              Build a reusable workflow from specialist steps, optional
-              approval gates, and a final synthesis step.
+              Set the steps yourself: what to do, where it waits for your OK,
+              and what it hands you at the end.
               {editName ? (
                 <>
                   {" "}
@@ -1026,7 +1018,7 @@ function AdvancedBuilderPage() {
                   >
                     Describe the change instead
                   </Link>{" "}
-                  and let the assistant make it.
+                  and I will make it.
                 </>
               ) : (
                 <>
@@ -1034,7 +1026,7 @@ function AdvancedBuilderPage() {
                   <Link href="/jobs/new" className="text-accent hover:underline">
                     Describe it instead
                   </Link>{" "}
-                  and let the assistant draft it.
+                  and I will draft it.
                 </>
               )}
             </p>

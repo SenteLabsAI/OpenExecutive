@@ -1626,6 +1626,13 @@ async def _run_chat_turn(
                     logger.info(
                         "chat.persist_skipped_deleted session_id=%s", session.session_id
                     )
+                    # The turn may have kept its ask after the delete forgot
+                    # the chat's asks: forget them again if the chat is gone.
+                    from openexecutive.memory.session_store import get_session_metadata
+                    from openexecutive.workflows import repeat_asks
+
+                    if get_session_metadata(session.session_id) is None:
+                        repeat_asks.forget_session(session.session_id)
                     return
                 if not is_first_turn:
                     update_session_timestamp(session.session_id)

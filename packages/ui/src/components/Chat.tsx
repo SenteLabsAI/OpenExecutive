@@ -69,6 +69,8 @@ import {
   type QueuedMessage,
 } from "@/lib/queuedMessages";
 import { newClientTurnId } from "@/lib/turn-id";
+import RepeatOfferCard from "@/components/jobs/RepeatOfferCard";
+import type { RepeatOffer } from "@/lib/api";
 import { turnStatus } from "@/lib/turnStatus";
 import { isNearBottom, lastUserIndex, pinScrollTop, pinSpacerHeight } from "@/lib/chatPin";
 
@@ -151,6 +153,10 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
   // Inline action chips that arrived for the in-flight assistant message.
   // Reset on every turn; frozen onto the message at `done` event time.
   const [streamingActions, setStreamingActions] = useState<ActionTaken[]>([]);
+  // An offer to do what they keep asking for on a schedule, under the reply
+  // to the repeated ask (workflows/repeat_asks.py). Gone once answered or
+  // when they send the next message; it stays on Workflows until answered.
+  const [repeatOffer, setRepeatOffer] = useState<{ offer: RepeatOffer; sessionId?: string } | null>(null);
   // Replies this browser saw finish, by row id: the window the "Memory
   // updated" chip under each looks in; `memorySeen` keeps a change on one
   // chip only.
@@ -594,6 +600,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     const turnSince = new Date(Date.now() - 30_000).toISOString();
     setStreamingContent("");
     setStreamingActions([]);
+    setRepeatOffer(null);
     setIsConsulting(false);
     setActivityLabel(null);
     setTurnSteps([]);
@@ -705,6 +712,8 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
         } else if (item.type === "action_taken") {
           turnActions.push(item);
           setStreamingActions([...turnActions]);
+        } else if (item.type === "repeat_offer") {
+          setRepeatOffer({ offer: item.offer, sessionId: item.session_id });
         } else if (item.type === "sources") {
           turnSources = answerSourcesFrom(item);
         } else if (item.type === "held_steps") {
@@ -1393,6 +1402,13 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                 </>
               )}
             </>
+          )}
+          {repeatOffer && !isLoading && (!repeatOffer.sessionId || repeatOffer.sessionId === sessionId) && (
+            <RepeatOfferCard
+              offer={repeatOffer.offer}
+              onDone={() => setRepeatOffer(null)}
+              className="mb-8 sm:ml-12"
+            />
           )}
           <div ref={bottomRef} />
         </div>

@@ -507,6 +507,9 @@ def delete_session(session_id: str, db_path: Path = DB_PATH) -> bool:
     from openexecutive.memory.chat_review import forget_session
 
     forget_session(session_id, db_path=db_path)
+    from openexecutive.workflows.repeat_asks import forget_session as forget_asks
+
+    forget_asks(session_id, db_path=db_path)
     return deleted
 
 
