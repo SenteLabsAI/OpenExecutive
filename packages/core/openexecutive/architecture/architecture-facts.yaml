@@ -6092,8 +6092,8 @@ external_monitoring:
       filed earlier in the same call. The returned summaries keep file
       order.
     - quiet defaults on every research row (model cannot loosen): cadence
-      daily (vendor_status hourly; page_watch/query weekly), severity_floor
-      medium, keyword trigger (rss/query only — a page_watch summary is
+      daily (vendor_status hourly; page_watch/query weekly), no severity
+      floor (it is always low and filters nothing), keyword trigger (rss/query only — a page_watch summary is
       "page changed" and would never match) = material-event words +
       priority terms (NEVER the entity name: feed summaries carry the feed
       label, so it would match every entry), stock abs_change_pct_gte=5.
@@ -6146,7 +6146,7 @@ external_monitoring:
       target, and by entity for not_relevant declines (token match) —
       and rendered to the model as DECLINED. Decline reasons: not_relevant
       (blacklist entity), wrong_source (blacklist target), too_noisy (keep
-      live at floor=high; response result=kept_high_floor; recorded as a
+      live with only_big in the trigger; response result=kept_high_floor; recorded as a
       DECLINED outcome for calibration). Tool-supplied reasons outside the
       explicit set fall back to not_relevant.
     - isolation: the routing/synthesis pass has NO watchlist write tools
@@ -6198,11 +6198,10 @@ external_monitoring:
       person sees them: registered kind, ticker shape, the SSRF URL guard
       (in a worker thread, it resolves the host), the rss feed check
       (validate_and_normalize_target, which may turn a feed-less page into a
-      page_watch or refuse it), cadence / severity (a floor above the
-      ceiling lifts the ceiling), trigger keys the adapter doesn't read
+      page_watch or refuse it), cadence, trigger keys the adapter doesn't read
       dropped, and a free slug (validation.suggest_watch_slug, the same rule
       as the UI's suggestWatchSlug, with -2, -3 ... when taken).
-    - the four plain lines (watching, tell_you_when, how_often, how_loud)
+    - the three plain lines (watching, tell_you_when, how_often)
       are written by code from the checked fields, never by the model, so
       they describe exactly what POST /watchlist stores. The UI's
       lib/watchWords.ts says triggers the same way on the detail page.
@@ -6221,7 +6220,7 @@ external_monitoring:
     one row per alert). At 6 dismissed GET /watchlist/{slug} returns
     noise.noisy and the detail page asks "Only tell you about bigger
     changes?": double a stock's abs_change_pct_gte (whole percent, at most
-    100), otherwise one step up the severity floor; Stop watching (the
+    100), otherwise only_big in the trigger; Stop watching (the
     delete confirmation); Keep as is. Each answer PATCHes
     quiet_noise_nudge: true, which stores the newest alert id in
     config_json._noise_nudge_after_alert_id (json_set, no read-modify-write);
@@ -6240,7 +6239,13 @@ external_monitoring:
       enabled, created_at, last_polled_at, baselined_at, last_fired_at,
       fired_count, dismiss_count, trust_score, notes, origin ('manual' |
       'executive' | 'research' | 'research_proposed'; additive ALTER,
-      default 'manual').
+      default 'manual'), goal_id (the goal the watch is for, nullable),
+      last_check_note (what the last poll found and why it stayed quiet,
+      in plain words; written by pipeline.check_note after every poll).
+      severity_floor is always 'low' and filters nothing: the trigger is
+      the only filter, and trigger_json.only_big asks for big changes
+      only. A one-time migration (severity_floor_to_only_big) turned a
+      high/urgent floor on a non-stock row into only_big.
     watchlist_declines / watchlist_policy_outcomes (in episodic_memory.db): |
       Research watch policy memory — see research_watch_policy above.
       watchlist_declines(normalized_target PK, entity, signal_type, slug,
@@ -6415,26 +6420,35 @@ external_monitoring:
     (`external_monitor_{vendor_status,rss,stock}_poll_minutes`), and
     fires the adapter for the rest. Each Signal is:
       1. Trigger-filtered (`Source.matches_trigger`).
-      2. Severity-clamped to the watchlist's [floor, ceiling].
+      2. Capped to the watchlist's severity ceiling.
       3. INSERTed into `external_signals` (UNIQUE(dedup_key) drops dups).
       4. Routed through the suppression cascade:
          - watchlist.mode == 'dry_run' → suppressed_dry_run
-         - QUERY EXCEPTION: a `query` signal arrives flat-LOW (the adapter
-           can't judge materiality), so for query signals enrichment runs
-           BEFORE the floor gate and `_grade_query_severity` maps the relevance
+         - NO SEVERITY FLOOR. A change that meets the watch's own trigger
+           reaches the person. The old gate (severity_hint < severity_floor)
+           held back everything: research rows landed at a MEDIUM floor
+           while rss / page_watch / query emit LOW, so about 165 noticed
+           changes in two weeks were all suppressed_below_floor.
+         - BIG CHANGES ONLY: when trigger_json.only_big is set (never on a
+           stock), a signal under HIGH is recorded suppressed_below_floor.
+           `query` and `page_watch` signals arrive flat-LOW, so enrichment
+           runs first for them and `_grade_query_severity` maps the relevance
            read onto a band (>=0.8 HIGH, >=0.5 MEDIUM, else LOW, capped to the
-           row ceiling). This lets a material hit clear a medium/high floor and
-           reach the Monitoring lane; noise stays LOW and is floor-suppressed.
-         - signal.severity_hint < severity_floor → suppressed_below_floor
+           row ceiling); an rss watch with only_big is graded the same way.
+           With no relevance read the change goes through.
          - capture-time ENRICHMENT (see enrichment key) runs HERE for the
-           pre-graded sources — after the dry_run/floor gates so a suppressed
-           signal never costs an LLM call (query was already enriched above to
-           grade severity, so it is not enriched twice) — scoring relevance +
-           writing why_it_matters; if relevance_score <
+           self-graded sources, after the gates above, so a held signal
+           never costs an LLM call; if relevance_score <
            EXTERNAL_MONITOR_ENRICHMENT_MIN_RELEVANCE (default 0.0 = off) →
            suppressed_low_relevance
          - else → promote_signal_to_alert (status: alerted), with the
            enrichment's why_it_matters line added to the alert body
+      5. After the poll, `check_note` writes watchlist.last_check_note:
+         what it told the person, what it noticed and why it stayed
+         quiet, "Nothing new.", or that the source could not be reached.
+         An adapter that emits nothing says what it saw through
+         sources.base.observe (stock: "Down 1.1% today. Under 5%, so it
+         stayed quiet.").
     Total signals per tick are capped at
     `external_monitor_max_signals_per_scan` (default 50). Adapter
     crashes / fetch failures are caught per-row so one bad source can
@@ -6456,14 +6470,12 @@ external_monitoring:
     (suppressed_low_relevance) when below the configured floor. Fail-open: any
     enrichment error leaves it None and the signal promotes unchanged —
     enrichment never blocks a real alert. Cost discipline: for the pre-graded
-    sources it runs AFTER the dry_run/floor gates, so suppressed signals cost
-    nothing; the one exception is `query` signals, which are enriched BEFORE the
-    floor gate (their flat-LOW hint must be regraded from relevance or a
-    medium/high floor would suppress every hit) — so a below-floor query signal
-    does cost one enrichment call, by design. Gated globally by
-    EXTERNAL_MONITOR_ENRICHMENT_ENABLED and per-row by config_json.enrich; when
-    enrichment is off, query signals stay LOW and a medium/high floor suppresses
-    them as before.
+    sources it runs AFTER the dry_run / big-changes-only gates, so held
+    signals cost nothing; `query` and `page_watch` signals (and rss with
+    only_big) are enriched first, since their flat-LOW hint is regraded from
+    relevance. Gated globally by EXTERNAL_MONITOR_ENRICHMENT_ENABLED and
+    per-row by config_json.enrich; when enrichment is off those signals stay
+    LOW and still reach the person, only_big or not.
   alerts_integration: |
     `promote_signal_to_alert` builds an `AlertEvent(source=signal_kind,
     external_id=dedup_key, subject, body)` whose body interleaves the

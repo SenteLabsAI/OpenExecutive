@@ -2,14 +2,14 @@
 
 ``POST /watchlist/describe`` sends the person's sentence here. One forced
 tool call on the utility-fast model maps it to the fields a watch needs
-(signal type, target, trigger, cadence, severity), using the same field
+(signal type, target, trigger, cadence), using the same field
 guidance as the chat ``add_watchlist_entry`` tool. The draft is then
 checked with the validators the create route uses, so what the person
 approves is something ``POST /watchlist`` will accept. Nothing is saved
 here.
 
 The plain-English lines on the draft (what it watches, when it tells you,
-how often, how loud) are written from the fields by code, not by the model,
+how often it checks) are written from the fields by code, not by the model,
 so they always describe what will actually be saved.
 
 The company profile's name, competitors, vendors and tickers go in the user
@@ -28,15 +28,19 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field
 
 from openexecutive.monitoring import store as ms
-from openexecutive.monitoring.models import MODE_ACTIVE, is_valid_cadence
-from openexecutive.monitoring.sources import list_registered_kinds
+from openexecutive.monitoring.models import (
+    MODE_ACTIVE,
+    TRIGGER_ONLY_BIG,
+    WatchlistItem,
+    is_valid_cadence,
+)
+from openexecutive.monitoring.sources import get_source_for_kind, list_registered_kinds
 from openexecutive.monitoring.sources._http import validate_target_url
 from openexecutive.monitoring.target_validation import (
     WatchlistTargetError,
     validate_and_normalize_target,
 )
 from openexecutive.monitoring.validation import (
-    VALID_SEVERITY_VALUES,
     display_label_config,
     is_valid_watchlist_slug,
     suggest_watch_slug,
@@ -61,7 +65,6 @@ _URL_TYPES = frozenset({"rss", "vendor_status", "page_watch"})
 _KEYWORD_TYPES = frozenset({"rss", "vendor_status", "page_watch", "query"})
 _TICKER_RE = re.compile(r"\A[A-Z0-9][A-Z0-9.\-^=]{0,11}\Z")
 _FORM_RE = re.compile(r"\A[0-9A-Z][0-9A-Z/\-]{0,9}\Z")
-_SEVERITY_ORDER = ("low", "medium", "high", "urgent")
 
 # Default stock threshold the adapter applies when the trigger is empty
 # (monitoring.sources.stock._DEFAULT_THRESHOLD_PCT).
@@ -90,7 +93,7 @@ class DescribeError(Exception):
 
 class WatchDraft(BaseModel):
     """A watch the person has not approved yet. Its fields are what
-    ``POST /watchlist`` takes; the four lines say it in plain words."""
+    ``POST /watchlist`` takes; the three lines say it in plain words."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -101,13 +104,10 @@ class WatchDraft(BaseModel):
     trigger: dict[str, Any] = Field(default_factory=dict)
     cadence: str = "15min"
     mode: str = MODE_ACTIVE
-    severity_floor: str = "low"
-    severity_ceiling: str = "urgent"
     notes: str = ""
     watching: str
     tell_you_when: str
     how_often: str
-    how_loud: str
 
 
 # --------------------------------------------------------------------------- #
@@ -136,12 +136,11 @@ SYSTEM = (
     "counts (default 5). For feeds, status pages, pages and searches, "
     "keywords narrows it to items that mention one of them. For edgar, forms "
     "lists the filing types (default 8-K, 10-K, 10-Q). Leave it empty when "
-    "the person set no condition.\n"
+    "the person set no condition. Add only_big: true only when they ask to "
+    "hear about big or major things only.\n"
     "- cadence: how often they want to hear. real_time only when they ask for "
     "right away; otherwise 15min for stocks and status pages, daily for "
     "searches, pages and feeds, unless they said otherwise.\n"
-    "- severity_floor: low unless they only want big things (medium or high). "
-    "severity_ceiling: urgent unless they say never to interrupt them (then high).\n"
     "- display_label: a short name for what is watched, e.g. 'Initech' or "
     "'Stripe status'.\n"
     "- notes: one short line on why, in their words, when they said why.\n"
@@ -159,8 +158,7 @@ def _tool() -> dict[str, Any]:
     from openexecutive.orchestrator.watchlist_tools import ADD_WATCHLIST_ENTRY_TOOL
 
     chat = ADD_WATCHLIST_ENTRY_TOOL["input_schema"]["properties"]
-    keep = ("signal_type", "target", "display_label", "cadence", "severity_floor",
-            "severity_ceiling", "notes")
+    keep = ("signal_type", "target", "display_label", "cadence", "notes")
     properties: dict[str, Any] = {k: dict(chat[k]) for k in keep}
     properties["trigger"] = {
         "type": "object",
@@ -169,6 +167,7 @@ def _tool() -> dict[str, Any]:
             "abs_change_pct_gte": {"type": "number"},
             "keywords": {"type": "array", "items": {"type": "string"}},
             "forms": {"type": "array", "items": {"type": "string"}},
+            TRIGGER_ONLY_BIG: {"type": "boolean"},
         },
     }
     properties["cannot"] = {
@@ -293,7 +292,8 @@ def _words(values: object, *, cap: int, each: int) -> list[str]:
 
 def clean_trigger(signal_type: str, raw: object) -> dict[str, Any]:
     """Only the trigger keys the signal type's adapter reads, with sane
-    values; anything else is dropped."""
+    values; anything else is dropped. ``only_big`` is kept for every type
+    but stock, whose own threshold already says how big."""
     if not isinstance(raw, dict):
         return {}
     if signal_type == "stock":
@@ -303,14 +303,21 @@ def clean_trigger(signal_type: str, raw: object) -> dict[str, Any]:
         if not 0 < pct <= _PCT_MAX:
             return {}
         return {"abs_change_pct_gte": int(pct) if float(pct).is_integer() else round(float(pct), 2)}
+    out: dict[str, Any] = {}
     if signal_type == "edgar":
         forms = [f.upper() for f in _words(raw.get("forms"), cap=_FORMS_MAX, each=10)]
         forms = [f for f in forms if _FORM_RE.match(f)]
-        return {"forms": forms} if forms else {}
-    if signal_type in _KEYWORD_TYPES:
+        if forms:
+            out["forms"] = forms
+    elif signal_type in _KEYWORD_TYPES:
         keywords = _words(raw.get("keywords"), cap=_KEYWORDS_MAX, each=_KEYWORD_MAX_CHARS)
-        return {"keywords": keywords} if keywords else {}
-    return {}
+        if keywords:
+            out["keywords"] = keywords
+    else:
+        return {}
+    if raw.get(TRIGGER_ONLY_BIG) is True:
+        out[TRIGGER_ONLY_BIG] = True
+    return out
 
 
 def _unique_slug(base: str) -> str:
@@ -322,10 +329,6 @@ def _unique_slug(base: str) -> str:
         if ms.get_watchlist_item_by_slug(candidate) is None:
             return candidate
     raise DescribeError("invalid", "You already watch this. Open it from the list to change it.")
-
-
-def _severity_rank(value: str) -> int:
-    return _SEVERITY_ORDER.index(value)
 
 
 async def build_draft(payload: dict[str, Any]) -> WatchDraft:
@@ -353,14 +356,6 @@ async def build_draft(payload: dict[str, Any]) -> WatchDraft:
     if not is_valid_cadence(cadence):
         cadence = "daily" if signal_type == "query" else "15min"
     mode = MODE_ACTIVE
-    floor = _str(payload.get("severity_floor"), 10) or "low"
-    ceiling = _str(payload.get("severity_ceiling"), 10) or "urgent"
-    if floor not in VALID_SEVERITY_VALUES:
-        floor = "low"
-    if ceiling not in VALID_SEVERITY_VALUES:
-        ceiling = "urgent"
-    if _severity_rank(floor) > _severity_rank(ceiling):
-        ceiling = floor
 
     label = _str(payload.get("display_label"), _LABEL_MAX)
     trigger = clean_trigger(signal_type, payload.get("trigger"))
@@ -387,13 +382,10 @@ async def build_draft(payload: dict[str, Any]) -> WatchDraft:
         trigger=trigger,
         cadence=cadence,
         mode=mode,
-        severity_floor=floor,
-        severity_ceiling=ceiling,
         notes=_str(payload.get("notes"), _NOTES_MAX),
         watching=watching_line(signal_type, target, label),
         tell_you_when=trigger_line(signal_type, trigger),
-        how_often=cadence_line(cadence),
-        how_loud=loudness_line(floor, ceiling),
+        how_often=checks_line(signal_type, cadence),
     )
 
 
@@ -463,6 +455,13 @@ def trigger_line(signal_type: str, trigger: dict[str, Any]) -> str:
     keywords = [str(k) for k in trigger.get("keywords") or [] if str(k).strip()]
     quoted = _join_or(["\u201c" + k + "\u201d" for k in keywords])
     mention = " that mentions " + quoted if keywords else ""
+    line = _trigger_base(signal_type, trigger, quoted, mention)
+    if trigger.get(TRIGGER_ONLY_BIG) is True and signal_type != "stock":
+        line += ", and only when it is a big change"
+    return line
+
+
+def _trigger_base(signal_type: str, trigger: dict[str, Any], quoted: str, mention: str) -> str:
     if signal_type == "stock":
         pct = trigger.get("abs_change_pct_gte")
         value = pct if isinstance(pct, int | float) and not isinstance(pct, bool) and pct > 0 else STOCK_DEFAULT_PCT
@@ -475,38 +474,79 @@ def trigger_line(signal_type: str, trigger: dict[str, Any]) -> str:
     if signal_type == "rss":
         return f"There's a new post{mention}"
     if signal_type == "page_watch":
-        return "The page changes" + (" and mentions " + quoted if keywords else "")
+        return "The page changes" + (" and mentions " + quoted if quoted else "")
     if signal_type == "query":
         return f"A new result turns up{mention}"
     return "Something new turns up"
 
 
-_CADENCE_WORDS = {
-    "real_time": "Right away",
-    "15min": "About every 15 minutes",
-    "hourly": "About once an hour",
-    "daily": "Once a day",
-    "weekly": "Once a week",
-}
+# The row's own cadence in minutes (monitoring.pipeline._CADENCE_MINUTES).
+_CADENCE_MINUTES = {"real_time": 0, "15min": 15, "hourly": 60, "daily": 24 * 60, "weekly": 7 * 24 * 60}
 
 
-def cadence_line(cadence: str) -> str:
-    return _CADENCE_WORDS.get(cadence, cadence)
+def _every(minutes: int) -> str:
+    if minutes >= 7 * 24 * 60:
+        return "once a week"
+    if minutes >= 24 * 60:
+        return "once a day"
+    if minutes >= 60:
+        hours = round(minutes / 60)
+        return "every hour" if hours == 1 else f"every {hours} hours"
+    return f"every {max(1, minutes)} minutes"
 
 
-_FLOOR_WORDS = {
-    "low": "Everything, even small changes",
-    "medium": "Only things that matter",
-    "high": "Only big things",
-    "urgent": "Only urgent things",
-}
+def checks_line(signal_type: str, cadence: str) -> str:
+    """How often the watch is really checked, in words: its own cadence,
+    never faster than its source allows (the scan's rule)."""
+    source = get_source_for_kind(signal_type)
+    floor = source.default_poll_interval_minutes if source is not None else 15
+    return f"It checks {_every(max(floor, _CADENCE_MINUTES.get(cadence, 0)))}."
 
 
-def loudness_line(floor: str, ceiling: str) -> str:
-    line = _FLOOR_WORDS.get(floor, floor)
-    if ceiling != "urgent" and floor != "urgent":
-        line += ", and never as urgent"
-    return line
+_TITLE_MAX = 60
+_LABEL_KEYS = ("display_name", "feed_label", "vendor_label", "label")
+
+
+def _label_of(item: WatchlistItem) -> str:
+    config = item.config_json if isinstance(item.config_json, dict) else {}
+    for key in _LABEL_KEYS:
+        value = config.get(key)
+        if isinstance(value, str) and value.strip():
+            return " ".join(value.split())[:_LABEL_MAX]
+    return ""
+
+
+def _ends_with(label: str, *words: str) -> bool:
+    last = label.lower().split()[-1] if label.split() else ""
+    return last in words
+
+
+def watch_title(item: WatchlistItem) -> str:
+    """The watch's name as a person would say it ("Initech (INTC) stock",
+    "Acme news", "acme.example/pricing"), from its label and target. Never
+    the slug."""
+    label = _label_of(item)
+    target = " ".join((item.target or "").split())
+    kind = item.signal_type
+    if kind == "stock":
+        ticker = target.upper()
+        title = f"{label} ({ticker}) stock" if label and label.upper() != ticker else f"{ticker} stock"
+    elif kind == "edgar":
+        title = f"{label or target.upper()} SEC filings"
+    elif kind == "vendor_status":
+        name = label or _site(target)
+        title = name if _ends_with(name, "status") else f"{name} status"
+    elif kind == "rss":
+        title = (
+            label if not label or _ends_with(label, "news", "blog", "changelog", "updates", "feed", "press", "notices", "alerts", "releases", "posts")
+            else f"{label} news"
+        ) or _site(target)
+    elif kind == "page_watch":
+        title = (label if not label or _ends_with(label, "page") else f"{label} page") or _site(target)
+    else:
+        title = label or target
+    title = title or item.slug.replace("-", " ")
+    return title if len(title) <= _TITLE_MAX else title[: _TITLE_MAX - 1].rstrip() + "…"
 
 
 __all__ = [
@@ -515,10 +555,10 @@ __all__ = [
     "DescribeError",
     "WatchDraft",
     "build_draft",
-    "cadence_line",
+    "checks_line",
     "clean_trigger",
     "describe_watch",
-    "loudness_line",
     "trigger_line",
+    "watch_title",
     "watching_line",
 ]

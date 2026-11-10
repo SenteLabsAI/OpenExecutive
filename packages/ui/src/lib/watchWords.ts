@@ -1,17 +1,32 @@
 /**
- * A watch's settings in plain words, and the "raise the bar" change the
+ * When a watch tells you, in plain words, and the "raise the bar" change the
  * noisy-watch question offers. The trigger words mirror trigger_line() in
  * packages/core/openexecutive/monitoring/describe.py (the draft the API
  * writes). Tested in scripts/watchWords.test.mjs.
  */
 
-export type Severity = "low" | "medium" | "high" | "urgent";
+/** What kind of thing a watch is, as the screens name it. */
+export const KIND_LABELS: Record<string, string> = {
+  stock: "Stock",
+  rss: "News",
+  vendor_status: "Vendor status",
+  edgar: "SEC filings",
+  page_watch: "Page change",
+  query: "Web search",
+};
 
-const SEVERITIES: Severity[] = ["low", "medium", "high", "urgent"];
+/** The filing types the "Tells you when" editor offers, with what each is. */
+export const FILING_CHOICES: { value: string; label: string }[] = [
+  { value: "8-K", label: "8-K (major news)" },
+  { value: "10-K", label: "10-K (annual report)" },
+  { value: "10-Q", label: "10-Q (quarterly report)" },
+  { value: "4", label: "Form 4 (insider trade)" },
+  { value: "S-1", label: "S-1 (IPO filing)" },
+];
 
 /** The adapter's own defaults when the trigger is empty. */
 export const STOCK_DEFAULT_PCT = 5;
-const EDGAR_DEFAULT_FORMS = ["8-K", "10-K", "10-Q"];
+export const EDGAR_DEFAULT_FORMS = ["8-K", "10-K", "10-Q"];
 
 const FORM_NAMES: Record<string, string> = {
   "8-K": "8-K (major news)",
@@ -40,6 +55,11 @@ function pctOf(trigger: Record<string, unknown>): number {
 /** When a watch tells you, in words: "It moves 5% or more in a day, up or down". */
 export function triggerInWords(signalType: string, trigger: Record<string, unknown> | null | undefined): string {
   const t = trigger ?? {};
+  const line = triggerBase(signalType, t);
+  return t.only_big === true && signalType !== "stock" ? `${line}, and only when it is a big change` : line;
+}
+
+function triggerBase(signalType: string, t: Record<string, unknown>): string {
   const keywords = strings(t.keywords);
   const quoted = joinOr(keywords.map((k) => `“${k}”`));
   const mention = keywords.length ? ` that mentions ${quoted}` : "";
@@ -64,33 +84,18 @@ export function triggerInWords(signalType: string, trigger: Record<string, unkno
   }
 }
 
-const CADENCE_WORDS: Record<string, string> = {
-  real_time: "Right away",
-  "15min": "About every 15 minutes",
-  hourly: "About once an hour",
-  daily: "Once a day",
-  weekly: "Once a week",
-};
-
-export function cadenceInWords(cadence: string): string {
-  return CADENCE_WORDS[cadence] ?? cadence;
-}
-
-const FLOOR_WORDS: Record<string, string> = {
-  low: "Everything, even small changes",
-  medium: "Only things that matter",
-  high: "Only big things",
-  urgent: "Only urgent things",
-};
-
-export function loudnessInWords(floor: string, ceiling: string): string {
-  const line = FLOOR_WORDS[floor] ?? floor;
-  return ceiling !== "urgent" && floor !== "urgent" ? `${line}, and never as urgent` : line;
-}
+/** How often to check, as the by-hand form offers it. */
+export const CADENCE_CHOICES: { value: string; label: string }[] = [
+  { value: "real_time", label: "As often as it can" },
+  { value: "15min", label: "Every 15 minutes" },
+  { value: "hourly", label: "Every hour" },
+  { value: "daily", label: "Once a day" },
+  { value: "weekly", label: "Once a week" },
+];
 
 export interface RaiseTheBar {
   /** PATCH body for /watchlist/{slug}. */
-  patch: { trigger?: Record<string, unknown>; severity_floor?: Severity };
+  patch: { trigger: Record<string, unknown> };
   /** Button text. */
   label: string;
   /** What changes, said after it is done. */
@@ -99,55 +104,29 @@ export interface RaiseTheBar {
 
 /**
  * The quieter version of a watch: a stock's move threshold doubled (whole
- * percent, at most 100), otherwise its severity floor one step up. Null when
- * it can't get any quieter.
+ * percent, at most 100), otherwise big changes only. Null when it can't get
+ * any quieter. Either way the change is to the trigger, so "Tells you when"
+ * says it.
  */
 export function raiseTheBar(watch: {
   signal_type: string;
   trigger_json: Record<string, unknown> | null | undefined;
-  severity_floor: string;
 }): RaiseTheBar | null {
   const trigger = watch.trigger_json ?? {};
   if (watch.signal_type === "stock") {
     const now = pctOf(trigger);
     const next = Math.min(100, Math.max(Math.round(now * 2), Math.floor(now) + 1));
-    if (next > now) {
-      return {
-        patch: { trigger: { ...trigger, abs_change_pct_gte: next } },
-        label: `Only moves of ${next}%+`,
-        done: `You'll only hear about moves of ${next}% or more.`,
-      };
-    }
+    if (next <= now) return null;
+    return {
+      patch: { trigger: { ...trigger, abs_change_pct_gte: next } },
+      label: `Only moves of ${next}%+`,
+      done: `You'll only hear about moves of ${next}% or more.`,
+    };
   }
-  const at = SEVERITIES.indexOf(watch.severity_floor as Severity);
-  if (at < 0 || at >= SEVERITIES.length - 1) return null;
-  const next = SEVERITIES[at + 1];
+  if (trigger.only_big === true) return null;
   return {
-    patch: { severity_floor: next },
-    label: FLOOR_WORDS[next],
-    done: `You'll only hear about ${FLOOR_WORDS[next].replace(/^Only /, "").toLowerCase()} from this.`,
+    patch: { trigger: { ...trigger, only_big: true } },
+    label: "Only big changes",
+    done: "You'll only hear about big changes from this.",
   };
-}
-
-const TITLE_MAX = 48;
-
-/** A watch the Executive named, as a title a person can read: a page's site
- * and path ("example.com/pricing"), a ticker in capitals, or the search it
- * runs. Its slug is built from the type and target ("page-watch-example-com-
- * pricing"), which reads as a code name. Falls back to the slug's words. */
-export function watchTitle(signalType: string, target: string, slug: string): string {
-  const text = (target ?? "").trim().replace(/\s+/g, " ");
-  if (!text) return slug.replace(/-+/g, " ").trim();
-  let title = text;
-  if (/^https?:\/\//i.test(text)) {
-    try {
-      const url = new URL(text);
-      title = url.hostname.replace(/^www\./, "") + url.pathname.replace(/\/+$/, "");
-    } catch {
-      title = text;
-    }
-  } else if (signalType === "stock" || signalType === "edgar") {
-    title = text.toUpperCase();
-  }
-  return title.length <= TITLE_MAX ? title : `${title.slice(0, TITLE_MAX - 1).trimEnd()}…`;
 }

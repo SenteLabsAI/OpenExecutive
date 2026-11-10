@@ -1,4 +1,4 @@
-"""Page watches in the scan pipeline: graded by relevance before the floor,
+"""Page watches in the scan pipeline: graded by relevance,
 held for a daily digest when busy, and polled on their own cadence."""
 from __future__ import annotations
 
@@ -97,7 +97,7 @@ def _watch(db: Path, **kw: Any) -> int:
 
 
 @pytest.mark.asyncio
-async def test_relevant_page_change_clears_a_medium_floor(
+async def test_relevant_page_change_reaches_the_person(
     db: Path, page_source: _FakePageWatch, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     promoted = _promotions(monkeypatch)
@@ -116,7 +116,7 @@ async def test_relevant_page_change_clears_a_medium_floor(
 
 
 @pytest.mark.asyncio
-async def test_irrelevant_page_change_stays_below_the_floor(
+async def test_a_small_page_change_still_reaches_the_person(
     db: Path, page_source: _FakePageWatch, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     promoted = _promotions(monkeypatch)
@@ -126,9 +126,38 @@ async def test_irrelevant_page_change_stays_below_the_floor(
 
     await mp.run_external_monitor_scan(db_path=db)
 
+    assert len(promoted) == 1
+    [row] = ms.list_signals_for_watchlist(wl_id, db_path=db)
+    assert row["processed_outcome"] == OUTCOME_ALERTED
+
+
+@pytest.mark.asyncio
+async def test_only_big_changes_holds_back_a_small_page_change(
+    db: Path, page_source: _FakePageWatch, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    promoted = _promotions(monkeypatch)
+    _relevance(monkeypatch, 0.6)
+    wl_id = _watch(db, trigger={"only_big": True})
+    page_source.signals = [_change("a", "Menu text changed on the page")]
+
+    await mp.run_external_monitor_scan(db_path=db)
+
     assert promoted == []
     [row] = ms.list_signals_for_watchlist(wl_id, db_path=db)
     assert row["processed_outcome"] == OUTCOME_SUPPRESSED_BELOW_FLOOR
+    item = ms.get_watchlist_item(wl_id, db_path=db)
+    assert item is not None
+    assert item.last_check_note == (
+        "Noticed: Page changed — new: Menu text changed on the page. "
+        "Not a big change, so it stayed quiet."
+    )
+
+    # The same watch tells the person about a big one.
+    ms.mark_polled(wl_id, datetime.now(UTC) - timedelta(days=2), db_path=db)
+    _relevance(monkeypatch, 0.9)
+    page_source.signals = [_change("b", "Harbor Lane Coffee buys a regional roaster")]
+    await mp.run_external_monitor_scan(db_path=db)
+    assert len(promoted) == 1
 
 
 @pytest.mark.asyncio

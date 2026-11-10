@@ -4748,6 +4748,8 @@ export interface GoalView extends Goal {
   owner_id: number | null;
   owner_name: string;
   department_title: string | null;
+  /** Names of the watch-list items that are for this goal. */
+  watching?: string[];
 }
 
 /** Every goal, with or without a department. */
@@ -6122,6 +6124,23 @@ export interface WatchlistItem {
   trust_score: number;
   notes: string;
   origin: WatchlistOrigin | string;
+  /** The goal it is for, when it has one. */
+  goal_id: number | null;
+  /** What the last check found, and why it stayed quiet when it did. */
+  last_check_note: string;
+  /** Its name as a person would say it ("Initech (INTC) stock"). */
+  title: string;
+  /** What makes it speak, e.g. "It moves 5% or more in a day, up or down". */
+  tells_you_when: string;
+  /** "It checks every 15 minutes." */
+  checks: string;
+  /** The newest thing it told you; null when it has said nothing yet. */
+  last_told: { at: string; summary: string; url: string } | null;
+  goal_title: string;
+  /** Who it tells, when that is a teammate; "" means the owner. */
+  person_name: string;
+  person_role: string;
+  department_title: string;
   /** Detail route only: how many of its recent alerts were dismissed. */
   noise?: WatchNoise;
 }
@@ -6143,13 +6162,10 @@ export interface WatchDraft {
   trigger: Record<string, unknown>;
   cadence: WatchlistCadence | string;
   mode: WatchlistMode | string;
-  severity_floor: WatchlistSeverity;
-  severity_ceiling: WatchlistSeverity;
   notes: string;
   watching: string;
   tell_you_when: string;
   how_often: string;
-  how_loud: string;
 }
 
 export interface WatchlistSignal {
@@ -6177,8 +6193,6 @@ export interface WatchlistCreate {
   trigger?: Record<string, unknown>;
   config?: Record<string, unknown>;
   cadence?: WatchlistCadence | string;
-  severity_floor?: WatchlistSeverity;
-  severity_ceiling?: WatchlistSeverity;
   mode?: WatchlistMode | string;
   route_to_specialist?: string;
   notes?: string;
@@ -6189,10 +6203,12 @@ export interface WatchlistPatch {
   enabled?: boolean;
   mode?: WatchlistMode | string;
   cadence?: WatchlistCadence | string;
-  severity_floor?: WatchlistSeverity;
-  severity_ceiling?: WatchlistSeverity;
   trigger?: Record<string, unknown>;
   notes?: string;
+  /** The goal it is for; null clears it. */
+  goal_id?: number | null;
+  /** The teammate it tells; null means the owner. */
+  person_id?: number | null;
   /** Stop asking whether this watch is too noisy (for the alerts so far). */
   quiet_noise_nudge?: boolean;
 }
@@ -6220,8 +6236,6 @@ export function draftToCreate(draft: WatchDraft): WatchlistCreate {
     trigger: draft.trigger,
     cadence: draft.cadence,
     mode: draft.mode,
-    severity_floor: draft.severity_floor,
-    severity_ceiling: draft.severity_ceiling,
     notes: draft.notes,
   };
 }
@@ -6245,12 +6259,13 @@ export async function getWatchlistItem(slug: string): Promise<WatchlistItem> {
   return res.json();
 }
 
+/** What a watch told you, newest first (only what reached you). */
 export async function getWatchlistSignals(
   slug: string,
   limit: number = 50,
 ): Promise<WatchlistSignal[]> {
   const res = await fetch(
-    `${API_BASE}/watchlist/${encodeURIComponent(slug)}/signals?limit=${limit}`,
+    `${API_BASE}/watchlist/${encodeURIComponent(slug)}/signals?limit=${limit}&told=true`,
   );
   if (!res.ok) throw new Error(`Failed to load signals: ${res.statusText}`);
   return res.json();
@@ -6311,7 +6326,7 @@ export async function approveWatchSuggestion(slug: string): Promise<WatchlistIte
 export interface WatchDeclineResponse {
   slug: string;
   reason: string;
-  /** "removed" (declined + deleted) or "kept_high_floor" (too_noisy → live, only high-severity signals surface). */
+  /** "removed" (declined + deleted) or "kept_high_floor" (too_noisy → live, big changes only). */
   result: "removed" | "kept_high_floor" | string;
 }
 

@@ -18,7 +18,7 @@ from openexecutive.memory import episodic
 from openexecutive.memory.company_profile import CompanyProfile, CompetitiveLandscape
 from openexecutive.monitoring import describe, noise
 from openexecutive.monitoring import store as ms
-from openexecutive.monitoring.models import Signal
+from openexecutive.monitoring.models import Signal, WatchlistItem
 from openexecutive.monitoring.validation import WATCHLIST_SLUG_RE, suggest_watch_slug
 
 
@@ -136,9 +136,30 @@ def test_plain_lines() -> None:
         "There's a new post that mentions “pricing” or “launch”"
     )
     assert describe.trigger_line("page_watch", {}) == "The page changes"
-    assert describe.cadence_line("daily") == "Once a day"
-    assert describe.loudness_line("low", "urgent") == "Everything, even small changes"
-    assert describe.loudness_line("medium", "high") == "Only things that matter, and never as urgent"
+    assert describe.trigger_line("rss", {"keywords": ["pricing"], "only_big": True}) == (
+        "There's a new post that mentions “pricing”, and only when it is a big change"
+    )
+    # A share price has its own bar: the percent.
+    assert describe.trigger_line("stock", {"only_big": True}) == "It moves 5% or more in a day, up or down"
+    assert describe.clean_trigger("rss", {"only_big": True, "forms": ["8-K"]}) == {"only_big": True}
+    assert describe.clean_trigger("stock", {"only_big": True}) == {}
+    assert describe.checks_line("stock", "15min") == "It checks every 15 minutes."
+    assert describe.checks_line("rss", "daily") == "It checks once a day."
+    # Never faster than the source allows: a page is looked at every 6 hours at most.
+    assert describe.checks_line("page_watch", "15min") == "It checks every 6 hours."
+
+
+def test_watch_title_is_a_real_name() -> None:
+    def item(**kw: object) -> WatchlistItem:
+        return WatchlistItem.model_validate({"slug": "tesla-stock", "signal_type": "stock", "target": "TSLA", **kw})
+
+    assert describe.watch_title(item(config_json={"display_name": "Tesla"})) == "Tesla (TSLA) stock"
+    assert describe.watch_title(item()) == "TSLA stock"
+    feed = item(slug="rss-initech", signal_type="rss", target="https://www.initech.example/blog/feed")
+    assert describe.watch_title(feed) == "initech.example/blog/feed"
+    assert describe.watch_title(feed.model_copy(update={"config_json": {"feed_label": "Initech"}})) == "Initech news"
+    page = item(signal_type="page_watch", target="https://acme.example/pricing", config_json={"label": "Acme pricing"})
+    assert describe.watch_title(page) == "Acme pricing page"
 
 
 # --------------------------------------------------------------------------- #
@@ -150,24 +171,25 @@ async def test_stock_draft(db: Path) -> None:
     draft = await describe.build_draft({
         "signal_type": "stock", "target": "$intc.x", "display_label": "Initech",
         "trigger": {"abs_change_pct_gte": 8}, "cadence": "hourly",
-        "severity_floor": "medium", "severity_ceiling": "urgent", "notes": "Main rival",
+        "notes": "Main rival",
     })
     assert draft.slug == "stock-intc-x"
     assert draft.target == "INTC.X"
     assert draft.trigger == {"abs_change_pct_gte": 8}
-    assert (draft.cadence, draft.mode, draft.severity_floor) == ("hourly", "active", "medium")
+    assert (draft.cadence, draft.mode) == ("hourly", "active")
     assert draft.tell_you_when == "It moves 8% or more in a day, up or down"
-    assert draft.how_often == "About once an hour"
-    assert draft.how_loud == "Only things that matter"
+    assert draft.how_often == "It checks every hour."
+    assert not hasattr(draft, "severity_floor") and not hasattr(draft, "how_loud")
 
 
 async def test_draft_defaults_and_fixes_bad_fields(db: Path) -> None:
     draft = await describe.build_draft({
         "signal_type": "query", "target": "Initech layoffs OR funding",
-        "cadence": "every minute", "severity_floor": "high", "severity_ceiling": "low",
+        "cadence": "every minute", "severity_floor": "high", "trigger": {"only_big": True},
     })
     assert draft.cadence == "daily"  # a billed search defaults to once a day
-    assert (draft.severity_floor, draft.severity_ceiling) == ("high", "high")
+    assert draft.trigger == {"only_big": True}
+    assert draft.tell_you_when == "A new result turns up, and only when it is a big change"
 
 
 async def test_draft_slug_is_unique(db: Path) -> None:
@@ -290,7 +312,7 @@ async def test_model_call_is_one_forced_tool_call(monkeypatch: pytest.MonkeyPatc
     assert call["tool_choice"] == {"type": "tool", "name": describe.TOOL_NAME}
     tool = call["tools"][0]
     assert set(tool["input_schema"]["properties"]["trigger"]["properties"]) == {
-        "abs_change_pct_gte", "keywords", "forms",
+        "abs_change_pct_gte", "keywords", "forms", "only_big",
     }
     assert call["messages"] == [{"role": "user", "content": "<request>\nwatch GLBX\n</request>"}]
 
@@ -323,13 +345,14 @@ def test_describe_route_returns_a_draft_and_saves_nothing(
     assert draft["slug"] == "search-initech-layoffs-or-funding"
     assert draft["watching"] == "The web for “Initech layoffs OR funding”"
     assert draft["tell_you_when"] == "A new result turns up that mentions “layoffs”"
-    assert draft["how_often"] == "Once a day"
+    assert draft["how_often"] == "It checks once a day."
+    assert "severity_floor" not in draft and "how_loud" not in draft
     assert ms.list_watchlist(db_path=db) == []
 
     # Start watching: the draft's fields go to the create route as they are.
     fields = {k: draft[k] for k in (
         "slug", "signal_type", "target", "display_label", "trigger", "cadence",
-        "mode", "severity_floor", "severity_ceiling", "notes",
+        "mode", "notes",
     )}
     created = client.post("/watchlist", json=fields)
     assert created.status_code == 201, created.text

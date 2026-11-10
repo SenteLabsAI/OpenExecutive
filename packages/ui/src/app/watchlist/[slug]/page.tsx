@@ -3,46 +3,68 @@
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { usePageCrumb } from "@/components/shell/PageCrumb";
 
 import Switch from "@/components/Switch";
 import Button from "@/components/ui/Button";
 import OverflowMenu from "@/components/ui/OverflowMenu";
 import {
   deleteWatchlistItem,
-  listDepartments,
   getWatchlistItem,
   getWatchlistSignals,
+  listGoals,
+  listPeople,
   patchWatchlistItem,
+  type GoalView,
+  type Person,
   type WatchlistItem,
   type WatchlistSignal,
 } from "@/lib/api";
-import { raiseTheBar, triggerInWords } from "@/lib/watchWords";
+import {
+  EDGAR_DEFAULT_FORMS,
+  FILING_CHOICES,
+  KIND_LABELS,
+  STOCK_DEFAULT_PCT,
+  raiseTheBar,
+  triggerInWords,
+} from "@/lib/watchWords";
 import { PageSpinner } from "@/components/ui/Spinner";
 
-/** Relative time for display, e.g. "3h ago", "just now", "never". */
+const fieldCls =
+  "w-full px-3.5 py-2.5 text-[15px] rounded-xl bg-surface border border-line text-fg placeholder:text-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent/40";
+const KEYWORD_KINDS = new Set(["rss", "vendor_status", "page_watch", "query"]);
+
+/** Relative time for display, e.g. "3h ago", "just now". */
 function formatRelTime(iso: string | null): string {
   if (!iso) return "never";
-  try {
-    const diff = new Date(iso).getTime() - Date.now();
-    // new Date("garbage") yields NaN rather than throwing; every comparison
-    // below would be false and fall through to "NaNd ago".
-    if (!Number.isFinite(diff)) return "—";
-    // A timestamp slightly ahead of the browser clock (published_at within
-    // the server's skew tolerance) reads as "just now", never a fabricated
-    // past.
-    // A value well ahead of the browser clock is reported as such rather
-    // than dressed up as recent (the source controls published_at). The
-    // tolerance absorbs ordinary browser/server clock drift, so our own
-    // timestamps don't read as tampered with.
-    if (diff > 300_000) return "in the future";
-    if (diff > -60_000) return "just now";
-    const abs = Math.abs(diff);
-    if (abs < 3_600_000) return `${Math.round(abs / 60_000)}m ago`;
-    if (abs < 86_400_000) return `${Math.round(abs / 3_600_000)}h ago`;
-    return `${Math.round(abs / 86_400_000)}d ago`;
-  } catch {
-    return "—";
-  }
+  const diff = new Date(iso).getTime() - Date.now();
+  // new Date("garbage") yields NaN rather than throwing.
+  if (!Number.isFinite(diff)) return "a while ago";
+  // The source sets a post's date. One well ahead of this clock is said as
+  // such, never dressed up as recent; a little drift reads as "just now".
+  if (diff > 300_000) return "in the future";
+  if (diff > -60_000) return "just now";
+  const abs = Math.abs(diff);
+  if (abs < 3_600_000) return `${Math.round(abs / 60_000)} min ago`;
+  if (abs < 86_400_000) return `${Math.round(abs / 3_600_000)}h ago`;
+  return `${Math.round(abs / 86_400_000)}d ago`;
+}
+
+function whenExactly(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+// A signal's summary without the "[label]" its source leads with: it is
+// shown under the watch's own name.
+function cleanSummary(text: string): string {
+  const line = text.replace(/^\[[^\]]{1,80}\]\s+/, "");
+  return line.charAt(0).toUpperCase() + line.slice(1);
+}
+
+function lowerFirst(text: string): string {
+  return /^[A-Z][a-z' ]/.test(text) ? text.charAt(0).toLowerCase() + text.slice(1) : text;
 }
 
 // The research policy's "about" stamp on a watch the Executive added.
@@ -52,17 +74,12 @@ function policyEntity(item: WatchlistItem): string | undefined {
   return typeof entity === "string" && entity ? entity : undefined;
 }
 
-function outcomeStyle(outcome: string | null): string {
-  if (outcome === "alerted") return "bg-emerald-500/20 text-emerald-300 border-emerald-500/30";
-  if (outcome === "failed") return "bg-rose-500/20 text-rose-300 border-rose-500/30";
-  if (outcome === null) return "bg-amber-500/20 text-amber-300 border-amber-500/30";
-  // suppressed_* variants
-  return "bg-zinc-500/20 text-zinc-400 border-zinc-500/30";
-}
-
-function outcomeLabel(outcome: string | null): string {
-  if (outcome === null) return "pending";
-  return outcome.replace(/^suppressed_/, "suppressed: ");
+/** "The goal “…” · Sam Okafor": what the watch is tied to. */
+function forInWords(item: WatchlistItem): string {
+  const parts: string[] = [];
+  if (item.goal_title) parts.push(`The goal “${item.goal_title}”`);
+  parts.push(item.person_name ? `${item.person_name}${item.person_role ? `, ${item.person_role}` : ""}` : "You");
+  return parts.join(" · ");
 }
 
 /**
@@ -101,7 +118,7 @@ function NoisyNudge({
   return (
     <div className="rounded-2xl border border-amber-500/40 bg-amber-500/5 p-4 mb-4">
       <p className="text-[15px] text-fg">
-        You dismissed {noise.recent_dismissed} of the last {noise.recent_alerts} alerts from this.
+        You dismissed {noise.recent_dismissed} of the last {noise.recent_alerts} things this told you.
         {raise ? " Only tell you about bigger changes?" : " Keep watching it?"}
       </p>
       <div className="mt-3 flex flex-wrap gap-2">
@@ -122,40 +139,248 @@ function NoisyNudge({
   );
 }
 
-function SignalRow({ signal }: { signal: WatchlistSignal }) {
+/** One line of "What it does": a small label, its value, and maybe an action. */
+function Row({
+  label,
+  action,
+  children,
+}: {
+  label: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
   return (
-    <li className="border border-line rounded-xl bg-surface p-3.5">
-      <div className="flex items-start justify-between gap-2 mb-1">
-        <div className="flex-1 min-w-0">
-          <div className="text-[15px] text-fg truncate" title={signal.normalized_summary}>
-            {signal.normalized_summary}
-          </div>
-          <div className="text-sm text-fg-muted mt-0.5">
-            {signal.published_at
-              ? `published ${formatRelTime(signal.published_at)} · seen ${formatRelTime(signal.captured_at)}`
-              : formatRelTime(signal.captured_at)}
-            {" "}· severity {signal.severity_hint}
-          </div>
-        </div>
-        <span
-          className={`inline-block px-1.5 py-0.5 rounded border text-[10px] font-medium ${outcomeStyle(signal.processed_outcome)}`}
-        >
-          {outcomeLabel(signal.processed_outcome)}
-        </span>
+    <div className="py-3.5 first:pt-0 last:pb-0">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-sm text-fg-muted">{label}</div>
+        {action}
       </div>
-      <div className="flex items-center gap-3 text-sm">
+      <div className="mt-1 min-w-0 break-words text-[15px] text-fg">{children}</div>
+    </div>
+  );
+}
+
+const linkBtn = "min-h-10 px-1 text-sm font-medium text-accent hover:underline disabled:opacity-60";
+
+/** Change what makes the watch speak. Saves the trigger; the sentence above it is the result. */
+function TriggerEditor({
+  item,
+  onSaved,
+  onCancel,
+}: {
+  item: WatchlistItem;
+  onSaved: (updated: WatchlistItem) => void;
+  onCancel: () => void;
+}) {
+  const start = item.trigger_json ?? {};
+  const kind = item.signal_type;
+  const [pct, setPct] = useState(
+    String(typeof start.abs_change_pct_gte === "number" ? start.abs_change_pct_gte : STOCK_DEFAULT_PCT),
+  );
+  const [words, setWords] = useState(
+    Array.isArray(start.keywords) ? start.keywords.filter((k) => typeof k === "string").join(", ") : "",
+  );
+  const [forms, setForms] = useState<string[]>(
+    Array.isArray(start.forms) && start.forms.length
+      ? start.forms.filter((f): f is string => typeof f === "string").map((f) => f.toUpperCase())
+      : EDGAR_DEFAULT_FORMS,
+  );
+  const [onlyBig, setOnlyBig] = useState(start.only_big === true);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  function build(): Record<string, unknown> | null {
+    if (kind === "stock") {
+      const value = Number(pct);
+      if (!Number.isFinite(value) || value <= 0 || value > 100) return null;
+      return { abs_change_pct_gte: value };
+    }
+    const next: Record<string, unknown> = {};
+    if (kind === "edgar") {
+      if (!forms.length) return null;
+      next.forms = forms;
+    } else if (KEYWORD_KINDS.has(kind)) {
+      const list = words.split(",").map((w) => w.trim()).filter(Boolean).slice(0, 20);
+      if (list.length) next.keywords = list;
+    }
+    if (onlyBig) next.only_big = true;
+    return next;
+  }
+
+  const draft = build();
+
+  async function save() {
+    if (!draft) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      onSaved(await patchWatchlistItem(item.slug, { trigger: draft }));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "That didn't save.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-3 space-y-3 rounded-xl border border-line bg-surface p-4">
+      {kind === "stock" && (
+        <label className="block text-sm text-fg-muted">
+          Tell me when it moves at least this much in a day (%)
+          <input
+            type="number"
+            min={0.1}
+            max={100}
+            step="any"
+            value={pct}
+            onChange={(e) => setPct(e.target.value)}
+            className={`${fieldCls} mt-1.5 max-w-[10rem]`}
+          />
+        </label>
+      )}
+      {kind === "edgar" && (
+        <fieldset>
+          <legend className="text-sm text-fg-muted mb-1">Tell me when they file a</legend>
+          {FILING_CHOICES.map((choice) => (
+            <label key={choice.value} className="flex min-h-10 items-center gap-2.5 text-[15px] text-fg">
+              <input
+                type="checkbox"
+                checked={forms.includes(choice.value)}
+                onChange={(e) =>
+                  setForms((prev) =>
+                    e.target.checked ? [...prev, choice.value] : prev.filter((f) => f !== choice.value),
+                  )
+                }
+              />
+              {choice.label}
+            </label>
+          ))}
+        </fieldset>
+      )}
+      {KEYWORD_KINDS.has(kind) && (
+        <label className="block text-sm text-fg-muted">
+          Only when it mentions one of these words (commas between them; leave empty for everything)
+          <input
+            value={words}
+            onChange={(e) => setWords(e.target.value)}
+            maxLength={400}
+            placeholder="e.g. pricing, layoffs"
+            className={`${fieldCls} mt-1.5`}
+          />
+        </label>
+      )}
+      {kind !== "stock" && (
+        <label className="flex min-h-10 items-center gap-2.5 text-[15px] text-fg">
+          <input type="checkbox" checked={onlyBig} onChange={(e) => setOnlyBig(e.target.checked)} />
+          Only big changes
+        </label>
+      )}
+      <p className="text-sm text-fg-subtle">
+        {draft ? `It will tell you when ${lowerFirst(triggerInWords(kind, draft))}.` : "Pick at least one, with a number between 0 and 100."}
+      </p>
+      {err && <p className="text-sm text-rose-500">{err}</p>}
+      <div className="flex flex-wrap gap-2">
+        <Button variant="primary" disabled={busy || !draft} onClick={() => void save()}>
+          {busy ? "Saving…" : "Save"}
+        </Button>
+        <Button variant="ghost" disabled={busy} onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** Change the goal and the person a watch is for. */
+function ForEditor({
+  item,
+  onSaved,
+  onCancel,
+}: {
+  item: WatchlistItem;
+  onSaved: (updated: WatchlistItem) => void;
+  onCancel: () => void;
+}) {
+  const [goals, setGoals] = useState<GoalView[]>([]);
+  const [people, setPeople] = useState<Person[]>([]);
+  const [goal, setGoal] = useState<string>(item.goal_id != null ? String(item.goal_id) : "");
+  const [person, setPerson] = useState<string>(
+    item.route_to_person_id != null ? String(item.route_to_person_id) : "",
+  );
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    listGoals().then(setGoals).catch(() => {});
+    listPeople()
+      .then((all) => setPeople(all.filter((p) => !p.archived && !p.is_principal)))
+      .catch(() => {});
+  }, []);
+
+  async function save() {
+    setBusy(true);
+    setErr(null);
+    try {
+      onSaved(
+        await patchWatchlistItem(item.slug, {
+          goal_id: goal ? Number(goal) : null,
+          person_id: person ? Number(person) : null,
+        }),
+      );
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "That didn't save.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-3 space-y-3 rounded-xl border border-line bg-surface p-4">
+      <label className="block text-sm text-fg-muted">
+        Goal
+        <select value={goal} onChange={(e) => setGoal(e.target.value)} className={`${fieldCls} mt-1.5`}>
+          <option value="">No goal</option>
+          {goals.map((g) => (
+            <option key={g.id} value={String(g.id)}>
+              {g.key_result}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="block text-sm text-fg-muted">
+        Who it tells
+        <select value={person} onChange={(e) => setPerson(e.target.value)} className={`${fieldCls} mt-1.5`}>
+          <option value="">You</option>
+          {people.map((p) => (
+            <option key={p.id} value={String(p.id)}>
+              {p.full_name}
+              {p.role ? `, ${p.role}` : ""}
+            </option>
+          ))}
+        </select>
+      </label>
+      {err && <p className="text-sm text-rose-500">{err}</p>}
+      <div className="flex flex-wrap gap-2">
+        <Button variant="primary" disabled={busy} onClick={() => void save()}>
+          {busy ? "Saving…" : "Save"}
+        </Button>
+        <Button variant="ghost" disabled={busy} onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function ToldRow({ signal }: { signal: WatchlistSignal }) {
+  const when = signal.processed_at ?? signal.captured_at;
+  return (
+    <li className="py-3.5 first:pt-0 last:pb-0">
+      <div className="text-[15px] text-fg break-words">{cleanSummary(signal.normalized_summary)}</div>
+      <div className="mt-0.5 flex flex-wrap items-center gap-x-3 text-sm text-fg-muted">
+        <span title={formatRelTime(when)}>{whenExactly(when)}</span>
         {signal.provenance_url && (
-          <a
-            href={signal.provenance_url}
-            target="_blank"
-            rel="noreferrer"
-            className="text-accent hover:underline truncate max-w-xs"
-          >
-            source ↗
+          <a href={signal.provenance_url} target="_blank" rel="noreferrer" className="text-accent hover:underline">
+            Open
           </a>
-        )}
-        {signal.promoted_alert_id != null && (
-          <span className="text-fg-subtle">alert #{signal.promoted_alert_id}</span>
         )}
       </div>
     </li>
@@ -181,16 +406,8 @@ export default function WatchDetailPage() {
   const [modeChanging, setModeChanging] = useState(false);
   // What the noisy-watch answer changed, said once it is saved.
   const [nudgeSaid, setNudgeSaid] = useState("");
-  // slug → title, for "for: <department>" on a routed research watch.
-  const [departmentTitles, setDepartmentTitles] = useState<Record<string, string>>({});
-
-  useEffect(() => {
-    listDepartments()
-      .then((states) =>
-        setDepartmentTitles(Object.fromEntries(states.map((d) => [d.config.slug, d.config.title]))),
-      )
-      .catch(() => {});
-  }, []);
+  const [editing, setEditing] = useState<"trigger" | "for" | null>(null);
+  usePageCrumb(item ? item.title : "Watch");
 
   useEffect(() => {
     if (!slug) return;
@@ -205,17 +422,22 @@ export default function WatchDetailPage() {
       .finally(() => setLoading(false));
   }, [slug]);
 
+  // A PATCH answers with the watch but not its noise block; keep the one loaded.
+  function patched(updated: WatchlistItem) {
+    setItem((prev) => ({ ...updated, noise: prev?.noise }));
+    setEditing(null);
+  }
+
   async function toggleEnabled() {
     if (!item || toggling) return;
     const next = !item.enabled;
     setToggling(true);
     setItem({ ...item, enabled: next });
     try {
-      const updated = await patchWatchlistItem(slug, { enabled: next });
-      setItem(updated);
+      patched(await patchWatchlistItem(slug, { enabled: next }));
     } catch (e) {
       setItem({ ...item, enabled: !next });
-      setError(e instanceof Error ? e.message : "Toggle failed");
+      setError(e instanceof Error ? e.message : "That didn't save.");
     } finally {
       setToggling(false);
     }
@@ -225,10 +447,9 @@ export default function WatchDetailPage() {
     if (!item || modeChanging || item.mode === nextMode) return;
     setModeChanging(true);
     try {
-      const updated = await patchWatchlistItem(slug, { mode: nextMode });
-      setItem(updated);
+      patched(await patchWatchlistItem(slug, { mode: nextMode }));
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Mode change failed");
+      setError(e instanceof Error ? e.message : "That didn't save.");
     } finally {
       setModeChanging(false);
     }
@@ -238,10 +459,9 @@ export default function WatchDetailPage() {
     if (!item || notes === item.notes) return;
     setSavingNotes(true);
     try {
-      const updated = await patchWatchlistItem(slug, { notes });
-      setItem(updated);
+      patched(await patchWatchlistItem(slug, { notes }));
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Save failed");
+      setError(e instanceof Error ? e.message : "That didn't save.");
     } finally {
       setSavingNotes(false);
     }
@@ -252,7 +472,7 @@ export default function WatchDetailPage() {
       await deleteWatchlistItem(slug);
       router.push("/watchlist");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Delete failed");
+      setError(e instanceof Error ? e.message : "That didn't work.");
       setConfirming(false);
     }
   }
@@ -267,16 +487,22 @@ export default function WatchDetailPage() {
   if (error && !item) {
     return (
       <div className="flex flex-col h-full bg-surface p-6">
-        <Link href="/watchlist" className="text-xs text-indigo-300 hover:text-indigo-200">
-          ← Back
+        <Link href="/watchlist" className="text-sm text-fg-muted hover:text-fg">
+          ← Watch list
         </Link>
-        <div className="mt-4 p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm">
+        <div className="mt-4 px-4 py-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-500 text-[15px]">
           {error}
         </div>
       </div>
     );
   }
   if (!item) return null;
+
+  // A suggestion waits for Approve on the list; it has no "Alert me" choice yet.
+  const isSuggestion = item.origin === "research_proposed" && item.mode === "dry_run";
+  const addedByExecutive = item.origin === "research" || item.origin === "research_proposed";
+  const dismissed =
+    item.dismiss_count === 0 ? "none" : item.dismiss_count >= item.fired_count ? "all of them" : String(item.dismiss_count);
 
   return (
     <div className="flex flex-col h-full bg-surface">
@@ -291,26 +517,26 @@ export default function WatchDetailPage() {
 
           <div className="flex items-start justify-between mb-6 gap-4">
             <div className="min-w-0">
-              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight font-mono text-fg truncate">
-                {item.slug}
+              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg break-words">
+                {item.title}
               </h1>
               <p className="text-[15px] text-fg-muted mt-1 truncate" title={item.target}>
-                {item.signal_type} · {item.target}
+                {KIND_LABELS[item.signal_type] ?? "Watch"} · {item.target}
               </p>
             </div>
             <OverflowMenu
               label="More actions"
-              items={[{ label: "Delete monitor", danger: true, onSelect: () => setConfirming(true) }]}
+              items={[{ label: "Stop watching", danger: true, onSelect: () => setConfirming(true) }]}
             />
           </div>
 
           {confirming && (
             <div className="rounded-2xl border border-rose-500/30 bg-rose-500/5 p-4 mb-4 flex flex-wrap items-center gap-3">
               <span className="text-[15px] text-fg flex-1 min-w-[12rem]">
-                Delete this monitor? Historical signals stay in the audit log.
+                Stop watching this? It comes off your list. What it already told you stays where you saw it.
               </span>
               <Button variant="danger" onClick={remove}>
-                Delete
+                Stop watching
               </Button>
               <Button variant="ghost" onClick={() => setConfirming(false)}>
                 Cancel
@@ -325,9 +551,7 @@ export default function WatchDetailPage() {
                   {item.enabled ? "Watching" : "Paused"}
                 </div>
                 <p className="text-sm text-fg-muted">
-                  {item.enabled
-                    ? "Polled on its cadence."
-                    : "Not polled until you switch it back on."}
+                  {item.enabled ? item.checks : "It does not check until you switch it back on."}
                 </p>
               </div>
               {/* The label pads the small switch out to a 40px tap target. */}
@@ -344,38 +568,42 @@ export default function WatchDetailPage() {
               <div>
                 <div className="text-[15px] font-semibold text-fg">When something changes</div>
                 <p className="text-sm text-fg-muted">
-                  {item.mode === "active"
-                    ? "When something important changes, it tells you in your briefing."
-                    : "It keeps watching quietly and doesn't tell you."}
+                  {isSuggestion
+                    ? "It waits for your OK. Approve it on the watch list and it starts telling you."
+                    : item.mode === "active"
+                      ? "It tells you in your briefing."
+                      : "It keeps watching quietly and doesn't tell you."}
                 </p>
               </div>
-              <div
-                role="group"
-                aria-label="Mode"
-                className="inline-flex rounded-xl border border-line bg-surface p-1"
-              >
-                {(
-                  [
-                    ["active", "Alert me"],
-                    ["dry_run", "Watch quietly"],
-                  ] as const
-                ).map(([value, label]) => (
-                  <button
-                    key={value}
-                    type="button"
-                    aria-pressed={item.mode === value}
-                    disabled={modeChanging}
-                    onClick={() => void setModeTo(value)}
-                    className={`min-h-10 rounded-lg px-3.5 text-sm font-medium transition-colors disabled:opacity-60 ${
-                      item.mode === value
-                        ? "bg-accent/10 text-accent"
-                        : "text-fg-muted hover:text-fg hover:bg-surface-overlay"
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
+              {!isSuggestion && (
+                <div
+                  role="group"
+                  aria-label="When something changes"
+                  className="inline-flex rounded-xl border border-line bg-surface p-1"
+                >
+                  {(
+                    [
+                      ["active", "Alert me"],
+                      ["dry_run", "Watch quietly"],
+                    ] as const
+                  ).map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      aria-pressed={item.mode === value}
+                      disabled={modeChanging}
+                      onClick={() => void setModeTo(value)}
+                      className={`min-h-10 rounded-lg px-3.5 text-sm font-medium transition-colors disabled:opacity-60 ${
+                        item.mode === value
+                          ? "bg-accent/10 text-accent"
+                          : "text-fg-muted hover:text-fg hover:bg-surface-overlay"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 
@@ -404,52 +632,69 @@ export default function WatchDetailPage() {
           )}
 
           <div className="rounded-2xl border border-line bg-surface-elevated p-5 mb-4">
-            <h2 className="text-base font-semibold text-fg mb-3">Configuration</h2>
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-2.5 text-sm">
-              <dt className="text-fg-muted">Mode</dt>
-              <dd className="text-fg">{item.mode}</dd>
-              <dt className="text-fg-muted">Cadence</dt>
-              <dd className="text-fg">{item.cadence}</dd>
-              <dt className="text-fg-muted">Severity range</dt>
-              <dd className="text-fg">
-                {item.severity_floor} → {item.severity_ceiling}
-              </dd>
-              <dt className="text-fg-muted">Specialist</dt>
-              <dd className="text-fg">{item.route_to_specialist || "—"}</dd>
-              <dt className="text-fg-muted">Times it told you</dt>
-              <dd className="text-fg">{item.fired_count}</dd>
-              <dt className="text-fg-muted">Dismissed</dt>
-              <dd className="text-fg">{item.dismiss_count}</dd>
-              <dt className="text-fg-muted">Trust score</dt>
-              <dd className="text-fg">{item.trust_score.toFixed(2)}</dd>
-              <dt className="text-fg-muted">Last polled</dt>
-              <dd className="text-fg">{formatRelTime(item.last_polled_at)}</dd>
-              <dt className="text-fg-muted">Last told you</dt>
-              <dd className="text-fg">{formatRelTime(item.last_fired_at)}</dd>
-              {item.origin === "research" && (
-                <>
-                  <dt className="text-fg-muted">Added by</dt>
-                  <dd className="text-fg">
-                    The Executive
-                    {policyEntity(item) ? ` · about ${policyEntity(item)}` : ""}
-                    {item.route_to_department
-                      ? ` · for ${departmentTitles[item.route_to_department] ?? item.route_to_department}`
-                      : ""}
-                  </dd>
-                </>
+            <h2 className="text-base font-semibold text-fg mb-3">What it does</h2>
+            <div className="divide-y divide-line">
+              <Row
+                label="Tells you when"
+                action={
+                  editing !== "trigger" && (
+                    <button type="button" className={linkBtn} onClick={() => setEditing("trigger")}>
+                      Change
+                    </button>
+                  )
+                }
+              >
+                {item.tells_you_when}
+                {editing === "trigger" && (
+                  <TriggerEditor item={item} onSaved={patched} onCancel={() => setEditing(null)} />
+                )}
+              </Row>
+              <Row
+                label="Last told you"
+                action={
+                  item.last_told?.url && (
+                    <a href={item.last_told.url} target="_blank" rel="noreferrer" className={`${linkBtn} inline-flex items-center`}>
+                      Open
+                    </a>
+                  )
+                }
+              >
+                {item.last_told
+                  ? `${formatRelTime(item.last_told.at)}: ${lowerFirst(item.last_told.summary)}`
+                  : "Has not told you anything yet."}
+              </Row>
+              <Row label="Last checked">
+                {item.last_polled_at
+                  ? `${formatRelTime(item.last_polled_at)}${item.last_check_note ? `: ${lowerFirst(item.last_check_note)}` : ""}`
+                  : "Not checked yet."}
+              </Row>
+              <Row
+                label="It is for"
+                action={
+                  editing !== "for" && (
+                    <button type="button" className={linkBtn} onClick={() => setEditing("for")}>
+                      Change
+                    </button>
+                  )
+                }
+              >
+                {forInWords(item)}
+                {editing === "for" && (
+                  <ForEditor item={item} onSaved={patched} onCancel={() => setEditing(null)} />
+                )}
+              </Row>
+              <Row label="Told you">
+                {item.fired_count === 0
+                  ? "Nothing yet."
+                  : `${item.fired_count} time${item.fired_count === 1 ? "" : "s"}. You dismissed ${dismissed}.`}
+              </Row>
+              {addedByExecutive && (
+                <Row label="Added by">
+                  The Executive
+                  {policyEntity(item) ? `, about ${policyEntity(item)}` : ""}
+                  {item.department_title ? `, for ${item.department_title}` : ""}
+                </Row>
               )}
-            </dl>
-            <div className="mt-3">
-              <div className="text-sm text-fg-muted mb-1">Tells you when</div>
-              <p className="text-[15px] text-fg">{triggerInWords(item.signal_type, item.trigger_json)}</p>
-              <details className="mt-1.5">
-                <summary className="inline-flex min-h-10 cursor-pointer items-center text-sm text-fg-subtle">
-                  Exact trigger
-                </summary>
-                <pre className="text-xs font-mono bg-surface-input/40 border border-line rounded p-2 overflow-x-auto">
-                  {JSON.stringify(item.trigger_json, null, 2)}
-                </pre>
-              </details>
             </div>
           </div>
 
@@ -472,16 +717,14 @@ export default function WatchDetailPage() {
 
           <div className="rounded-2xl border border-line bg-surface-elevated p-5 mb-4">
             <h2 className="text-base font-semibold text-fg mb-3">
-              Recent signals ({signals.length})
+              What it told you ({signals.length})
             </h2>
             {signals.length === 0 ? (
-              <p className="text-sm text-fg-muted">
-                No signals yet. The next poll runs on cadence: {item.cadence}.
-              </p>
+              <p className="text-sm text-fg-muted">Nothing yet. {item.enabled ? item.checks : ""}</p>
             ) : (
-              <ul className="space-y-2">
+              <ul className="divide-y divide-line">
                 {signals.map((s) => (
-                  <SignalRow key={s.id} signal={s} />
+                  <ToldRow key={s.id} signal={s} />
                 ))}
               </ul>
             )}

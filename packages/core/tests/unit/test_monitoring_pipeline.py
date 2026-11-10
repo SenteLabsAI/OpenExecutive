@@ -300,33 +300,167 @@ def test_dry_run_mode_suppresses_promotion(
     assert signals[0]["processed_outcome"] == OUTCOME_SUPPRESSED_DRY_RUN
 
 
-def test_severity_floor_suppresses_low_signals(
+def test_a_watch_tells_you_whatever_its_severity(
     db: Path,
     install_fake_source,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """There is no severity floor: a change that meets the watch's own
+    trigger reaches the person, however small the adapter calls it."""
     promoted: list[Any] = []
     monkeypatch.setattr(
         "openexecutive.monitoring.pipeline.schedule_evaluation",
         lambda event: promoted.append(event),
     )
+    _patch_settings(monkeypatch, external_monitor_enrichment_enabled=False)
 
-    ms.insert_watchlist_item(
-        slug="strict", signal_type="vendor_status",
-        target="https://example.com",
-        severity_floor=AlertSeverity.URGENT,  # only URGENT surfaces
-        db_path=db,
-    )
-    # Adapter says HIGH; floor is URGENT → clamp_severity keeps HIGH
-    # (floor is the LOWER bound, ceiling is the UPPER bound — a HIGH
-    # signal is BELOW an URGENT floor, so it should be suppressed)
-    install_fake_source([_make_signal(severity=AlertSeverity.HIGH)])
+    wl_id = _insert_feed(db, "plain", severity_floor=AlertSeverity.URGENT)
+    install_fake_source([_make_signal(severity=AlertSeverity.LOW)])
 
     written = asyncio.run(mp.run_external_monitor_scan(db_path=db))
     assert written == 1
-    assert promoted == []  # below floor → no alert
+    assert len(promoted) == 1
+    signals = ms.list_recent_signals(db_path=db)
+    assert signals[0]["processed_outcome"] == OUTCOME_ALERTED
+    item = ms.get_watchlist_item(wl_id, db_path=db)
+    assert item is not None
+    assert item.last_check_note == "Told you: Test incident."
+
+
+def test_only_big_changes_holds_back_a_small_one(
+    db: Path,
+    install_fake_source,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """"Only when it is a big change" is part of the trigger, and the one
+    thing that holds back a change the trigger otherwise matches."""
+    promoted: list[Any] = []
+    monkeypatch.setattr(
+        "openexecutive.monitoring.pipeline.schedule_evaluation",
+        lambda event: promoted.append(event),
+    )
+    _patch_settings(monkeypatch, external_monitor_enrichment_enabled=False)
+
+    wl_id = _insert_feed(db, "strict", trigger={"only_big": True})
+    install_fake_source([_make_signal(severity=AlertSeverity.MEDIUM)])
+
+    written = asyncio.run(mp.run_external_monitor_scan(db_path=db))
+    assert written == 1
+    assert promoted == []
     signals = ms.list_recent_signals(db_path=db)
     assert signals[0]["processed_outcome"] == OUTCOME_SUPPRESSED_BELOW_FLOOR
+    item = ms.get_watchlist_item(wl_id, db_path=db)
+    assert item is not None
+    assert item.last_check_note == "Noticed: Test incident. Not a big change, so it stayed quiet."
+
+    # A big one on the same watch goes through.
+    ms.mark_polled(wl_id, datetime.now(UTC) - timedelta(days=2), db_path=db)
+    install_fake_source([_make_signal(dedup_key="vendor_status:big", severity=AlertSeverity.HIGH)])
+    asyncio.run(mp.run_external_monitor_scan(db_path=db))
+    assert len(promoted) == 1
+
+
+def test_last_check_note_says_nothing_new_and_could_not_reach(
+    db: Path,
+    install_fake_source,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wl_id = _insert_feed(db, "calm")
+    fake = install_fake_source([])
+    asyncio.run(mp.run_external_monitor_scan(db_path=db))
+    item = ms.get_watchlist_item(wl_id, db_path=db)
+    assert item is not None
+    assert item.last_check_note == "Nothing new."
+
+    async def boom(item: WatchlistItem, *, db_path: Path | None = None) -> list[Signal]:
+        raise RuntimeError("down")
+
+    fake.poll = boom  # type: ignore[method-assign]
+    ms.mark_polled(wl_id, datetime.now(UTC) - timedelta(days=2), db_path=db)
+    asyncio.run(mp.run_external_monitor_scan(db_path=db))
+    item = ms.get_watchlist_item(wl_id, db_path=db)
+    assert item is not None
+    assert item.last_check_note == mp.COULD_NOT_REACH
+
+
+@pytest.mark.parametrize("value", ["false", 1, "true"])
+def test_only_big_counts_only_a_real_true(
+    db: Path,
+    install_fake_source,
+    monkeypatch: pytest.MonkeyPatch,
+    value: object,
+) -> None:
+    """The "Tells you when" sentence shows "only when it is a big change" only
+    for a real true, so anything else must not hold a change back either."""
+    promoted: list[Any] = []
+    monkeypatch.setattr(
+        "openexecutive.monitoring.pipeline.schedule_evaluation",
+        lambda event: promoted.append(event),
+    )
+    _patch_settings(monkeypatch, external_monitor_enrichment_enabled=False)
+    _insert_feed(db, "loose", trigger={"only_big": value})
+    install_fake_source([_make_signal(severity=AlertSeverity.MEDIUM)])
+
+    asyncio.run(mp.run_external_monitor_scan(db_path=db))
+    assert len(promoted) == 1
+
+
+def test_watching_quietly_says_so_in_the_last_check_note(
+    db: Path,
+    install_fake_source,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wl_id = _insert_feed(db, "quiet", mode=MODE_DRY_RUN)
+    install_fake_source([_make_signal()])
+    asyncio.run(mp.run_external_monitor_scan(db_path=db))
+    item = ms.get_watchlist_item(wl_id, db_path=db)
+    assert item is not None
+    assert item.last_check_note == (
+        "Noticed: Test incident. It is watching quietly, so it did not tell you."
+    )
+
+
+def test_old_floors_become_only_big_once(db: Path) -> None:
+    """Rows saved before the floor went: a high or urgent floor becomes "only
+    big changes" in the trigger, and every floor is reset. A stock keeps its
+    percent as its bar, a trigger that was not JSON starts over, and a second
+    boot changes nothing."""
+    loud = _insert_feed(db, "loud", trigger={"keywords": ["outage"]})
+    urgent = _insert_feed(db, "urgent")
+    broken = _insert_feed(db, "broken")
+    mid = _insert_feed(db, "mid")
+    stock = ms.insert_watchlist_item(
+        slug="acme-stock", signal_type="stock", target="ACME", db_path=db,
+    )
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "UPDATE watchlist SET severity_floor='high' WHERE id IN (?, ?, ?)",
+            (loud, stock, broken),
+        )
+        conn.execute("UPDATE watchlist SET severity_floor='urgent' WHERE id=?", (urgent,))
+        conn.execute("UPDATE watchlist SET trigger_json='not json' WHERE id=?", (broken,))
+        conn.execute("UPDATE watchlist SET severity_floor='medium' WHERE id=?", (mid,))
+        conn.execute(
+            "DELETE FROM monitoring_migrations WHERE name = ?", (ms._MIGRATION_FLOOR_TO_TRIGGER,),
+        )
+    ms.initialize_db(db)
+
+    by_id = {i.id: i for i in ms.list_watchlist(db_path=db)}
+    assert by_id[loud].trigger_json == {"keywords": ["outage"], "only_big": True}
+    assert by_id[urgent].trigger_json == {"only_big": True}
+    assert by_id[broken].trigger_json == {"only_big": True}
+    assert by_id[mid].trigger_json == {}
+    assert "only_big" not in by_id[stock].trigger_json
+    assert {i.severity_floor for i in by_id.values()} == {AlertSeverity.LOW}
+
+    # A floor written after the migration is left alone on the next boot.
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE watchlist SET severity_floor='high' WHERE id=?", (mid,))
+    ms.initialize_db(db)
+    again = ms.get_watchlist_item(mid, db_path=db)
+    assert again is not None
+    assert again.trigger_json == {}
+    assert again.severity_floor == AlertSeverity.HIGH
 
 
 def test_disabled_watchlist_skipped(

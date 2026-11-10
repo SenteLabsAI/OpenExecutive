@@ -307,9 +307,9 @@ def test_history_adjusts_only_with_enough_samples() -> None:
 # --------------------------------------------------------------------- #
 
 
-def test_quiet_defaults_add_keywords_and_medium_floor() -> None:
+def test_quiet_defaults_add_keywords_and_no_floor() -> None:
     cadence, floor, trigger = wp.quiet_defaults(_proposal(), ["accounts"])
-    assert cadence == "daily" and floor.value == "medium"
+    assert cadence == "daily" and floor.value == "low"
     kws = trigger["keywords"]
     assert "pricing" in kws and "accounts" in kws
     # The entity's own name is never a keyword: feed summaries carry the
@@ -340,10 +340,28 @@ def test_apply_adds_direct_and_files_suggestion(db: Path) -> None:
     rows = {w.slug: w for w in ms.list_watchlist(db_path=db)}
     acme, initech = rows["rss-acme-blog"], rows["rss-initech"]
     assert acme.origin == ORIGIN_RESEARCH and acme.mode == MODE_ACTIVE
-    assert acme.notes == "Competitor pricing moves" and acme.severity_floor.value == "medium"
+    assert acme.notes == "Competitor pricing moves" and acme.severity_floor.value == "low"
     assert acme.config_json["_policy"]["grounding_kind"] == wp.KIND_COMPETITOR
     assert initech.origin == ORIGIN_RESEARCH_PROPOSED and initech.mode == MODE_DRY_RUN
     assert ms.list_pending_suggestions(db_path=db)[0].slug == "rss-initech"
+
+
+def test_a_watch_grounded_on_a_goal_is_for_that_goal(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.departments import store as departments
+    from openexecutive.people import store as people
+
+    monkeypatch.setattr(departments, "DB_PATH", db)
+    people.initialize_db(db)
+    departments.initialize_db(db)
+    goal_id = departments.insert_goal(
+        None, period_value="2031-Q1", key_result="Close the books in 5 days", target="5 days", db_path=db,
+    )
+    on_goal = SimpleNamespace(grounding_kind=wp.KIND_DEPARTMENT_SCOPE, entity=wp._norm("Close the books in 5 days"))
+    assert wp._goal_for(on_goal, db) == goal_id  # type: ignore[arg-type]
+    other = SimpleNamespace(grounding_kind=wp.KIND_COMPETITOR, entity=wp._norm("Close the books in 5 days"))
+    assert wp._goal_for(other, db) is None  # type: ignore[arg-type]
+    unknown = SimpleNamespace(grounding_kind=wp.KIND_DEPARTMENT_SCOPE, entity="something else")
+    assert wp._goal_for(unknown, db) is None  # type: ignore[arg-type]
 
 
 def test_apply_honours_budgets_and_duplicate_targets(db: Path) -> None:
