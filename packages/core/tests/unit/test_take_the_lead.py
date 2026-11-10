@@ -1717,3 +1717,18 @@ def test_what_it_sees_inside_the_gap_wakes_it_once_the_gap_is_over(
     assert ttl._WATCHED.pending == ["a goal slipped"]
     assert ttl.watch(gap_over + timedelta(minutes=1)) == "a goal slipped"
     assert scheduled == ["a goal slipped"] and ttl._WATCHED.pending == []
+
+
+def test_today_is_the_owners_day(monkeypatch: pytest.MonkeyPatch, db: Path) -> None:
+    """Done today counts from midnight where the owner is, not UTC midnight."""
+    from datetime import UTC, datetime
+    from zoneinfo import ZoneInfo
+
+    from openexecutive.memory import workspace_settings
+
+    monkeypatch.setattr(workspace_settings, "get_user_timezone", lambda: ZoneInfo("America/Los_Angeles"))
+    ttl.record(scope=ttl.SCOPE_EXECUTIVE, source="reflection", tool="message_person",
+               summary="Messaged Dana", status="done")
+    # Late evening in Los Angeles is the next UTC day: still today there.
+    afternoon = datetime.now(UTC).astimezone(ZoneInfo("America/Los_Angeles")).replace(hour=23, minute=59)
+    assert ttl.done_today(now=afternoon.astimezone(UTC))[0] == 1

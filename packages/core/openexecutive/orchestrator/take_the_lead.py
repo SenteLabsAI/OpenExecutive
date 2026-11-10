@@ -2489,10 +2489,16 @@ def jobs_note(*, db_path: Path | None = None) -> str:
 
 
 def done_today(*, now: datetime | None = None, db_path: Path | None = None) -> tuple[int, int]:
-    """How many things it did on its own today (UTC day) and how many it
-    left waiting for someone's yes. Never raises."""
+    """How many things it did on its own today (the owner's day, in their
+    time zone) and how many it left waiting for someone's yes. Never raises."""
     current = now or datetime.now(UTC)
-    since = current.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    try:
+        from openexecutive.memory.workspace_settings import get_user_timezone
+
+        local = current.astimezone(get_user_timezone())
+    except Exception:
+        local = current.astimezone(UTC)
+    since = local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(UTC).isoformat()
     try:
         conn = _connect(db_path)
         try:
