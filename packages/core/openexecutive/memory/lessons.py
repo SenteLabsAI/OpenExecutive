@@ -59,10 +59,13 @@ Tables (in the episodic DB, created on first use):
 
 **Where it is used.** Every place the Executive writes or speaks for its
 person reads their lessons, and each use is counted under its surface
-(``SURFACES``): a chat turn, a one-to-one call, an email (one it answers
-from its own address, or one it writes as the person, ``build_draft_lessons``),
-a team meeting (the lessons of whoever owns the meeting), a brief or
-review (``with_owner_lessons``) and the work it starts on its own. Only a
+(``SURFACES``): a chat turn, an email (one it answers from its own
+address, or one it writes as the person, ``build_draft_lessons``), a brief
+or review (``with_owner_lessons``) and the work it starts on its own. A
+caller that runs calls or meetings on top marks its session
+(``Session.memory_surface``: ``one_on_one`` or ``meeting``) and, for a call
+with no single speaker, names whose lessons it reads
+(``Session.lessons_person_id``). Only a
 graded chat turn moves ``shown``, the count retirement reads; the other
 surfaces are counted beside it, so a lesson used in ten briefs is not
 retired on the strength of one bad chat turn.
