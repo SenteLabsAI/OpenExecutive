@@ -1282,6 +1282,14 @@ def test_where_a_message_goes() -> None:
     assert ttl.where("create_calendar_event", {"title": "Sync"}) == ""
 
 
+@pytest.mark.parametrize(("channel", "ref", "usable"), [
+    ("discord", "123456789", True), ("discord", "@sam", False),
+    ("telegram", "-100123", True), ("telegram", "--1", False), ("slack", "U123", True), ("slack", None, False),
+])
+def test_where_skips_an_id_message_person_would_skip(channel: str, ref: str | None, usable: bool) -> None:
+    assert schedule_tools.usable_chat_ref(channel, ref) is usable
+
+
 def test_a_connected_email_card_shows_the_email() -> None:
     details = ttl.card_details(
         "google_workspace__send_gmail_message",

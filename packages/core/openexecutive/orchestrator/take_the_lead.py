@@ -1673,6 +1673,7 @@ def where(tool: str, tool_input: dict[str, Any]) -> str:
         from openexecutive.orchestrator.schedule_tools import (
             _chat_candidates,
             configured_integrations,
+            usable_chat_ref,
         )
         from openexecutive.people.store import get_person
 
@@ -1681,7 +1682,7 @@ def where(tool: str, tool_input: dict[str, Any]) -> str:
             return ""
         configured = configured_integrations(get_settings())
         for channel, ref in _chat_candidates(person):
-            if channel in configured and ref and channel in _CHANNEL_NAMES:
+            if channel in configured and usable_chat_ref(channel, ref) and channel in _CHANNEL_NAMES:
                 return f"On {_CHANNEL_NAMES[channel]}"
         if person.kind != "team":
             return ""
