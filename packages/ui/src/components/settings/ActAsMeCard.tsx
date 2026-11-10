@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 import Icon from "@/components/Icon";
-import { ReachCard, WhileItLearnsSection } from "@/components/settings/ReachCard";
+import { AsYouTrainingCard, ReachCard } from "@/components/settings/ReachCard";
 import SettingsCard from "@/components/settings/SettingsCard";
 import { LearnedSection } from "@/components/settings/TrainingCard";
 import type { DelegationLoad } from "@/components/settings/useDelegation";
@@ -43,8 +43,9 @@ import { PageSpinner } from "@/components/ui/Spinner";
 // The As you tab, in two columns: How far it goes as you (the mailbox on its
 // first line, the inbox watcher's status under Your inbox), Read my calendar
 // and the page's `side` (Let team members use it, Say it was written with
-// AI, what it sent); then How it learns from you (How you write, who it may
-// send to on its own, While it learns).
+// AI, what it sent); then In training (the switch, who goes on their own,
+// Learn from my edits) and How it learns from you (How you write, how you
+// write to each person).
 
 const LENGTHS = ["short", "medium", "long"] as const;
 const FORMALITIES = ["casual", "neutral", "formal"] as const;
@@ -202,7 +203,8 @@ export default function ActAsMeCard({
 
   // Two columns where the page is wide enough (the page sets the container):
   // how far it goes as you (the mailbox on its first line), your calendar and
-  // `side`; then how it learns from you.
+  // `side`; then In training (its own card, first in the second column) and
+  // how it learns from you.
   return (
     <div className="grid gap-4 @4xl:grid-cols-2 @4xl:items-start">
       <div className="space-y-4">
@@ -238,16 +240,19 @@ export default function ActAsMeCard({
         {side}
       </div>
 
-      <HowItLearnsCard settings={settings} onSettings={setSettings} connected={connected} outlook={outlook} />
+      <div className="space-y-4">
+        <AsYouTrainingCard settings={settings} onSettings={setSettings} />
+        <HowItLearnsCard settings={settings} onSettings={setSettings} connected={connected} outlook={outlook} />
+      </div>
     </div>
   );
 }
 
 // How it learns from you: everything it picked up as you, in one card. How
-// you write (the style, Describe it, Learn again, Fine-tune details), who it
-// may send to on its own (and how you write to each person), and while it
-// learns (In training, Learn from my edits). Shown once a mailbox is
-// connected, or while it still keeps something learned.
+// you write (the style, Describe it, Learn again, Fine-tune details) and how
+// you write to each person (from Learn from my edits). In training, who goes on their
+// own and Learn from my edits are on the In training card above it. Shown
+// once a mailbox is connected, or while it still keeps something learned.
 function HowItLearnsCard({
   settings,
   onSettings,
@@ -260,20 +265,11 @@ function HowItLearnsCard({
   outlook: boolean;
 }) {
   const training = settings.training;
-  if (!connected && !(training && training.learned.length > 0)) return null;
+  if (!connected && !training?.learned.some((item) => item.setting === "drafts")) return null;
   return (
     <SettingsCard title="How it learns from you" description="Everything it has picked up from you as you, in one place.">
       <div className="space-y-5">
         {connected && <VoiceSection connected outlook={outlook} inCard />}
-        {training && (
-          <LearnedSection
-            training={training}
-            onSettings={onSettings}
-            setting="training"
-            title="Who it may send to on its own"
-            empty="Nobody yet. Tick “on its own next time” when you send one."
-          />
-        )}
         {training && (
           <LearnedSection
             training={training}
@@ -283,7 +279,6 @@ function HowItLearnsCard({
             empty="Nothing yet. Change a draft and tick “Do it like this next time”."
           />
         )}
-        {settings.enabled && <WhileItLearnsSection settings={settings} onSettings={onSettings} />}
       </div>
     </SettingsCard>
   );

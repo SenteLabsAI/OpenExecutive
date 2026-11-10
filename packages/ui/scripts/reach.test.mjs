@@ -8,6 +8,7 @@ import {
   AS_YOU_HREF,
   REACH_LABEL,
   REACH_ORDER,
+  asYouBadge,
   reachLine,
   reachOf,
   sentTodayLine,
@@ -79,4 +80,14 @@ test("only a plain click on a Delegate link switches the tab", () => {
   assert.equal(tabForClick(click({ target: "_blank" })), null);
   assert.equal(tabForClick(click({ href: `${origin}/settings#as-me` })), null);
   assert.equal(tabForClick(click({ href: `https://elsewhere.example.com${AS_ME_HREF}` })), null);
+});
+
+test("asYouBadge adds In training beside the step while it is on", () => {
+  assert.equal(asYouBadge(settings()), "Your inbox");
+  assert.equal(asYouBadge(settings({ training: { training: true, drafts: false, learned: [] } })), "Your inbox · In training");
+  assert.equal(
+    asYouBadge(settings({ inbox: { enabled: false }, training: { training: true, drafts: false, learned: [] } })),
+    "When you ask · In training",
+  );
+  assert.equal(asYouBadge(settings({ enabled: false, training: { training: true, drafts: false, learned: [] } })), "Off");
 });

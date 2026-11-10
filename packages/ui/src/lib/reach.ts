@@ -65,6 +65,13 @@ export function reachOf(settings: DelegationSettings): ReachStep {
   return settings.inbox?.enabled ? "inbox" : "when_asked";
 }
 
+// The As you tab's badge: the step, and "In training" beside it while that
+// is on and it writes as you at all, so it reads from the tab row.
+export function asYouBadge(settings: DelegationSettings): string {
+  const step = reachOf(settings);
+  return step !== "off" && settings.training?.training ? `${REACH_LABEL[step]} · In training` : REACH_LABEL[step];
+}
+
 // The "Now:" line under the As you picker.
 export function reachLine(step: ReachStep, inTraining: boolean, level: OutsideContentMode | null): string {
   if (step === "off") return "It never writes as you.";
