@@ -813,18 +813,19 @@ def test_a_wake_runs_the_reflection(monkeypatch: pytest.MonkeyPatch, no_last_wak
     from openexecutive.scheduler import runner
 
     _hands_off(monkeypatch)
-    action_id = ttl.wake("a message on email", now=NOW)
+    action_id = ttl.wake("new mail came in", now=NOW)
     assert action_id is not None
-    ran: list[str] = []
+    ran: list[tuple[str, str]] = []
 
-    async def reflect(now: Any, *, kind: str) -> None:
-        ran.append(kind)
+    async def reflect(now: Any, *, kind: str, prompted_by: str = "") -> None:
+        ran.append((kind, prompted_by))
 
     monkeypatch.setattr(runner, "_reflect", reflect)
     action = get_scheduled_action(action_id)
     assert action is not None
     asyncio.run(runner._run_take_the_lead_wake(action, NOW))
-    assert ran == ["take_the_lead_wake"]
+    # The run is told why it looks, in Done for you's words.
+    assert ran == [("take_the_lead_wake", "When new mail came in")]
     done = get_scheduled_action(action_id)
     assert done is not None and done.status == "done"
 
@@ -1516,3 +1517,130 @@ def test_an_address_in_the_body_doesnt_satisfy_a_goes_rule(owner: Any, balanced:
     hit, allowed = ttl._hit("post_to_channel", {"channel": "#all", "text": "Signed the contract, cc alice@acme.example"},
                             mcp=False)
     assert allowed is None
+
+
+# ── standing jobs, what made it look, more times it looks ─────────────────────
+
+
+def test_standing_jobs_on_the_as_me_tab(client: TestClient, owner: Any) -> None:
+    """The owner gives it standing jobs and stops them; the tab says what it
+    did for each this week and how much it did and left today."""
+    body = client.post("/take-the-lead/jobs", json={"text": "  Keep the dealer   onboarding moving "}).json()
+    [job] = body["jobs"]
+    assert job["text"] == "Keep the dealer onboarding moving" and job["this_week"] == ""
+    assert client.post("/take-the-lead/jobs", json={"text": "keep the dealer onboarding moving"}).status_code == 400
+    assert client.post("/take-the-lead/jobs", json={"text": "x"}).status_code == 400
+    with ttl.looking(ttl.DAILY_LOOK):
+        ttl.focus_job(job["id"])
+        ttl.record(scope=ttl.SCOPE_EXECUTIVE, source="reflection", tool="message_person", summary="Messaged Dana",
+                   status="done")
+        ttl.record(scope=ttl.SCOPE_EXECUTIVE, source="reflection", tool="create_calendar_event",
+                   summary="Booked the dealer call", status="done")
+        ttl.focus_job(0)
+        ttl.record(scope=ttl.SCOPE_EXECUTIVE, source="reflection", tool="message_person", summary="Messaged Sam",
+                   status="waiting")
+    body = client.get("/take-the-lead").json()
+    assert body["jobs"][0]["this_week"] == "1 follow-up, 1 meeting booked"
+    assert (body["done_today"], body["left_today"]) == (2, 1)
+    assert client.delete(f"/take-the-lead/jobs/{job['id']}").json()["jobs"] == []
+    assert client.delete(f"/take-the-lead/jobs/{job['id']}").status_code == 404
+
+
+def test_a_teammate_cant_give_it_standing_jobs(client: TestClient, owner: Any) -> None:
+    people_store.upsert_person(full_name="Sam", email=SAM)
+    people_registry.invalidate()
+    response = client.post("/take-the-lead/jobs", json={"text": "Chase overdue tasks"}, headers={"x-caller-email": SAM})
+    assert response.status_code == 403
+    assert ttl.list_jobs() == []
+
+
+def test_the_look_is_told_the_standing_jobs_and_a_job_is_picked_by_number() -> None:
+    assert ttl.jobs_note() == ""
+    job = ttl.add_job("Chase overdue tasks every morning", created_by="t")
+    note = ttl.jobs_note()
+    assert f"[{job.id}] Chase overdue tasks every morning" in note and "for_standing_job" in note
+    assert "error" in ttl.focus_job(job.id)  # no look running
+    with ttl.looking(ttl.DAILY_LOOK) as look:
+        assert "error" in asyncio.run(ttl.handle_focus_job({"job_id": 999}))
+        assert json.loads(asyncio.run(ttl.handle_focus_job({"job_id": job.id})))["standing_job"] == job.text
+        assert look.job_id == job.id
+    assert ttl.current_look() is None
+
+
+def test_wake_reasons_read_as_done_for_you_words() -> None:
+    assert ttl.arrival_reason("email") == "new mail came in"
+    assert ttl.arrival_reason("slack") == "a message came in on Slack"
+    assert ttl.prompted_line("") == ttl.DAILY_LOOK
+    assert ttl.wake_reason("As me: look over what's new (the task “Send the deck” went overdue).") == (
+        "the task “Send the deck” went overdue"
+    )
+    assert ttl.wake_reason("Something else") == ""
+
+
+def test_what_came_of_a_step() -> None:
+    assert ttl.outcome_of("google_workspace__send_gmail_message", {}, "{}", mcp=True) == "Sent"
+    assert ttl.outcome_of("create_calendar_event", {"attendees": ["a@x.example"]}, "{}") == "Invites sent"
+    assert ttl.outcome_of("run_workflow", {}, "{}") == "Started"
+    assert ttl.outcome_of("update_department_goal", {}, '{"message": "Goal updated"}') == "Goal updated"
+    assert ttl.outcome_of("update_department_goal", {}, "not json") == ""
+    assert ttl.how_line("google_workspace__send_gmail_message") == "By email"
+    assert ttl.how_line("create_calendar_event") == "On the calendar"
+
+
+@pytest.fixture
+def watched() -> Iterator[None]:
+    ttl._WATCHED.at = None
+    ttl._WATCHED.goals = {}
+    ttl._LAST_WAKE.clear()
+    yield
+    ttl._WATCHED.at = None
+    ttl._WATCHED.goals = {}
+    ttl._LAST_WAKE.clear()
+
+
+def test_a_slipping_goal_failed_workflow_overdue_task_or_ended_meeting_wakes_it(
+    monkeypatch: pytest.MonkeyPatch, watched: None, owner: Any, db: Path,
+) -> None:
+    from datetime import timedelta
+    from types import SimpleNamespace
+
+    from openexecutive.attunement import open_loops
+    from openexecutive.briefing import live_signals
+    from openexecutive.departments import store as dept_store
+    from openexecutive.workflows import persistence
+
+    monkeypatch.setattr(dept_store, "DB_PATH", db)
+    dept_store.initialize_db(db)
+    goal = dept_store.insert_goal(None, period_value="Q4 2026", key_result="Ramp gate", target="1")
+    assert ttl.watch(NOW) is None  # the first check only takes stock
+    assert ttl.watch(NOW + timedelta(seconds=10)) is None  # throttled
+    dept_store.update_goal(goal, status="at_risk")
+    later = NOW + timedelta(minutes=2)
+    assert ttl.watch(later) == "the goal “Ramp gate” slipped"
+    [wake] = _wakes()
+    assert ttl.wake_reason(get_scheduled(wake["id"]).intent_text) == "the goal “Ramp gate” slipped"
+
+    ttl._LAST_WAKE.clear()
+    persistence.create_run("r1", "board_prep", "Board prep", {})
+    persistence.fail_run("r1", "boom")
+    monkeypatch.setattr(open_loops, "list_open_loops", lambda **_: [
+        SimpleNamespace(description="Send the deck", due_at=(later + timedelta(minutes=1)).isoformat()),
+    ])
+    monkeypatch.setattr(live_signals, "cached_calendar", lambda now, tz: [
+        SimpleNamespace(title="Supplier sync", all_day=False, start=later, end=later + timedelta(minutes=2)),
+    ])
+    reason = ttl.watch(later + timedelta(minutes=3))
+    assert reason is not None
+    assert reason.startswith("the workflow “Board prep” failed") and "(and 2 more)" in reason
+
+
+def test_it_only_watches_while_as_me_is_on(monkeypatch: pytest.MonkeyPatch, watched: None) -> None:
+    monkeypatch.setattr(ttl, "executive_on", lambda **_: False)
+    assert ttl.watch(NOW) is None
+    assert ttl._WATCHED.at is None
+
+
+def get_scheduled(action_id: int) -> Any:
+    from openexecutive.memory.episodic import get_scheduled_action
+
+    return get_scheduled_action(action_id)

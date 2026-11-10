@@ -3175,3 +3175,113 @@ def test_held_back_page_lines_are_the_principals_alone(
     assert client.get("/today/held-back", headers={"x-caller-email": "jordan@example.com"}).json()[0][
         "lines"] == ["Call Robin about the 4% raise"]
     assert client.get("/today/held-back", headers={"x-caller-email": "sam@example.com"}).json() == []
+
+
+# ── As me on Home: the result line, Watching next ─────────────────────────────
+
+
+def test_done_for_you_says_how_why_and_what_came_of_what_it_did_as_me(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A row As me did reads "By email, as me · When <what woke it> ·
+    Sent"; a step for a standing job names the job instead; a message to
+    someone who has answered says when."""
+    from openexecutive.orchestrator import take_the_lead
+
+    db = tmp_path / "done_line.db"
+    _setup_isolated_db(db, monkeypatch)
+    people_store.upsert_person(full_name="Jordan", is_principal=True, email="jordan@example.com", db_path=db)
+    riley = people_store.upsert_person(full_name="Riley Park", email="riley@example.com", db_path=db)
+    people_registry.invalidate()
+    send = "google_workspace__send_gmail_message"
+    mail = {"to": "riley@example.com", "subject": "Cell warranty terms", "body": "Hi"}
+    with take_the_lead.looking(take_the_lead.prompted_line("the goal “Ramp gate” slipped")):
+        take_the_lead.record(
+            scope=take_the_lead.SCOPE_EXECUTIVE, source="reflection", tool=send,
+            summary=take_the_lead.summarize(send, mail, mcp=True, quote=False), status="done",
+            mail=take_the_lead.mail_sent(send, mail), outcome=take_the_lead.outcome_of(send, mail, "{}", mcp=True),
+        )
+    job = take_the_lead.add_job("Keep the dealer onboarding moving", created_by="t")
+    with take_the_lead.looking(take_the_lead.DAILY_LOOK):
+        take_the_lead.focus_job(job.id)
+        take_the_lead.record(
+            scope=take_the_lead.SCOPE_EXECUTIVE, source="reflection", tool="message_person",
+            summary="Messaged Riley Park", status="done", outcome="Sent", to_person_id=riley,
+        )
+    # Riley answered the message.
+    context_id = episodic.insert_outbound_context(
+        channel="slack_dm", channel_ref="U1", outbound_text="Hi", recipient_person_id=riley,
+    )
+    episodic.mark_outbound_context_consumed(context_id)
+
+    client = _make_client()
+    rows = {
+        r["title"]: r["detail"]
+        for r in client.get("/today", headers={"x-caller-email": "jordan@example.com"}).json()["done_for_you"]
+        if r["kind"] == "took_the_lead"
+    }
+    assert rows["Emailed Riley Park: Cell warranty terms"] == (
+        "By email, as me · When the goal “Ramp gate” slipped · Sent"
+    )
+    line = rows["Messaged Riley Park"]
+    assert "For your standing job: Keep the dealer onboarding moving" in line
+    assert "Riley answered at" in line
+    # The team's feed never carries the line.
+    feed = client.get("/today/activity", headers={"x-caller-email": "jordan@example.com"}).json()["items"]
+    assert all("lead_line" not in i for i in feed)
+
+
+def test_watching_next_lists_follow_ups_and_standing_jobs_and_stop_ends_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The owner sees every follow-up it will send and the standing jobs; a
+    teammate sees only what they asked for and can stop only that; Stop
+    cancels that one thing."""
+    from openexecutive.orchestrator import take_the_lead
+
+    db = tmp_path / "watching.db"
+    _setup_isolated_db(db, monkeypatch)
+    monkeypatch.setenv("OE_LOCAL_LOGIN", "1")
+    people_store.upsert_person(full_name="Jordan", is_principal=True, email="jordan@example.com", db_path=db)
+    priya = people_store.upsert_person(full_name="Priya Nair", email="priya@example.com", db_path=db)
+    sam = people_store.upsert_person(full_name="Sam Lee", email="sam@example.com", db_path=db)
+    people_registry.invalidate()
+    soon = (datetime.now(UTC) + timedelta(hours=18)).isoformat()
+    owners = episodic.insert_scheduled_action(
+        run_at=soon, channel="slack_dm", channel_ref="U1", intent_text="Ask Priya about the partners' pre-read",
+        assigned_to_person_id=priya,
+    )
+    sams = episodic.insert_scheduled_action(
+        run_at=soon, channel="slack_dm", channel_ref="U2", intent_text="Remind Priya about the venue",
+        assigned_to_person_id=priya, created_by_person_id=sam,
+    )
+    episodic.insert_scheduled_action(  # plumbing never shows
+        run_at=soon, channel="__internal__", channel_ref="principal", intent_text="x", kind="dept_cadence",
+    )
+    job = take_the_lead.add_job("Chase overdue tasks every morning", created_by="t")
+
+    client = _make_client()
+    owner = {"x-caller-email": "jordan@example.com"}
+    lines = client.get("/today", headers=owner).json()["watching"]
+    assert [(w["key"], w["kind"]) for w in lines] == [
+        (f"action:{owners}", "follow_up"), (f"action:{sams}", "follow_up"), (f"job:{job.id}", "standing_job"),
+    ]
+    assert lines[0]["detail"] == "I follow up with Priya Nair" and lines[0]["at"] == soon
+    assert lines[2]["title"] == "Chase overdue tasks every morning"
+
+    teammate = {"x-caller-email": "sam@example.com"}
+    assert [w["key"] for w in client.get("/today", headers=teammate).json()["watching"]] == [f"action:{sams}"]
+    # Not theirs to stop.
+    assert client.post("/today/watching/stop", json={"key": f"action:{owners}"}, headers=teammate).status_code == 404
+    assert client.post("/today/watching/stop", json={"key": f"job:{job.id}"}, headers=teammate).status_code == 404
+    assert client.post("/today/watching/stop", json={"key": f"action:{sams}"}, headers=teammate).json() == {
+        "stopped": True,
+    }
+    assert episodic.get_scheduled_action(sams).status == "cancelled"  # type: ignore[union-attr]
+    # Once is enough.
+    assert client.post("/today/watching/stop", json={"key": f"action:{sams}"}, headers=teammate).status_code == 409
+
+    assert client.post("/today/watching/stop", json={"key": f"job:{job.id}"}, headers=owner).json() == {
+        "stopped": True,
+    }
+    assert [w["key"] for w in client.get("/today", headers=owner).json()["watching"]] == [f"action:{owners}"]

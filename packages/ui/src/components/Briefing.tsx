@@ -69,6 +69,7 @@ import FirstWeekCard from "./briefing/FirstWeekCard";
 import { useGlance } from "./briefing/Glance";
 import { RightNowItem } from "./briefing/RightNow";
 import WaitingElsewhereRow from "./briefing/WaitingElsewhere";
+import WatchingNext from "./briefing/WatchingNext";
 import { isHeldAction } from "./briefing/HeldActionCard";
 import { isLeadTraining } from "./briefing/LeadTrainingCard";
 import ProposalCard from "./briefing/ProposalCard";
@@ -1047,6 +1048,8 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
                 onRetry={(row) => void handleRetryApproval(row)}
                 onOpenChat={onOpenChat}
               />
+
+              <WatchingNext items={today?.watching ?? []} />
 
               {/* Everything else, one quiet line: each opens its panel or page. */}
               {tiles.length > 0 && (
