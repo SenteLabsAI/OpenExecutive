@@ -123,6 +123,10 @@ def share(composite_id: str, *, viewer: Viewer) -> str:
         raise ShareRefused("Restore it first to share it.")
     initialize_db()
     with _get_conn() as conn:
+        # Holds the write lock from the read on, so two shares at once (a
+        # double click) can't both insert: the second waits, then answers
+        # the first one's key.
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT share_key, shared_by FROM artifact_shares WHERE artifact_id = ?", (rec.id,)
         ).fetchone()

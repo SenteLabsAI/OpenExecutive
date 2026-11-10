@@ -155,6 +155,16 @@ async def test_share_open_copy_and_stop(db: dict[str, Any]) -> None:
     assert listed[cid].share_path is None
 
 
+async def test_two_shares_at_once_make_one_link(db: dict[str, Any]) -> None:
+    import asyncio
+
+    cid = _draft(db, "a1", "Board memo", "text")
+    keys = await asyncio.gather(*(
+        asyncio.to_thread(artifact_shares.share, cid, viewer=PRINCIPAL) for _ in range(8)
+    ))
+    assert len(set(keys)) == 1
+
+
 @pytest.mark.parametrize("bad", ["", "short", "x" * 31 + "!", "../../etc/passwd" + "a" * 16])
 async def test_malformed_or_unknown_keys_are_not_found(db: dict[str, Any], bad: str) -> None:
     with pytest.raises(HTTPException) as exc:
