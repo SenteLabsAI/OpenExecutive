@@ -376,6 +376,8 @@ def offers(person_id: int, *, db_path: Path | None = None) -> list[Offer]:
     counts: dict[str, int] = {}
     names: dict[str, str] = {}
     last: dict[str, str] = {}
+    # Each key's address as it was counted, never parsed back out of the key.
+    addresses: dict[str, str] = {}
     for card in sent:
         try:
             payload = json.loads(card.proposed_payload_json or "{}")
@@ -391,6 +393,7 @@ def offers(person_id: int, *, db_path: Path | None = None) -> list[Offer]:
                 continue
             counts[key] = counts.get(key, 0) + 1
             last[key] = max(last.get(key, ""), at)
+            addresses[key] = address
             if address == sender and payload.get("from_name") and key not in names:
                 from openexecutive.delegation.ghostwriter import one_line
 
@@ -399,7 +402,7 @@ def offers(person_id: int, *, db_path: Path | None = None) -> list[Offer]:
     for key, n in counts.items():
         if n < take_the_lead.SUGGEST_AFTER:
             continue
-        address = key.rsplit("|", 1)[1]
+        address = addresses[key]
         if allowed_person(person_id, address, db_path=db_path) is not None:
             continue
         out.append(Offer(key=key, address=address, name=names.get(key, ""), approvals=n, last_at=last[key]))

@@ -186,3 +186,21 @@ def test_letting_go_needs_a_provable_person(client: TestClient, owner: Any, monk
     monkeypatch.delenv("OE_LOCAL_LOGIN", raising=False)
     assert client.post("/approvals/offers/let-go", json={"key": offer["key"]}).status_code in (403, 409)
     assert training.allowed_person(owner.id, KENJI) is None
+
+
+def test_an_address_with_a_bar_is_offered_whole(owner: Any) -> None:
+    training.set_(owner.id, {training.TRAINING: True}, updated_by="t")
+    _sent_unchanged(owner, to="x|ceo@partner.example")
+    [offer] = training.offers(owner.id)
+    assert offer.address == "x|ceo@partner.example"
+    training.let_go(owner.id, offer.key)
+    assert training.allowed_person(owner.id, "ceo@partner.example") is None
+
+
+def test_a_request_that_names_no_one_reads_nothing_off_local_login(
+    client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _reply(owner.id, KENJI, reason="stranger")
+    monkeypatch.delenv("OE_LOCAL_LOGIN", raising=False)
+    body = client.get("/approvals/summary").json()
+    assert body["week"]["waited"] == 0 and body["offers"] == []

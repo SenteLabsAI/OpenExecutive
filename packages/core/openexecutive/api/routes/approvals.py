@@ -71,9 +71,14 @@ class OfferIn(BaseModel):
 def _reader(request: Request) -> tuple[Any | None, bool]:
     """The caller's person (or None) and whether they are the owner. A
     request that names no one counts only under local login, as on As you."""
+    from openexecutive.api import caller as api_caller
     from openexecutive.api.routes.people import caller_is_principal
+    from openexecutive.delegation.settings import local_login
     from openexecutive.people.store import find_principal_person, get_person
 
+    who = api_caller.caller(request)
+    if not who.email and not (who.defaults_to_principal and local_login()):
+        return None, False
     try:
         if caller_is_principal(request):
             return find_principal_person(), True

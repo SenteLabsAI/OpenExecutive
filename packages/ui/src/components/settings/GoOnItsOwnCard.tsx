@@ -17,7 +17,9 @@ export function offerDetail(offer: ApprovalsOffer): string {
   const when = offer.last_at
     ? ` · last on ${new Date(offer.last_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`
     : "";
-  return `${offer.side === "as_me" ? "As me" : "As you"} · approved ${offer.approvals} times unchanged${when}`;
+  // As you: the address too, so a display name alone never stands for who it is.
+  const who = offer.side === "as_you" && offer.name ? ` · ${offer.address}` : "";
+  return `${offer.side === "as_me" ? "As me" : "As you"}${who} · approved ${offer.approvals} times unchanged${when}`;
 }
 
 export function OfferButtons({
