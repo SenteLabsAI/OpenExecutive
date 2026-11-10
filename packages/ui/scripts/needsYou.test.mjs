@@ -4,12 +4,16 @@ import { test } from "node:test";
 import {
   ageAnchor,
   approveLabel,
+  askerName,
+  cardButtons,
   clearAll,
   clearNotice,
   groupByRequest,
   isOlder,
+  isSignalCard,
   newestAnchor,
   splitOlder,
+  waitedOnFirst,
 } from "../src/lib/needsYou.ts";
 
 const NOW = new Date("2026-11-04T16:00:00Z");
@@ -84,4 +88,27 @@ test("Clear all leaves kept cards in view and only clears the older ones", async
   assert.deepEqual(failed.map((c) => c.id), ["old-decision"]);
   assert.equal(clearNotice(failed.length, older.length), "1 of 2 didn't clear. They're still under Older. Try again.");
   assert.equal(clearNotice(0, 2), null);
+});
+
+test("a card someone else is waiting on goes first, each part in its order", () => {
+  const items = [{ id: 1 }, { id: 2, waited: true }, { id: 3 }, { id: 4, waited: true }];
+  assert.deepEqual(waitedOnFirst(items).map((i) => i.id), [2, 4, 1, 3]);
+  assert.deepEqual(waitedOnFirst([]), []);
+});
+
+test("a signal from outside says Got it unless it needs an OK", () => {
+  const ext = isSignalCard({ category: "alert", topic_tags: ["external:app"] });
+  assert.equal(ext, true);
+  assert.deepEqual(cardButtons("", ext), { noApprove: true, gotIt: true });
+  assert.deepEqual(cardButtons("ok", ext), { noApprove: false, gotIt: false });
+  assert.equal(isSignalCard({ category: "alert", surfaced_reason: "moved 8%" }), true);
+  assert.equal(isSignalCard({ category: "alert", topic_tags: [] }), false);
+  assert.deepEqual(cardButtons("", false), { noApprove: false, gotIt: false });
+  assert.deepEqual(cardButtons("fyi", false), { noApprove: true, gotIt: true });
+});
+
+test("the asked chip names the first name, past a title", () => {
+  assert.equal(askerName("Sam Okafor"), "Sam");
+  assert.equal(askerName("Dr. Sam Okafor"), "Sam");
+  assert.equal(askerName("Someone on your team"), "Someone on your team");
 });

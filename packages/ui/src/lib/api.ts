@@ -1979,7 +1979,7 @@ export async function updateWorkspace(update: WorkspaceUpdate): Promise<Workspac
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(update),
   });
-  if (res.status === 403) throw new Error("Only the principal can change workspace settings.");
+  if (res.status === 403) throw new Error("Only the owner can change workspace settings.");
   if (res.status === 422) {
     // FastAPI validation errors: `detail` is a list of {msg}; surface the
     // first one ("timezone 'Mars/Base' is not a known IANA zone",
@@ -3025,7 +3025,7 @@ export async function setDecisionClassMode(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ mode }),
   });
-  if (res.status === 403) throw new Error("Only the principal can change this setting.");
+  if (res.status === 403) throw new Error("Only the owner can change this setting.");
   // 409: auto-booking can't be turned on before a principal exists; the
   // backend's detail says so in plain words.
   if (res.status === 409) throw await onboardError(res, "This setting can't be turned on yet.");
@@ -5080,7 +5080,7 @@ export async function findSlackPersonByEmail(email: string): Promise<DirectoryOp
 
 // Adding, editing and archiving people is the principal's alone (403 for anyone
 // else): the People list is also who can sign in and who the Executive emails.
-const PEOPLE_PRINCIPAL_ONLY = "Only the principal can change the People list.";
+const PEOPLE_PRINCIPAL_ONLY = "Only the owner can change the People list.";
 
 export async function createPerson(body: PersonCreate): Promise<Person> {
   const res = await fetch(`${API_BASE}/people`, {
@@ -5568,6 +5568,12 @@ export interface ProposalItem {
   // format) and, for "link" artifacts, the URL in the connected app.
   artifact_format?: ArtifactFormat | null;
   artifact_url?: string | null;
+  // Why an Approve card waited for you, when its own text doesn't say it
+  // (a gated booking). '' or absent otherwise.
+  waiting_because?: string;
+  // Who else waits on this card: the teammate whose ask was held for your
+  // OK. Home puts these cards first.
+  waiting_on?: string;
 }
 
 // One autonomous alert-review move since the last delivered morning brief
