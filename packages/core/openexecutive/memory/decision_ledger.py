@@ -468,6 +468,33 @@ def list_instances(
     return [DecisionInstance(**dict(r)) for r in rows]
 
 
+def list_for_approver_since(
+    decision_classes: list[str],
+    approver_person_id: int,
+    since: str,
+    *,
+    limit: int = 2000,
+    db_path: Path | None = None,
+) -> list[DecisionInstance]:
+    """``approver_person_id``'s cards of ``decision_classes`` created or
+    settled at or after ``since``, newest first: what went on its own and
+    what waited for them lately (Delegate → Approvals)."""
+    if not decision_classes:
+        return []
+    path = db_path or _db_path()
+    if not path.exists():
+        return []
+    marks = ",".join("?" * len(decision_classes))
+    with _get_conn(path) as conn:
+        rows = conn.execute(
+            f"SELECT * FROM decision_instances WHERE decision_class IN ({marks}) "  # noqa: S608 — marks only
+            "AND approver_person_id = ? AND (created_at >= ? OR resolved_at >= ?) "
+            "ORDER BY created_at DESC LIMIT ?",
+            (*decision_classes, approver_person_id, since, since, limit),
+        ).fetchall()
+    return [DecisionInstance(**dict(r)) for r in rows]
+
+
 def list_recent_resolved(
     limit: int = 20,
     db_path: Path | None = None,

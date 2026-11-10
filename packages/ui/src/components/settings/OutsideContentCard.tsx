@@ -46,12 +46,13 @@ const OPTIONS: {
 // every channel (orchestrator/levels.py, orchestrator/outside_mode.py).
 // Shown to the owner only; nobody else may change it. Lives on Delegate →
 // Approvals: the three levels in one row with the picked one's line, then
-// `note` (what your rules change), and the rest, with `children`, behind
-// What each level means.
+// `note` (what your rules change), the rest, with `children`, behind
+// What each level means, and `after` (what it did lately) at the foot.
 export default function OutsideContentCard({
   children,
   note,
-}: { children?: ReactNode; note?: ReactNode } = {}) {
+  after,
+}: { children?: ReactNode; note?: ReactNode; after?: ReactNode } = {}) {
   const [setting, setSetting] = useState<OutsideContentSetting | null>(null);
   const [more, setMore] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -158,6 +159,7 @@ export default function OutsideContentCard({
               {whatever}
             </div>
           )}
+          {after}
         </>
       )}
       {error && (
