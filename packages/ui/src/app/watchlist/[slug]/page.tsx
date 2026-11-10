@@ -345,8 +345,8 @@ export default function WatchDetailPage() {
                 <div className="text-[15px] font-semibold text-fg">When it fires</div>
                 <p className="text-sm text-fg-muted">
                   {item.mode === "active"
-                    ? "Signals can become alerts in your briefing."
-                    : "Shadow mode (dry_run): polls and records signals, never alerts."}
+                    ? "When something important changes, it tells you in your briefing."
+                    : "It keeps watching quietly and doesn't tell you."}
                 </p>
               </div>
               <div
@@ -357,7 +357,7 @@ export default function WatchDetailPage() {
                 {(
                   [
                     ["active", "Alert me"],
-                    ["dry_run", "Shadow only"],
+                    ["dry_run", "Watch quietly"],
                   ] as const
                 ).map(([value, label]) => (
                   <button
