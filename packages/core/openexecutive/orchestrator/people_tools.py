@@ -1161,8 +1161,9 @@ async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
         if isinstance(exc, ValueError):
             # A rule the store explains (address already on someone, bad
             # alias, too many addresses): the reason goes back to the model
-            # and the person, so it is not a fault worth an error report.
-            logger.warning("upsert_person: refused (%s)", type(exc).__name__)
+            # and the person, so it is not a fault worth an error report. The
+            # traceback stays in the log in case it ever is one.
+            logger.warning("upsert_person: refused (%s)", type(exc).__name__, exc_info=True)
         else:
             logger.exception("upsert_person: failed")
         # Always invalidate — a partial write (e.g. row inserted but scopes
