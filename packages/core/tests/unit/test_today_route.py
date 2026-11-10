@@ -222,6 +222,25 @@ def test_goal_counts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert fin["at_risk_count"] == 1
 
 
+def test_unchecked_count_only_goals_no_review_has_looked_at(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A goal still on its on_track default with no review counts as not
+    checked yet; a reviewed one, or one someone set at risk, does not."""
+    db = tmp_path / "unchecked.db"
+    _setup_isolated_db(db, monkeypatch)
+
+    dept_store.insert_goal("finance", period_value="Q2 2026", key_result="New", target="T", current="", status="on_track", db_path=db)
+    checked = dept_store.insert_goal("finance", period_value="Q2 2026", key_result="Checked", target="T", current="", status="on_track", db_path=db)
+    dept_store.insert_goal("finance", period_value="Q2 2026", key_result="Burn", target="T", current="", status="at_risk", db_path=db)
+    dept_store.record_goal_review(checked, status="on_track", last_reviewed_at="2026-11-02T09:00:00+00:00", db_path=db)
+
+    resp = _make_client().get("/today")
+    fin = next(d for d in resp.json()["departments"] if d["slug"] == "finance")
+    assert fin["goal_count"] == 3
+    assert fin["unchecked_count"] == 1
+
+
 def test_attention_goals_surface_problem_goals_inline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

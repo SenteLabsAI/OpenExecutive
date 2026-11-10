@@ -13,6 +13,7 @@ import {
   type DepartmentCreate,
   type DepartmentState,
 } from "@/lib/api";
+import { goalCounts } from "@/lib/goalGroups";
 import { PageSpinner } from "@/components/ui/Spinner";
 
 // The Approvals level each department's work runs at.
@@ -145,8 +146,9 @@ export default function DepartmentsPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {depts.map((ds) => {
               const cfg = ds.config;
-              const atRisk = ds.goals.filter((g) => g.status === "at_risk").length;
-              const offTrack = ds.goals.filter((g) => g.status === "off_track").length;
+              const counts = goalCounts(ds.goals);
+              const atRisk = counts.at_risk;
+              const offTrack = counts.off_track;
               return (
                 <Link
                   key={cfg.slug}
@@ -168,7 +170,8 @@ export default function DepartmentsPage() {
                     <span className="mr-1">{ds.goals.length} Goal{ds.goals.length !== 1 ? "s" : ""}</span>
                     {atRisk > 0 && <GoalStatusPill status="at_risk" />}
                     {offTrack > 0 && <GoalStatusPill status="off_track" />}
-                    {ds.goals.length > 0 && atRisk === 0 && offTrack === 0 && (
+                    {counts.not_checked > 0 && <GoalStatusPill status="not_checked" />}
+                    {counts.on_track > 0 && atRisk === 0 && offTrack === 0 && counts.not_checked === 0 && (
                       <GoalStatusPill status="on_track" />
                     )}
                   </div>
