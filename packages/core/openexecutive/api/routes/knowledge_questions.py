@@ -130,12 +130,12 @@ def list_questions(request: Request) -> QuestionsOut:
 
 
 def _open_line(request: Request, row_id: int) -> tuple[list[int], QuestionOut]:
-    """A row as the principal sees it, with its lines; 403 for anyone else,
+    """The row holding this line (any of its ids), with its lines; 403 for anyone else,
     404 when it isn't on their list."""
     principal = _principal(request)
     if principal is None:
         raise HTTPException(status_code=403, detail="Only the owner can manage these questions")
-    found = next((pair for pair in _shown(request, int(principal.id)) if pair[1].id == row_id), None)
+    found = next((pair for pair in _shown(request, int(principal.id)) if row_id in pair[0]), None)
     if found is None:
         raise HTTPException(status_code=404, detail="That question is no longer on the list")
     return found

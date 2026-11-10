@@ -306,12 +306,15 @@ def test_rows_join_only_on_wording_the_owner_may_read(client: TestClient, roster
     session_store.create_session("slack:channel:C7:ts1", "Ops", NOW.isoformat(), roster.teammate.id)
     kg.note_unanswered("Who signs off on vendor contracts?", person_id=roster.principal.id,
                        session_id="s-1", asked_at=NOW)
-    kg.note_unanswered("who signs off on our vendor contracts", person_id=roster.teammate.id,
-                       session_id="slack:channel:C7:ts1", asked_at=NOW + timedelta(hours=1), place="Slack")
+    joined = kg.note_unanswered("who signs off on our vendor contracts", person_id=roster.teammate.id,
+                                session_id="slack:channel:C7:ts1", asked_at=NOW + timedelta(hours=1),
+                                place="Slack")
     rows = client.get("/knowledge/questions", headers=OWNER).json()["questions"]
     vendor = next(r for r in rows if "vendor" in r["question"])
     assert (vendor["times"], vendor["asked_by"], vendor["place"]) == (2, "Ben Teammate", "Slack")
-    assert client.post(f"/knowledge/questions/{vendor['id']}/dismiss", headers=OWNER).json()["count"] == 1
+    # Any line of the row finds it, so a row id that changed under the page still works.
+    assert joined is not None and joined != vendor["id"]
+    assert client.post(f"/knowledge/questions/{joined}/dismiss", headers=OWNER).json()["count"] == 1
 
 
 def test_an_answer_too_long_for_a_fact_is_refused(client: TestClient, roster: SimpleNamespace) -> None:
