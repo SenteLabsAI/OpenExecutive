@@ -6806,6 +6806,12 @@ export interface LeadCardField {
 // Edit and Approve + allow. Only its approver and the owner can read it.
 export interface LeadCardPayload {
   summary: string;
+  // Who and what in a few words, and where it would go ("On Slack"). Empty on
+  // cards made before they were saved.
+  headline: string;
+  where: string;
+  // What a connected app's call would send, read-only (to, subject, message).
+  details: LeadCardField[];
   reason: string;
   kind: string;
   fields: LeadCardField[];
@@ -6819,6 +6825,9 @@ export async function getLeadCard(id: number, signal?: AbortSignal): Promise<Lea
   const payload = JSON.parse(instance.proposed_payload_json || "{}");
   return {
     summary: String(payload.summary ?? ""),
+    headline: String(payload.headline ?? ""),
+    where: String(payload.where ?? ""),
+    details: Array.isArray(payload.details) ? payload.details : [],
     reason: String(payload.reason ?? ""),
     kind: String(payload.kind ?? ""),
     fields: Array.isArray(payload.fields) ? payload.fields : [],

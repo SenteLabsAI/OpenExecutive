@@ -1233,6 +1233,66 @@ def test_in_training_nothing_goes_on_any_level(owner: Any, monkeypatch: pytest.M
     assert payload["kind"] == ttl.TRAINING and payload["allow"]["label"] == "Message Sam Teammate"
 
 
+def test_a_training_card_says_who_where_and_the_whole_message(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    _training()
+    text = "Sam, " + "the Q3 numbers are in and look solid. " * 10
+    result, calls = _gated_message(_teammate(), text)
+    assert result["status"] == "waiting_for_approval" and calls == []
+    payload = json.loads(ledger.list_instances(ttl.DECISION_CLASS)[0].proposed_payload_json)
+    assert payload["headline"] == "Message Sam Teammate"
+    # No chat app set up for Sam: it would land on their Needs you.
+    assert payload["where"].startswith("In Open Executive")
+    assert payload["fields"][0]["value"] == text  # the whole message, not the first 120 characters
+
+
+@pytest.mark.parametrize("tool_input", [{}, {"person_id": "SAM"}, {"text": "Hi"}, {"person_id": "SAM", "text": "  "}])
+def test_a_call_missing_who_or_what_is_never_a_card(owner: Any, tool_input: dict[str, Any]) -> None:
+    _training()
+    sam = _teammate()
+    tool_input = {k: sam if v == "SAM" else v for k, v in tool_input.items()}
+    calls: list[Any] = []
+    gated = ttl.gated_handlers(_handlers(calls), source="research")
+    result = json.loads(asyncio.run(gated["message_person"](tool_input)))
+    assert "error" in result and "needs" in result["error"] and calls == []
+    assert ledger.list_instances(ttl.DECISION_CLASS) == []
+
+
+def test_every_needed_argument_is_one_its_tool_requires() -> None:
+    from openexecutive.orchestrator import (
+        broadcast_tools,
+        calendar_tools,
+        open_loop_tools,
+        people_tools,
+        workflow_run_tools,
+    )
+
+    defs = [
+        v for mod in (schedule_tools, broadcast_tools, calendar_tools, open_loop_tools, people_tools, workflow_run_tools)
+        for v in vars(mod).values() if isinstance(v, dict) and v.get("name") in ttl.ACTING_TOOLS and "input_schema" in v
+    ]
+    required = {d["name"]: set(d["input_schema"].get("required", [])) for d in defs}
+    assert set(ttl._NEEDS) == set(ttl.ACTING_TOOLS) == set(required)
+    for tool, needs in ttl._NEEDS.items():
+        assert set(needs) <= required[tool], tool
+
+
+def test_where_a_message_goes() -> None:
+    assert ttl.where("send_slack_dm", {"user_id": "U1", "text": "x"}) == "On Slack"
+    assert ttl.where("send_company_broadcast", {"integration": "discord", "text": "x"}) == "On Discord"
+    assert ttl.where("create_calendar_event", {"title": "Sync"}) == ""
+
+
+def test_a_connected_email_card_shows_the_email() -> None:
+    details = ttl.card_details(
+        "google_workspace__send_gmail_message",
+        {"to": "lee@far.example", "subject": "Renewal", "body": "Lee, the renewal is attached."}, mcp=True,
+    )
+    assert [(d["label"], d["value"]) for d in details] == [
+        ("To", "lee@far.example"), ("Subject", "Renewal"), ("Message", "Lee, the renewal is attached."),
+    ]
+    assert ttl.card_details("message_person", {"person_id": 1, "text": "x"}) == []
+
+
 def test_once_allowed_it_goes_where_approvals_lets_it(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     _training()
     sam = _teammate()

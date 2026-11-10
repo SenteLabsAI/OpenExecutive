@@ -1412,8 +1412,8 @@ def summarize(tool: str, tool_input: dict[str, Any], *, mcp: bool = False, quote
             pass
     elif tool == "create_calendar_event" and tool_input.get("title"):
         label = f"Book {tool_input.get('title')}"
-    elif tool == "run_workflow" and tool_input.get("workflow_id"):
-        label = f"Start the {tool_input.get('workflow_id')} workflow"
+    elif tool == "run_workflow" and (tool_input.get("workflow") or tool_input.get("workflow_id")):
+        label = f"Start the {tool_input.get('workflow') or tool_input.get('workflow_id')} workflow"
     snippet = ""
     for key in ("text", "message", "body", "description", "subject"):
         value = tool_input.get(key)
@@ -1623,6 +1623,109 @@ def _is_principal(person_id: int | None) -> bool:
     return person is None or bool(person.is_principal)
 
 
+# What a held call must name for anyone to approve it: who it reaches and
+# what it says or does (a subset of each tool's ``required``). A call missing
+# one goes back to the Executive to fix, never onto a card.
+_NEEDS: dict[str, tuple[str, ...]] = {
+    "archive_person": ("person_id",),
+    "assign_open_loop": ("person_id", "task"),
+    "cancel_calendar_event": ("decision_instance_id",),
+    "create_calendar_event": ("title", "start", "end", "attendee_person_ids"),
+    "create_instant_meeting": ("attendee_person_ids",),
+    "message_person": ("person_id", "text"),
+    "run_workflow": ("workflow",),
+    "send_company_broadcast": ("integration", "text"),
+    "send_department_message": ("department_slug", "integration", "text"),
+    "send_discord_dm": ("discord_user_id", "text"),
+    "send_slack_dm": ("user_id", "text"),
+    "send_telegram_message": ("chat_id", "text"),
+}
+
+
+def missing_args(tool: str, tool_input: dict[str, Any]) -> list[str]:
+    """The arguments ``tool`` needs that this call leaves out or empty."""
+    def empty(value: Any) -> bool:
+        return value is None or (isinstance(value, (str, list, dict)) and not (
+            value.strip() if isinstance(value, str) else value))
+
+    return [a for a in _NEEDS.get(tool, ()) if empty(tool_input.get(a))]
+
+
+_CHANNEL_NAMES = {"slack": "Slack", "discord": "Discord", "telegram": "Telegram"}
+_DM_CHANNEL = {"send_slack_dm": "slack", "send_discord_dm": "discord", "send_telegram_message": "telegram"}
+
+
+def where(tool: str, tool_input: dict[str, Any]) -> str:
+    """Where a held message would go, in a few words ("On Slack", "In Open
+    Executive, on their Needs you"); "" when it isn't a message or can't be
+    told. Mirrors ``schedule_tools.message_person``'s choice: the first chat
+    app set up here that the person has an id for, else an alert to them.
+    Never raises."""
+    try:
+        if tool in _DM_CHANNEL:
+            return f"On {_CHANNEL_NAMES[_DM_CHANNEL[tool]]}"
+        if tool in _BROADCAST_TOOLS:
+            name = _CHANNEL_NAMES.get(str(tool_input.get("integration") or "").lower())
+            return f"On {name}" if name else ""
+        if tool != "message_person":
+            return ""
+        from openexecutive.config import get_settings
+        from openexecutive.orchestrator.schedule_tools import (
+            _chat_candidates,
+            configured_integrations,
+        )
+        from openexecutive.people.store import get_person
+
+        person = get_person(int(tool_input.get("person_id")))  # type: ignore[arg-type]
+        if person is None:
+            return ""
+        configured = configured_integrations(get_settings())
+        for channel, ref in _chat_candidates(person):
+            if channel in configured and ref and channel in _CHANNEL_NAMES:
+                return f"On {_CHANNEL_NAMES[channel]}"
+        if person.kind != "team":
+            return ""
+        return "In Open Executive, on their Needs you (no chat app set up for them)"
+    except Exception:
+        return ""
+
+
+_MAIL_DETAIL_KEYS = (("subject", "Subject", False), ("body", "Message", True), ("text", "Message", True),
+                     ("message", "Message", True), ("content", "Message", True))
+
+
+def card_details(tool: str, tool_input: dict[str, Any], *, mcp: bool = False) -> list[dict[str, Any]]:
+    """What a held call would send or set, as read-only lines for its card:
+    a connected app's email (to, subject, message). Our own tools show
+    their editable fields instead (``editable_fields``). Never raises."""
+    if not mcp:
+        return []
+    try:
+        out: list[dict[str, Any]] = []
+        sent = mail_sent(tool, tool_input)
+        if sent is not None and sent[0]:
+            out.append({"field": "to", "label": "To", "long": False, "value": sent[0].replace(",", ", ")})
+        seen: set[str] = set()
+        for key, label, long in _MAIL_DETAIL_KEYS:
+            value = tool_input.get(key)
+            if not isinstance(value, str) or not value.strip() or label in seen:
+                continue
+            seen.add(label)
+            out.append({"field": key, "label": label, "long": long, "value": value.strip()[:EDIT_MAX]})
+        if sent is not None and sent[1] and "Subject" not in seen:
+            out.insert(1, {"field": "subject", "label": "Subject", "long": False, "value": sent[1]})
+        if sent is not None and "Message" not in seen:
+            from openexecutive.orchestrator import mcp_gateway
+
+            message = mcp_gateway._ci_get(mcp_gateway._ci_get(tool_input, "body"), "message")
+            body = mcp_gateway._ci_get(mcp_gateway._ci_get(message, "body"), "content")
+            if isinstance(body, str) and body.strip():
+                out.append({"field": "body", "label": "Message", "long": True, "value": body.strip()[:EDIT_MAX]})
+        return out
+    except Exception:
+        return []
+
+
 def hold(
     tool: str, tool_input: dict[str, Any], hit: Hit, *, source: str, mcp: bool, db_path: Path | None = None,
 ) -> int:
@@ -1670,6 +1773,11 @@ def hold(
     payload = {
         "tool": tool, "input": tool_input, "mcp": mcp, "kind": hit.kind, "rule_id": hit.rule_id,
         "reason": hit.reason, "summary": summary, "source": source,
+        # The card's title says who and what in a few words; the full
+        # message or details show under it, and where it would go.
+        "headline": summarize(tool, tool_input, mcp=mcp, quote=False),
+        "where": where(tool, tool_input),
+        "details": card_details(tool, tool_input, mcp=mcp),
         "fields": editable_fields(tool, tool_input, mcp=mcp),
         **({"allow": {"key": grant[0], "label": grant[1]}} if grant is not None else {}),
     }
@@ -1829,6 +1937,14 @@ async def _gated(name: str, inner: _Handler, tool_input: dict[str, Any], *, sour
         # A connected-app call naming no tool is nothing anyone
         # could approve; an empty "The Executive wants to:" card helps no one.
         return json.dumps({"error": "call_tool needs the tool's name: find it with search_tools first."})
+    missing = missing_args(name, tool_input) if hit is not None and not mcp else []
+    if missing:
+        # A call that leaves out who or what is nothing anyone could approve:
+        # it goes back to be fixed instead of onto a card.
+        return json.dumps({"error": (
+            f"{name} was not done: it needs {', '.join(missing)}. Call it again with "
+            f"{'them' if len(missing) > 1 else 'it'} filled in."
+        )})
     if hit is not None:
         try:
             decision_id = hold(name, tool_input, hit, source=source, mcp=mcp)

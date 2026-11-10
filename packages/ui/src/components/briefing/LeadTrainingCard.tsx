@@ -76,9 +76,18 @@ export default function LeadTrainingCard({
   }
 
   const allowLabel = card?.allow?.label ?? null;
-  const headline = card?.summary || proposal.headline;
+  const fields = card?.fields ?? [];
+  // What it would send or set, shown in full: the card's own fields, or a
+  // connected app's email.
+  const shownFields = fields.length > 0 ? fields : (card?.details ?? []);
+  // Older cards saved only the summary, which quotes the start of the
+  // message: with the message shown below, the title keeps just who.
+  const headline =
+    card?.headline ||
+    (card?.summary && shownFields.length > 0 ? card.summary.split(": “")[0] : card?.summary) ||
+    proposal.headline;
   const changed = Object.fromEntries(
-    (card?.fields ?? []).filter((f) => (values[f.field] ?? "") !== f.value).map((f) => [f.field, values[f.field] ?? ""]),
+    fields.filter((f) => (values[f.field] ?? "") !== f.value).map((f) => [f.field, values[f.field] ?? ""]),
   );
 
   return (
@@ -96,13 +105,36 @@ export default function LeadTrainingCard({
           <Chip tone="amber">Training</Chip>
         </span>
       </div>
-      <p className="mt-1.5 text-[15px] leading-relaxed text-fg-muted">
-        It&apos;s in training, so it asks before doing anything you haven&apos;t allowed yet.
+      {card?.where && <p className="mt-1 text-sm leading-snug text-fg-muted">{card.where}</p>}
+      {!editing && shownFields.length > 0 && (
+        <div className="mt-3 flex flex-col gap-2">
+          {shownFields.map((f) =>
+            f.long ? (
+              <div
+                key={f.field}
+                className="max-h-80 overflow-y-auto rounded-xl border-l-[3px] border-accent/40 bg-surface p-3 text-[15px] leading-relaxed text-fg whitespace-pre-wrap break-words"
+              >
+                {shownFields.length > 1 && (
+                  <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-fg-muted">{f.label}</span>
+                )}
+                {f.value}
+              </div>
+            ) : (
+              <div key={f.field} className="text-[15px] leading-snug text-fg break-words">
+                <span className="text-fg-muted">{f.label}: </span>
+                {f.value}
+              </div>
+            ),
+          )}
+        </div>
+      )}
+      <p className="mt-2 text-sm leading-relaxed text-fg-muted">
+        It waited because it&apos;s in training. Approve does this once.
       </p>
 
       {editing ? (
         <div className="mt-3 flex flex-col gap-3">
-          {(card?.fields ?? []).map((f) => {
+          {fields.map((f) => {
             const id = `lead-${decisionId}-${f.field}`;
             const common =
               "w-full rounded-xl border border-line bg-surface p-3 text-[15px] leading-snug text-fg focus:outline-none focus:ring-2 focus:ring-accent/40 disabled:opacity-50";
@@ -187,7 +219,7 @@ export default function LeadTrainingCard({
             >
               Approve
             </Button>
-            {(card?.fields.length ?? 0) > 0 && (
+            {fields.length > 0 && (
               <Button variant="secondary" disabled={busy} onClick={() => setEditing(true)}>
                 Edit
               </Button>
