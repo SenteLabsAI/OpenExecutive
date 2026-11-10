@@ -493,6 +493,8 @@ def test_only_the_principal_marks_a_goal_done_from_chat(monkeypatch: pytest.Monk
 def test_a_review_does_not_reopen_a_goal_marked_done() -> None:
     gid = _goal(None, "Launch", status="done")
     assert store.record_goal_review(gid, status="at_risk", last_reviewed_at="2026-01-05T09:00:00+00:00") is False
+    # A stamp-only update finds the goal and leaves it as it is.
+    assert store.update_goal(gid, last_reviewed_at="2026-01-05T09:00:00+00:00") is True
     assert store.get_goal(gid).status == "done"  # type: ignore[union-attr]
 
 
