@@ -81,6 +81,11 @@ _OFF_THE_PAGE: frozenset[str] = frozenset({"executive_reflection", "executive_re
 # Daily write-ups that pile up: one closed group at the bottom of the page.
 _BRIEFS: frozenset[str] = frozenset({"morning_brief", "end_of_day_digest"})
 _BRIEFS_LABEL = "Briefs and wrap-ups"
+# What a run's title says about how it started (workflows/, research_tools,
+# workflow_run_tools, onboarding).
+_HOW_IT_STARTED: tuple[str, ...] = (
+    "(periodic)", "(post-onboarding auto-fire)", "(chat-tool fire)",
+)
 _CHATS_LABEL = "From chats"
 
 # Chars of body shown as a card preview. Unrelated to _DEFAULT_LIMIT despite
@@ -310,16 +315,13 @@ def _title(rec: ArtifactRecord) -> str:
     """A run's title without the note on how it started."""
     if rec.kind != "workflow":
         return rec.title
-    # A note on how a run started, after its name: "(periodic)",
-    # "(post-onboarding auto-fire)". Linear on purpose: titles are uncapped.
+    # The note on how a run started that the code appends to its name. Only
+    # these: "Report (Q1)" keeps its "(Q1)".
     title = rec.title.rstrip()
-    for _ in range(3):
-        if not title.endswith(")"):
+    for note in _HOW_IT_STARTED:
+        if title.endswith(note):
+            title = title[: -len(note)].rstrip()
             break
-        start = title.rfind("(")
-        if start <= 0 or "(" in title[start + 1 : -1] or ")" in title[start + 1 : -1]:
-            break
-        title = title[:start].rstrip()
     return title or rec.title
 
 

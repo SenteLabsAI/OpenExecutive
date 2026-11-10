@@ -671,8 +671,16 @@ async def test_list_groups_chats_briefs_and_workflows(db: Path) -> None:
 
 async def test_run_titles_drop_the_note_on_how_they_started(db: Path) -> None:
     _seed_named_run(db, "run-po", "board_prep", "Board prep (post-onboarding auto-fire)")
+    _seed_named_run(db, "run-q1", "board_prep", "Weekly report (Q1)")
+    titles = {a.id: a.title for a in (await artifacts_route.list_artifacts(_REQ))["artifacts"]}
+    assert titles == {"run:run-po": "Board prep", "run:run-q1": "Weekly report (Q1)"}
+
+
+@pytest.mark.parametrize("title", ["W" + " " * 200_000 + "x", "W" + "(x)" * 50_000])
+async def test_long_run_titles_come_back_whole(db: Path, title: str) -> None:
+    _seed_named_run(db, "run-long", "board_prep", title)
     items = (await artifacts_route.list_artifacts(_REQ))["artifacts"]
-    assert [a.title for a in items] == ["Board prep"]
+    assert [a.title for a in items] == [title]
 
 
 def test_workflow_label_for_switched_off_and_deleted_workflows(
@@ -691,11 +699,3 @@ def test_workflow_label_for_switched_off_and_deleted_workflows(
     # Deleted: its key in words, never the code name.
     assert artifacts_route.workflow_label("weekly_laptop_restock") == "Weekly laptop restock"
 
-
-async def test_long_run_titles_list_quickly(db: Path) -> None:
-    import time
-
-    _seed_named_run(db, "run-long", "board_prep", "W" + " " * 200_000 + "(x)" * 20_000)
-    start = time.monotonic()
-    await artifacts_route.list_artifacts(_REQ)
-    assert time.monotonic() - start < 2
