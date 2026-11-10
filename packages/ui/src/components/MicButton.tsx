@@ -137,7 +137,9 @@ export default function MicButton({ disabled, onLive, onText, onError }: Props) 
     let restarts = 0;
     // Chrome on Android plays its own sound each time recognition starts,
     // so there it runs once: after a long pause the rest comes on stop.
-    const maxRestarts = /Android/i.test(navigator.userAgent) ? 0 : 20;
+    // It also repeats earlier words in each piece it sends.
+    const android = /Android/i.test(navigator.userAgent);
+    const maxRestarts = android ? 0 : 20;
     let failed = false;
     wantLiveRef.current = true;
     const begin = () => {
@@ -155,7 +157,7 @@ export default function MicButton({ disabled, onLive, onText, onError }: Props) 
       let latest = earlier;
       rec.onresult = (e) => {
         const parts = Array.from(e.results, (r) => ({ transcript: r[0]?.transcript ?? "", isFinal: r.isFinal }));
-        const { settled, pending } = splitHeard(earlier, parts);
+        const { settled, pending } = splitHeard(earlier, parts, android);
         latest = joinDictation(settled, pending);
         heardRef.current = latest;
         onLive(settled, pending);

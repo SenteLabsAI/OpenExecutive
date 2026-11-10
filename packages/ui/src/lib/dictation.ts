@@ -46,11 +46,15 @@ export interface HeardPart {
 /** The words shown while the person talks: `settled` (what the browser
  *  won't change any more, after `earlier`) and `pending` (its current
  *  guess at the latest words, which may still change). */
-export function splitHeard(earlier: string, parts: HeardPart[]): { settled: string; pending: string } {
-  // Chrome on Android sends each piece with everything said before it
-  // ("hi", "hi there", "hi there how"), where desktop sends only the new
-  // words. A piece that starts with the one before it replaces that one,
-  // so the words don't repeat.
+export function splitHeard(
+  earlier: string,
+  parts: HeardPart[],
+  cumulative = false,
+): { settled: string; pending: string } {
+  // Chrome on Android (`cumulative`) sends each piece with everything said
+  // before it ("hi", "hi there", "hi there how"), where desktop sends only
+  // the new words. There a piece that starts with the one before it
+  // replaces that one, so the words don't repeat.
   const pieces: HeardPart[] = [];
   for (const part of parts) {
     const text = part.transcript.trim();
@@ -58,7 +62,7 @@ export function splitHeard(earlier: string, parts: HeardPart[]): { settled: stri
     const prev = pieces[pieces.length - 1];
     const before = prev?.transcript.toLowerCase();
     const lower = text.toLowerCase();
-    if (before && (lower === before || lower.startsWith(`${before} `))) pieces.pop();
+    if (cumulative && before && (lower === before || lower.startsWith(`${before} `))) pieces.pop();
     pieces.push({ transcript: text, isFinal: part.isFinal });
   }
   let settled = earlier.trim();
