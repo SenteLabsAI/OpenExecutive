@@ -3180,7 +3180,7 @@ def test_held_back_page_lines_are_the_principals_alone(
 def test_today_says_why_a_booking_waits_and_who_waits_on_a_held_ask(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A gated booking's card says why it waited (the Approvals level); a
+    """A gated booking's card says why it waited (as recorded when held); a
     teammate's held ask names them, and the reader's own held ask names
     nobody."""
     db = tmp_path / "waiting.db"
@@ -3203,7 +3203,9 @@ def test_today_says_why_a_booking_waits_and_who_waits_on_a_held_ask(
             db_path=db,
         )
 
-    card("Approve meeting: Pricing review", "meeting_scheduling", {"title": "Pricing review"})
+    card("Approve meeting: Pricing review", "meeting_scheduling",
+         {"title": "Pricing review", "waiting_because": "Someone on your team asked for it."})
+    card("Approve meeting: Older booking", "meeting_scheduling", {"title": "Older booking"})
     card("Sam Okafor asked the Executive to: email Northgate", "department_action",
          {"tool": "send_email", "requested_by_person_id": 9, "requested_by": "Sam Okafor"})
     card("Waiting for your OK: save a file", "department_action",
@@ -3211,7 +3213,9 @@ def test_today_says_why_a_booking_waits_and_who_waits_on_a_held_ask(
 
     by_headline = {p["headline"]: p for p in _make_client().get("/today").json()["proposals"]}
     booking = by_headline["Approve meeting: Pricing review"]
-    assert booking["waiting_because"] == "Approvals is on Careful, so a booking waits for your OK."
+    assert booking["waiting_because"] == "Someone on your team asked for it."
+    # A booking held before the reason was recorded says nothing.
+    assert by_headline["Approve meeting: Older booking"]["waiting_because"] == ""
     assert booking["waiting_on"] == ""
     assert by_headline["Sam Okafor asked the Executive to: email Northgate"]["waiting_on"] == "Sam Okafor"
     own = by_headline["Waiting for your OK: save a file"]

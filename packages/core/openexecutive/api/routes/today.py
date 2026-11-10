@@ -252,7 +252,8 @@ class ProposalItem(BaseModel):
     # box per item. None on a card that stands alone.
     group_key: str | None = None
     # Why an Approve card waited for the reader, in their words, when the
-    # card's own text doesn't say it (a gated booking): '' otherwise.
+    # card's own text doesn't say it (a gated booking, as recorded when it
+    # was held): '' otherwise.
     waiting_because: str = ""
     # Who else is waiting on this card: the teammate whose ask was held for
     # the reader's OK. Home puts these first. '' when nobody else waits.
@@ -454,47 +455,31 @@ def _group_requests(items: list[ProposalItem]) -> None:
             p.group_key = shared
 
 
-# The Approvals levels by name (outside_mode.MODES), as the reader sees them.
-_LEVEL_NAMES = {"ask": "Careful", "outsiders": "Balanced", "trust": "Hands-off"}
-
-
 def _mark_waiting(items: list[ProposalItem]) -> None:
-    """Fill ``waiting_because`` on a gated booking's card (its text doesn't
-    say why it waited) and ``waiting_on`` on a teammate's held ask. Never
-    raises: a card without them still shows."""
+    """Fill ``waiting_because`` on a gated booking's card (the reason
+    calendar_tools recorded when it held it; its text doesn't say why) and
+    ``waiting_on`` on a teammate's held ask. Reads a decision only from its
+    own card: its class and approver match. Never raises: a card without
+    them still shows."""
     from openexecutive.memory.decision_ledger import get_decision_instances
-    from openexecutive.orchestrator import department_gate, outside_mode
+    from openexecutive.orchestrator import department_gate
 
-    bookings = [p for p in items if "decision_class:meeting_scheduling" in p.topic_tags]
-    if bookings:
-        try:
-            level = _LEVEL_NAMES.get(outside_mode.get_mode(), "")
-        except Exception:
-            logger.debug("today: couldn't read the Approvals level", exc_info=True)
-            level = ""
-        # On Hands-off a booking goes on its own: one still waiting is from
-        # before the change, and the level isn't why.
-        if level and level != "Hands-off":
-            for p in bookings:
-                p.waiting_because = f"Approvals is on {level}, so a booking waits for your OK."
+    booking_tag = "decision_class:meeting_scheduling"
     held_tag = f"decision_class:{department_gate.DECISION_CLASS}"
-    held = [p for p in items if p.decision_instance_id is not None and held_tag in p.topic_tags]
-    if not held:
+    cards = [
+        p for p in items
+        if p.decision_instance_id is not None and (booking_tag in p.topic_tags or held_tag in p.topic_tags)
+    ]
+    if not cards:
         return
     try:
-        instances = get_decision_instances([i for p in held if (i := p.decision_instance_id) is not None])
+        instances = get_decision_instances([i for p in cards if (i := p.decision_instance_id) is not None])
     except Exception:
-        logger.debug("today: reading held asks failed", exc_info=True)
+        logger.debug("today: reading held cards failed", exc_info=True)
         return
-    for p in held:
+    for p in cards:
         inst = instances.get(p.decision_instance_id or 0)
-        # Only the decision's own card: its class and approver match. A card
-        # whose tags merely name a decision never reads that decision.
-        if (
-            inst is None
-            or inst.decision_class != department_gate.DECISION_CLASS
-            or inst.approver_person_id != p.routed_to_person_id
-        ):
+        if inst is None or inst.approver_person_id != p.routed_to_person_id:
             continue
         try:
             payload = json.loads(inst.proposed_payload_json or "{}")
@@ -502,11 +487,14 @@ def _mark_waiting(items: list[ProposalItem]) -> None:
             continue
         if not isinstance(payload, dict):
             continue
-        asker = payload.get("requested_by_person_id")
-        name = str(payload.get("requested_by") or "").strip()
-        # The reader's own ask held for their own OK: nobody else waits.
-        if isinstance(asker, int) and asker != p.routed_to_person_id and name:
-            p.waiting_on = name
+        if inst.decision_class == "meeting_scheduling" and booking_tag in p.topic_tags:
+            p.waiting_because = str(payload.get("waiting_because") or "").strip()
+        elif inst.decision_class == department_gate.DECISION_CLASS and held_tag in p.topic_tags:
+            asker = payload.get("requested_by_person_id")
+            name = str(payload.get("requested_by") or "").strip()
+            # The reader's own ask held for their own OK: nobody else waits.
+            if isinstance(asker, int) and asker != p.routed_to_person_id and name:
+                p.waiting_on = name
 
 
 def _parse_decision_instance_id(topic_tags: list[str]) -> int | None:

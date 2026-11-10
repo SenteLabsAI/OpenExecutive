@@ -853,6 +853,17 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
         tool_input, getattr(settings, "calendar_meet_links_enabled", True)
     )
 
+    # Why it waits, in the reader's words, for its card on Home (only when it
+    # waits): someone on the team asked and the department can't book alone,
+    # or nobody on the team asked (an email, a contact, an unattended run).
+    waiting_because = ""
+    if gate_decision.action != "execute":
+        waiting_because = (
+            "Someone on your team asked for it, and it needs an OK before it books."
+            if _asked_on_a_verified_surface(session)
+            else "Nobody on your team asked for it here: it came from an email, a contact or a scheduled run."
+        )
+
     # Build the payload that will be re-used at execute time.
     proposed_payload = {
         "title": title,
@@ -863,6 +874,7 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
         "description": description,
         "add_video_link": add_video_link,
         **({"private": True} if private else {}),
+        **({"waiting_because": waiting_because} if waiting_because else {}),
     }
 
     # 11. Record in the ledger.
