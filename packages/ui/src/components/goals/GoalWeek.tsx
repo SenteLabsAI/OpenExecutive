@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 
+import { Spinner } from "@/components/ui/Spinner";
 import { getGoalActivity, type GoalWeek as GoalWeekData } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/relativeTime";
 
@@ -80,7 +81,7 @@ export default function GoalWeek({ goalId, week }: { goalId: number; week: GoalW
       </button>
       {open && (
         <div className="mt-2 rounded-xl bg-surface px-3 py-2">
-          {loading && <p className="text-sm text-fg-subtle">Loading…</p>}
+          {loading && <Spinner />}
           {err && <p className="text-sm text-rose-500">{err}</p>}
           {all && all.done.length === 0 && all.waiting.length === 0 && (
             <p className="text-sm text-fg-muted">Nothing in the last 90 days.</p>
