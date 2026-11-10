@@ -2411,7 +2411,7 @@ def goal_rows(
     except Exception:
         logger.warning("take_the_lead: couldn't read what it did for the goals", exc_info=True)
         return []
-    return [Done(**{k: r[k] for k in r.keys() if k != "n"}) for r in rows]
+    return [Done(**{k: v for k, v in dict(r).items() if k != "n"}) for r in rows]
 
 
 def _one_line(text: str | None, limit: int) -> str:
