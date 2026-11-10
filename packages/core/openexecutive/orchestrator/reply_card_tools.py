@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -127,6 +128,61 @@ async def _outside_the_thread(handles: list[str], mailbox: Any, thread_id: str) 
     return ""
 
 
+_LINE_END_RE = re.compile(r"email\s+and\s+attached\s+it\s+to\s+your\s+reply", re.IGNORECASE)
+
+
+def _why_made(card: Any) -> str:
+    """The why on a document the work attached: whose email it was made for,
+    so its own card on Home says why it is there."""
+    from openexecutive.delegation.inbox import card_payload
+
+    def clean(value: Any, limit: int) -> str:
+        # The sender wrote these: one line, kept short.
+        text = " ".join(str(value or "").split())
+        return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+    payload = card_payload(card)
+    name = clean(str(payload.get("from_name") or "").strip().split(" ")[0].strip(",;:"), 40) or clean(
+        payload.get("from_email"), 80
+    )
+    # The line's own ending can't come from the subject, so a later update
+    # strips exactly this line and no more.
+    subject = " ".join(str(payload.get("subject") or "").split())
+    while _LINE_END_RE.search(subject):
+        subject = " ".join(_LINE_END_RE.sub(" ", subject).split())
+    subject = clean(subject, 80)
+    whose = f"{name}'s" if name else "the"
+    about = f' "{subject}"' if subject else ""
+    return f"I made this for {whose}{about} email and attached it to your reply."
+
+
+_MADE_FOR_RE = re.compile(r"^I made this for .*? email and attached it to your reply\.\s*", re.DOTALL)
+
+
+def _note_why(artifact_ids: list[str], why: str) -> None:
+    """Lead each attached document's own card with ``why``, before the why it
+    was drafted with. Only documents (``source`` artifact) are touched, never
+    another kind of card. Best effort."""
+    from openexecutive.alerts.store import get_alert, update_alert_content
+    from openexecutive.orchestrator.artifact_records import MalformedArtifactId, parse_artifact_id
+
+    for artifact_id in dict.fromkeys(i.strip() for i in artifact_ids if i.strip()):
+        try:
+            kind, native = parse_artifact_id(artifact_id)
+            if kind != "alert" or not native.isdigit():
+                continue
+            alert = get_alert(int(native))
+            if alert is None or alert.source != "artifact":
+                continue
+            # One made-for line at most: a newer one replaces an earlier one.
+            before = _MADE_FOR_RE.sub("", (alert.suggested_action or "").strip(), count=1)
+            update_alert_content(int(native), suggested_action=f"{why} {before}".strip())
+        except MalformedArtifactId:
+            continue
+        except Exception:
+            logger.warning("update_reply_card: couldn't note why %s was made", artifact_id, exc_info=True)
+
+
 def _strings(value: Any) -> list[str]:
     return [str(v) for v in value if isinstance(v, str)] if isinstance(value, list) else []
 
@@ -175,6 +231,12 @@ async def handle_update_reply_card(tool_input: dict[str, Any]) -> str:
         )
     except SendRefused as refused:
         return _error(f"Nothing was changed: {refused.message}")
+    if artifact_ids:
+        # Only the card's wording: it never stops the hand-back.
+        try:
+            await asyncio.to_thread(_note_why, artifact_ids, _why_made(card))
+        except Exception:
+            logger.warning("update_reply_card: couldn't note why the documents were made", exc_info=True)
     card_work.keep(card_work.finished(writer.person, card_id, gmail=writer.mailbox))
     return json.dumps({
         "status": "ok",
