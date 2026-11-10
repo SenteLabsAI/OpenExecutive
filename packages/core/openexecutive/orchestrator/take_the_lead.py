@@ -2532,6 +2532,10 @@ class _Watched:
     # Seen but not yet scheduled (a wake was inside WAKE_GAP, or failed):
     # kept until one is, so nothing seen is dropped.
     pending: list[str] = field(default_factory=list)
+    # Each check's own mark: where it last read up to. A check that fails
+    # keeps its mark (and sees that window next time); the others move on,
+    # so nothing is seen twice.
+    marks: dict[str, datetime] = field(default_factory=dict)
 
 
 _WATCHED = _Watched()
@@ -2613,20 +2617,20 @@ def watch(now: datetime | None = None) -> str | None:
             _WATCHED.at = None
             _WATCHED.goals = {}
             _WATCHED.pending = []
+            _WATCHED.marks = {}
             return None
     except Exception:
         return None
-    since = _WATCHED.at
+    stocked = _WATCHED.at is not None
+    _WATCHED.at = current
     reasons: list[str] = []
-    # A check that fails leaves the watermark (and the goal snapshot) where
-    # it was, so what it would have seen is seen on the next check.
-    complete = True
+    # A goal read that fails keeps the last snapshot, so a slip is still seen.
     try:
         goals: dict[int, tuple[str, str]] | None = _goal_statuses()
     except Exception:
         logger.warning("take_the_lead: couldn't read the goals", exc_info=True)
-        goals, complete = None, False
-    if since is not None:
+        goals = None
+    if stocked:
         for goal_id, (status, _) in (goals or {}).items():
             before = _WATCHED.goals.get(goal_id)
             if before is not None and _GOAL_RANK.get(status, 0) > _GOAL_RANK.get(before, 0):
@@ -2634,18 +2638,21 @@ def watch(now: datetime | None = None) -> str | None:
         # The reason is stored on the scheduled row and read back into the
         # look's own turn, so it names the kind of event only, never a title
         # someone else wrote (a meeting invite, a task, a run).
-        for check, label in (
-            (lambda: _failed_runs(since), "a workflow failed"),
-            (lambda: _overdue_tasks(since, current), "a task went overdue"),
-            (lambda: _ended_meetings(since, current), "a meeting ended"),
-        ):
+        checks: tuple[tuple[str, Callable[[datetime], list[str]], str], ...] = (
+            ("runs", _failed_runs, "a workflow failed"),
+            ("tasks", lambda since: _overdue_tasks(since, current), "a task went overdue"),
+            ("meetings", lambda since: _ended_meetings(since, current), "a meeting ended"),
+        )
+        for name, check, label in checks:
+            since = _WATCHED.marks.get(name, current)
             try:
-                reasons += [label for _ in check()]
+                reasons += [label for _ in check(since)]
             except Exception:
                 logger.warning("take_the_lead: a watch check failed", exc_info=True)
-                complete = False
-    if complete or since is None:
-        _WATCHED.at = current
+                continue
+            _WATCHED.marks[name] = current
+    else:
+        _WATCHED.marks = {name: current for name in ("runs", "tasks", "meetings")}
     if goals is not None:
         _WATCHED.goals = {goal_id: status for goal_id, (status, _) in goals.items()}
     reasons = [*_WATCHED.pending, *reasons][-_PENDING_MAX:]

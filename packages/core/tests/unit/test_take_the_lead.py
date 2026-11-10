@@ -1678,14 +1678,41 @@ def test_a_failed_check_is_looked_at_again(monkeypatch: pytest.MonkeyPatch, watc
     monkeypatch.setattr(ttl, "_ended_meetings", lambda since, now: [])
     monkeypatch.setattr(ttl, "_failed_runs", lambda since: [])
     assert ttl.watch(NOW) is None
-    stocked = ttl._WATCHED.at
+    stocked = ttl._WATCHED.marks["runs"]
 
     def boom(since: Any) -> list[str]:
         raise RuntimeError("locked")
 
     monkeypatch.setattr(ttl, "_failed_runs", boom)
-    assert ttl.watch(NOW + timedelta(minutes=2)) is None
-    assert ttl._WATCHED.at == stocked
+    later = NOW + timedelta(minutes=2)
+    assert ttl.watch(later) is None
+    # Only the check that failed keeps its mark; the others move on.
+    assert ttl._WATCHED.marks["runs"] == stocked
+    assert ttl._WATCHED.marks["meetings"] == later
+
+
+def test_what_one_check_saw_doesnt_wake_it_again_while_another_fails(
+    monkeypatch: pytest.MonkeyPatch, watched: None,
+) -> None:
+    from datetime import timedelta
+
+    monkeypatch.setattr(ttl, "executive_on", lambda **_: True)
+    monkeypatch.setattr(ttl, "_goal_statuses", lambda: {})
+    monkeypatch.setattr(ttl, "_overdue_tasks", lambda since, now: [])
+    monkeypatch.setattr(ttl, "_look_waiting", lambda: False)
+
+    def meetings(since: Any, now: Any) -> list[str]:
+        raise RuntimeError("cache unreadable")
+
+    monkeypatch.setattr(ttl, "_ended_meetings", meetings)
+    failed_at = NOW + timedelta(seconds=30)
+    monkeypatch.setattr(ttl, "_failed_runs", lambda since: ["Board prep"] if since < failed_at else [])
+    woken: list[str] = []
+    monkeypatch.setattr(ttl, "wake", lambda reason, now=None: woken.append(reason) or 1)
+    ttl.watch(NOW)
+    ttl.watch(NOW + timedelta(minutes=2))
+    ttl.watch(NOW + timedelta(minutes=4))
+    assert woken == ["a workflow failed"]
 
 
 def test_what_it_sees_inside_the_gap_wakes_it_once_the_gap_is_over(
