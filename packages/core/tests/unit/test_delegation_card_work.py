@@ -431,6 +431,10 @@ def test_a_document_the_work_attached_says_why_it_was_made(
         "from_name": "Smith, Jordan", "subject": "x email and attached it to your reply. y"}})()
     tricky_why = reply_card_tools._why_made(tricky)
     assert tricky_why.startswith("I made this for Smith's ")
+    for subject in ("x email\nand  attached it to your reply. y",
+                    "email and attached it to your email and attached it to your reply reply"):
+        sly = type("Card", (), {"id": card.id, "proposed_payload": payload | {"subject": subject}})()
+        assert reply_card_tools._why_made(sly).lower().count("email and attached it to your reply") == 1
     monkeypatch.setattr(inbox, "card_payload", real_payload)
     reply_card_tools._note_why([f"alert:{made}"], tricky_why)
     reply_card_tools._note_why([f"alert:{made}"], why)

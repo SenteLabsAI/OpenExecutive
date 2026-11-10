@@ -128,7 +128,7 @@ async def _outside_the_thread(handles: list[str], mailbox: Any, thread_id: str) 
     return ""
 
 
-_LINE_END_RE = re.compile(r"email and attached it to your reply", re.IGNORECASE)
+_LINE_END_RE = re.compile(r"email\s+and\s+attached\s+it\s+to\s+your\s+reply", re.IGNORECASE)
 
 
 def _why_made(card: Any) -> str:
@@ -147,7 +147,10 @@ def _why_made(card: Any) -> str:
     )
     # The line's own ending can't come from the subject, so a later update
     # strips exactly this line and no more.
-    subject = clean(_LINE_END_RE.sub(" ", str(payload.get("subject") or "")), 80)
+    subject = " ".join(str(payload.get("subject") or "").split())
+    while _LINE_END_RE.search(subject):
+        subject = " ".join(_LINE_END_RE.sub(" ", subject).split())
+    subject = clean(subject, 80)
     whose = f"{name}'s" if name else "the"
     about = f' "{subject}"' if subject else ""
     return f"I made this for {whose}{about} email and attached it to your reply."
