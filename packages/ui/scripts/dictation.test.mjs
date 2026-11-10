@@ -44,6 +44,22 @@ test("live words: settled ones follow what came before, the latest guess stays a
   assert.deepEqual(splitHeard("", []), { settled: "", pending: "" });
 });
 
+test("live words from Chrome on Android, which repeats what came before, don't repeat", () => {
+  const parts = [
+    { transcript: "move the", isFinal: true },
+    { transcript: "move the board prep", isFinal: true },
+    { transcript: "move the board prep to Thursday", isFinal: false },
+  ];
+  assert.deepEqual(splitHeard("", parts), { settled: "", pending: "move the board prep to Thursday" });
+  assert.deepEqual(splitHeard("", parts.slice(0, 2)), { settled: "move the board prep", pending: "" });
+  // Desktop pieces that only look alike are kept.
+  const desktop = [
+    { transcript: "the", isFinal: true },
+    { transcript: " theory holds", isFinal: true },
+  ];
+  assert.deepEqual(splitHeard("", desktop), { settled: "the theory holds", pending: "" });
+});
+
 test("the start tone rises and the stop tone falls", () => {
   assert.ok(MIC_TONES.start[1] > MIC_TONES.start[0]);
   assert.ok(MIC_TONES.stop[1] < MIC_TONES.stop[0]);
