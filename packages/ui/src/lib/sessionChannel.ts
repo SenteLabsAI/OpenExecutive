@@ -40,6 +40,12 @@ export function sessionTitle(session: SessionSummary): string {
   return session.title || "Untitled chat";
 }
 
+/** The top bar's label: who you're talking to, then the open chat's title once it has one. */
+export function headerLabel(base: string, chat?: Pick<SessionSummary, "title">): string {
+  const title = chat?.title?.trim();
+  return title ? `${base} · ${title}` : base;
+}
+
 /** The newest `limit` web chats. Input is newest-first (the API sorts by `updated_at DESC`). */
 export function recentWebChats(sessions: SessionSummary[], limit: number): SessionSummary[] {
   const out: SessionSummary[] = [];
