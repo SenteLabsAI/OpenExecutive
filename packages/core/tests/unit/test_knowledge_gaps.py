@@ -110,8 +110,11 @@ def test_a_line_leaves_and_a_dismissed_one_stays_gone_for_who_asked(db: Path) ->
 
 def test_a_later_answer_that_knew_it_takes_it_off(db: Path) -> None:
     kg.note_unanswered(REFUND, person_id=1, session_id="s-1", db_path=db)
-    assert kg.note_answered("refund policy for annual plans?", db_path=db) == 1
-    assert kg.list_open(db_path=db) == []
+    kg.note_unanswered(REFUND, person_id=2, session_id="s-2", db_path=db)
+    # Only the asker's own line: someone else's turn never closes another's.
+    assert kg.note_answered("refund policy for annual plans?", person_id=1, db_path=db) == 1
+    [left] = kg.list_open(db_path=db)
+    assert [a["person_id"] for a in left["asks"]] == [2]
 
 
 def test_deleting_the_chat_drops_its_asks(db: Path) -> None:

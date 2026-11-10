@@ -22,7 +22,8 @@ own mail): those stay out of this list entirely.
 of a new line. Lines are per person; the Knowledge page shows lines that ask
 the same question as one row. A line leaves the list when the owner adds a document for it, tells
 the answer (kept as a standing fact, ``memory.facts``), or dismisses it, and
-also when a later turn asks the same question and the reply knew it. A
+also when the same person asks it again and the reply drew on a company
+document. A
 dismissed question doesn't come back for whoever asked it.
 
 **Who sees it.** The principal, on the Knowledge page. Each asking is kept
@@ -263,16 +264,18 @@ def note_unanswered(
         return None
 
 
-def note_answered(question: str, *, db_path: Path | None = None) -> int:
-    """A later turn asked the same thing and its reply drew on a company
-    document: the open line for it leaves the list. Returns how many lines
+def note_answered(question: str, *, person_id: int, db_path: Path | None = None) -> int:
+    """A later turn by the same person asked the same thing and its reply
+    drew on a company document: their open line for it leaves the list. Only
+    their own lines, so no one's turn closes (or learns of) anyone else's. Returns how many lines
     closed. Never raises."""
     try:
         conn = _connect(db_path)
         try:
             rows = conn.execute(
                 f"SELECT DISTINCT l.id, a.question FROM {TABLE} l JOIN {ASKS} a ON a.line_id = l.id "  # noqa: S608
-                "WHERE l.status = 'open'"
+                "WHERE l.status = 'open' AND l.person_id = ?",
+                (int(person_id),),
             ).fetchall()
             ids = {int(r["id"]) for r in rows if same_question(str(r["question"]), question)}
             for line_id in ids:
