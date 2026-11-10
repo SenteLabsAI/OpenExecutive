@@ -351,6 +351,23 @@ def test_the_briefing_reads_the_top_three_back_from_the_artifact(
     assert summarize_review("(no artifact)") == {"period": "", "top_three": [], "excerpt": ""}
 
 
+def test_an_area_whose_goals_are_all_done_is_skipped(
+    _isolated: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ids = _seed_areas()
+    for key in ("buffer", "invoices"):
+        dept_store.update_goal(ids[key], status="done")
+    dept_registry.invalidate()
+    calls = _stub_models(monkeypatch)
+
+    artifact = _artifact(_run())
+
+    # Finance has only done goals: no grader call, no section in the review.
+    assert [c[0] for c in calls["specialist"]] == []
+    assert "### Finance" not in artifact
+    assert "### Client work" in artifact
+
+
 def test_a_failing_specialist_leaves_the_area_ungraded(
     _isolated: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

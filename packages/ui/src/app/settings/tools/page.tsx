@@ -16,11 +16,12 @@ import {
   type SavedToolDetail,
 } from "@/lib/api";
 import { PageSpinner } from "@/components/ui/Spinner";
+import { savedToolTitle, usesWords } from "@/lib/workflowTools";
 
-// Where a tool was saved or run: "chat", or "workflow:<name>/<step>".
+// Where a tool was saved or run: "chat", or "workflow:<name>/<step>" (said as "a workflow": no code names).
 function originLabel(origin: string): string {
   if (origin === "chat") return "a chat";
-  if (origin.startsWith("workflow:")) return `workflow ${origin.slice("workflow:".length)}`;
+  if (origin.startsWith("workflow:")) return "a workflow";
   return origin;
 }
 
@@ -132,7 +133,7 @@ function ToolCard({
 
   return (
     <SettingsCard
-      title={<span className="font-mono">{tool.name}</span>}
+      title={savedToolTitle(tool.name)}
       titleId={titleId}
       description={tool.description}
       action={
@@ -149,15 +150,10 @@ function ToolCard({
       </p>
       <p className="mt-1 text-sm text-fg-muted">
         {python ? (
-          "Works on files with Python. Runs only when you ask in chat, never in workflows."
+          "Works on files you give it. Runs only when you ask in chat, never in workflows."
         ) : (
           <>
-            Uses:{" "}
-            {tool.uses_tools.length ? (
-              <span className="font-mono text-xs">{tool.uses_tools.join(", ")}</span>
-            ) : (
-              "no other tools"
-            )}
+            Uses: {usesWords(tool.uses_tools)}
           </>
         )}
       </p>
@@ -210,7 +206,7 @@ function ToolCard({
   );
 }
 
-// Settings → Advanced → Custom tools: the tools the Executive built and kept
+// Settings → Advanced → Tools I built: the tools the Executive built and kept
 // (saved tools, run_script save_as), with a switch for each, their versions
 // and their recent runs.
 export default function SavedToolsSettingsPage() {
@@ -244,13 +240,13 @@ export default function SavedToolsSettingsPage() {
 
   return (
     <SettingsSubpage
-      title="Custom tools"
-      description="When the Executive needs a tool it doesn't have, it builds one, and keeps the ones it will need again: ones that combine its other tools, and ones that work on files. A custom tool can only do what the conversation or workflow using it is already allowed to do. Turn one off to stop it running, or switch it back to an earlier version."
+      title="Tools I built"
+      description="When I need a tool I don't have, I build one and keep the ones I will need again. A tool can only do what the chat or workflow using it is already allowed to do. Turn one off to stop it, or go back to an earlier version."
     >
       {state.kind === "loading" && <PageSpinner />}
       {state.kind === "forbidden" && (
         <SettingsCard>
-          <p className="text-sm text-fg-muted">Only the account owner can see custom tools.</p>
+          <p className="text-sm text-fg-muted">Only the account owner can see the tools I built.</p>
         </SettingsCard>
       )}
       {state.kind === "error" && (
@@ -263,16 +259,14 @@ export default function SavedToolsSettingsPage() {
           {!state.enabled && (
             <SettingsCard>
               <p className="text-sm text-fg-muted">
-                Custom tools are turned off on this server (SAVED_TOOLS_ENABLED=false): nothing new
-                is kept and none of these run.
+                Kept tools are turned off here: I keep nothing new and none of these run.
               </p>
             </SettingsCard>
           )}
           {state.tools.length === 0 ? (
             <SettingsCard>
               <p className="text-sm text-fg-muted">
-                No custom tools yet. They appear here when the Executive builds a tool for a job it
-                is likely to do again.
+                No tools yet. They show here when I build a tool for a job I am likely to do again.
               </p>
             </SettingsCard>
           ) : (

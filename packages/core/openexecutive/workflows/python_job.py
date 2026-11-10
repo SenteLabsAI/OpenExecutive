@@ -616,7 +616,7 @@ async def handle_run_python_job(tool_input: dict[str, Any]) -> str:
     saved: Any = None
     if tool_name is not None:
         if not settings.saved_tools_enabled:
-            return _err("Custom tools are turned off")
+            return _err("Kept tools are turned off")
         if save_as is not None:
             return _err("save_as goes with new code, not a kept job")
         try:
@@ -736,7 +736,7 @@ def _save(name: str, description: str, code: str, ok: bool) -> dict[str, Any]:
     from openexecutive.workflows.step_script import _audit_save
 
     if not get_settings().saved_tools_enabled:
-        return {"save_error": "Custom tools are turned off"}
+        return {"save_error": "Kept tools are turned off"}
     if not ok:
         return {"save_error": "not saved: the job failed"}
     try:

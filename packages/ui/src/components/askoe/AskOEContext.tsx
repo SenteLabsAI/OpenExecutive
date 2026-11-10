@@ -72,7 +72,7 @@ const ROUTE_GUIDE_MAP: Array<{ prefix: string; guideId: string; title: string }>
   { prefix: "/demo", guideId: "simulator", title: "Company Simulator" },
   { prefix: "/clients", guideId: "clients", title: "Client Companies" },
   { prefix: "/onboard", guideId: "company_profile", title: "Onboarding" },
-  { prefix: "/settings/tools", guideId: "custom_tools", title: "Tools" },
+  { prefix: "/settings/tools", guideId: "custom_tools", title: "Tools I built" },
   { prefix: "/settings", guideId: "settings", title: "Settings" },
   // Home: only "/" itself matches (no route starts with "//").
   { prefix: "/", guideId: "chat", title: "Home" },
