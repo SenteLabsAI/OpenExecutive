@@ -48,7 +48,6 @@ OFFERS_TABLE = "repeat_ask_offers"
 KEEP_DAYS = 42
 MIN_DAYS = 3
 SNOOZE_DAYS = 60
-ACCEPTED_KEEP_DAYS = 365
 MAX_ASKS_PER_PERSON = 400
 ASK_MAX = 300
 MIN_WORDS = 2
@@ -202,7 +201,7 @@ def _held(conn: sqlite3.Connection, person_id: int, words: frozenset[str], now: 
     ):
         if not similar(words, frozenset(json.loads(row["words"]))):
             continue
-        if row["status"] in ("open", "accepted"):
+        if row["status"] == "open":
             return True
         if row["hold_until"] and row["hold_until"] > now.isoformat():
             return True
@@ -244,12 +243,12 @@ def note_ask(
                 f"DELETE FROM {ASKS_TABLE} WHERE created_at < ?",  # noqa: S608
                 ((current - timedelta(days=KEEP_DAYS)).isoformat(),),
             )
-            # An answered offer is kept only as long as it holds the same
-            # offer back: Not now until its hold ends, Set it up for a year.
+            # An answered offer is kept only while it holds the same offer
+            # back. Set it up holds as long as Not now: opening the wizard
+            # creates nothing, so asking on regardless is offered again.
             conn.execute(
-                f"DELETE FROM {OFFERS_TABLE} WHERE (status = 'dismissed' AND hold_until < ?) "  # noqa: S608
-                "OR (status = 'accepted' AND created_at < ?)",
-                (current.isoformat(), (current - timedelta(days=ACCEPTED_KEEP_DAYS)).isoformat()),
+                f"DELETE FROM {OFFERS_TABLE} WHERE status != 'open' AND hold_until < ?",  # noqa: S608
+                (current.isoformat(),),
             )
             earlier = [
                 (datetime.fromisoformat(r["created_at"]), frozenset(json.loads(r["words"])))
@@ -334,18 +333,12 @@ def answer_offer(
     current = now or _now()
     conn = _connect(db_path)
     try:
-        if accept:
-            cur = conn.execute(
-                f"UPDATE {OFFERS_TABLE} SET status = 'accepted' "  # noqa: S608
-                "WHERE id = ? AND person_id = ? AND status = 'open'",
-                (offer_id, person_id),
-            )
-        else:
-            cur = conn.execute(
-                f"UPDATE {OFFERS_TABLE} SET status = 'dismissed', hold_until = ? "  # noqa: S608
-                "WHERE id = ? AND person_id = ? AND status = 'open'",
-                ((current + timedelta(days=SNOOZE_DAYS)).isoformat(), offer_id, person_id),
-            )
+        cur = conn.execute(
+            f"UPDATE {OFFERS_TABLE} SET status = ?, hold_until = ? "  # noqa: S608
+            "WHERE id = ? AND person_id = ? AND status = 'open'",
+            ("accepted" if accept else "dismissed",
+             (current + timedelta(days=SNOOZE_DAYS)).isoformat(), offer_id, person_id),
+        )
         conn.commit()
         return cur.rowcount > 0
     finally:

@@ -111,13 +111,18 @@ def test_the_same_third_ask_from_two_apps_at_once_makes_one_offer(db):
     assert len(repeat_asks.open_offers(7, db_path=db)) == 1
 
 
-def test_set_it_up_retires_the_offer_for_good(db):
+def test_set_it_up_holds_the_offer_back_like_not_now(db):
     for week in range(3):
         offer = _ask(db, "pipeline summary", _monday(week))
-    assert repeat_asks.answer_offer(offer["id"], 7, accept=True, db_path=db)
-    assert repeat_asks.answer_offer(offer["id"], 7, accept=True, db_path=db) is False
+    assert repeat_asks.answer_offer(offer["id"], 7, accept=True, now=_monday(2), db_path=db)
+    assert repeat_asks.answer_offer(offer["id"], 7, accept=True, now=_monday(2), db_path=db) is False
+    assert _ask(db, "pipeline summary", _monday(3)) is None
+    # Opening the wizard creates nothing: still asking after the hold is
+    # offered again.
+    later = None
     for week in range(12, 15):
-        assert _ask(db, "pipeline summary", _monday(week)) is None
+        later = _ask(db, "pipeline summary", _monday(week))
+    assert later is not None
 
 
 def test_routes_show_and_answer_only_the_callers_own(db, monkeypatch):
