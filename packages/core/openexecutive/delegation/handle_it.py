@@ -44,6 +44,9 @@ with the reason recorded.
   it's an AI, recipients were trimmed, the draft names the Executive
   (``names_the_executive``), ...). The Executive merely being on the email
   (``executive_on_thread``) is fine: it is never a recipient of the reply;
+- the reply leaves something for the person to answer (an open question on
+  its card with no answer yet, ``leaves_questions``), checked at send time
+  (``reply_send.send_on_its_own``), after any work the Executive did first;
 - it already sent one in this thread in the last day, or the last thing the
   person "said" in this thread was itself sent on its own;
 - the day's limit (``DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY``) is reached;
@@ -166,6 +169,7 @@ REASONS: dict[str, str] = {
     "recipients": "The reply would go to someone the email didn't.",
     "long": "The reply is longer than the ones it sends on its own.",
     "flagged": "Something about the draft needs your eye.",
+    "questions": "It left something for you to answer, so it waits for you.",
     "thread_recent": "It already replied on its own in this conversation today.",
     "in_a_row": "Its last message in this conversation was sent on its own too.",
     "daily_limit": "Today's limit of replies sent on its own is reached.",
@@ -189,6 +193,15 @@ REASONS: dict[str, str] = {
     "calendar_unread": "It couldn't check your calendar for clashes, so it asked instead.",
     "calendar_write": "Your calendar sign-in can't answer invites yet. Connect it again under Read your calendar.",
 }
+
+
+def leaves_questions(payload: dict[str, Any]) -> bool:
+    """Whether the reply on this card leaves the person something to answer:
+    an open question with no answer on the card yet. Such a reply never goes
+    on its own; it waits on Home for them."""
+    from openexecutive.delegation.answers import questions_for
+
+    return any(q["text"].strip() and not q["answer"].strip() for q in questions_for(payload))
 
 
 def hands_off(*, db_path: Path | None = None) -> bool:

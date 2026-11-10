@@ -277,6 +277,9 @@ async def _send_checked(
             raise SendRefused(409, "stranger", handle_it.REASONS["stranger"])
         if not handle_it.signing_ok():
             raise SendRefused(409, "caller_signing_required", handle_it.REASONS["signing_off"])
+        # It goes on its own only when it leaves them nothing to answer.
+        if handle_it.leaves_questions(payload):
+            raise SendRefused(409, "questions", handle_it.REASONS["questions"])
         counted = handle_it.count_refusal(person.id, str(payload.get("thread_id") or ""), now)
         if counted is not None:
             raise SendRefused(409, counted, handle_it.REASONS[counted])

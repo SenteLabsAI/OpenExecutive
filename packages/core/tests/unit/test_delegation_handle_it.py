@@ -49,6 +49,13 @@ def balanced(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.OUTSIDERS)
 
 
+@pytest.fixture(autouse=True)
+def settled(models: dict[str, Any]) -> None:
+    """The composed reply leaves nothing to answer unless a test says
+    otherwise: one that does always waits for the person."""
+    models["questions"] = []
+
+
 def _careful(monkeypatch: pytest.MonkeyPatch) -> None:
     from openexecutive.orchestrator import outside_mode
 
@@ -252,14 +259,35 @@ def test_counted_rules_allow_one_reply_a_thread_a_day() -> None:
     assert handle_it.count_refusal(7, "t1", NOW + timedelta(days=2)) is None
 
 
-def test_handled_lists_it_with_the_questions_left_for_them(owner: Any, models: dict[str, Any]) -> None:
+def test_handled_lists_what_it_sent(owner: Any, models: dict[str, Any]) -> None:
     _on(owner)
     _scan_one(owner)
     found = handle_it.handled(owner.id)
     assert len(found) == 1
     assert found[0].to_email == DANA
-    assert found[0].open_questions == ["Can the call move to Friday at 10?"]
+    assert found[0].open_questions == []
     assert handle_it.handled(owner.id + 1) == []  # nobody else's
+
+
+def test_a_reply_that_leaves_them_something_to_answer_waits(owner: Any, models: dict[str, Any]) -> None:
+    models["questions"] = ["Can the call move to Friday at 10?"]
+    _on(owner)
+    mailbox, result = _scan_one(owner)
+    assert result.drafted == 1 and result.handled == 0 and mailbox.sent == []
+    card = _only_card(owner)
+    assert card.status == "proposed" and card.gate_mode == "propose"  # it waits on Home
+    assert inbox.card_payload(card)["handle_it_reason"] == "questions"
+    assert handle_it.sent_today(owner.id, NOW) == 0
+
+
+def test_only_unanswered_questions_hold_it() -> None:
+    assert handle_it.leaves_questions({"open_questions": ["Friday at 10?"]})
+    assert not handle_it.leaves_questions({"open_questions": ["Friday at 10?"], "answered_questions": {"0": "Yes"}})
+    assert handle_it.leaves_questions(
+        {"open_questions": ["Friday at 10?", "Which room?"], "answered_questions": {"0": "Yes"}}
+    )
+    assert not handle_it.leaves_questions({"open_questions": []})
+    assert not handle_it.leaves_questions({})
 
 
 def test_handled_is_not_crowded_out_by_other_peoples_sends(owner: Any, models: dict[str, Any]) -> None:

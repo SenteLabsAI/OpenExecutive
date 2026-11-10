@@ -34,6 +34,24 @@ def local_login(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     follow_ups._LAST_LOOK.clear()
 
 
+@pytest.fixture(autouse=True)
+def settled(models: dict[str, Any]) -> None:
+    """The follow-up leaves nothing to answer: one that does waits for them."""
+    models["questions"] = []
+
+
+def test_a_follow_up_that_leaves_them_something_to_answer_waits(owner: Any, models: dict[str, Any]) -> None:
+    models["questions"] = ["Which deck did they mean?"]
+    _on(owner, "hands_off")
+    mailbox = FakeInbox()
+    mailbox.add(_asked())
+    _scan(owner, mailbox)
+    assert mailbox.sent == []
+    (card,) = ledger.list_instances("delegation_reply", limit=50)
+    assert card.status == "proposed"
+    assert inbox.card_payload(card)["handle_it_reason"] == "questions"
+
+
 # The Approvals level the test picked with _on, by its outside_mode token.
 _LEVEL = {"careful": "ask", "balanced": "outsiders", "hands_off": "trust"}
 _PICKED: list[str] = ["ask"]
