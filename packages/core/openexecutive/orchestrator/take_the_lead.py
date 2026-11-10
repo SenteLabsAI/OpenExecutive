@@ -1283,7 +1283,7 @@ def learned_note(*, db_path: Path | None = None) -> str:
     parts: list[str] = []
     if lead.training:
         parts.append(
-            "\n\nAs me is in training: whatever you do waits for a yes on its own card, "
+            "\n\nAs me (what you do in your own name without being asked) is in training: whatever you do waits for a yes on its own card, "
             "except what the owner has allowed. Still act as you would; each action becomes a card."
         )
     if examples:

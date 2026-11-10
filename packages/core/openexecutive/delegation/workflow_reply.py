@@ -38,7 +38,7 @@ _THREAD_ID_RE = re.compile(r"[A-Za-z0-9_\-=+/.:]+")
 TIMEOUT_S = 300.0
 DESCRIPTION = (
     "Answer one email in the inbox of the person who created this workflow, AS "
-    "them, the way their As you replies do: pass `thread_id` (from "
+    "them, the way its other replies as them do: pass `thread_id` (from "
     "oe__search_my_email or oe__my_email_awaiting_reply). The reply is written in "
     "their voice from the email itself, to the people it already went to; it goes "
     "out on its own when their Approvals allow, and otherwise waits on a "
