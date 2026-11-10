@@ -711,6 +711,21 @@ class DoneRow(BaseModel):
     artifact_id: str | None = None
 
 
+class WatchingItem(BaseModel):
+    """One line of Home's Watching next: something the Executive is keeping
+    an eye on and when it acts on it next. ``key`` is ``action:<id>`` (a
+    follow-up or nudge it will send) or ``job:<id>`` (a standing job);
+    ``POST /today/watching/stop`` ends that one thing. ``detail`` says what
+    it does next ("I follow up with Priya Nair"), ``at`` when (ISO), which
+    the page writes as "tomorrow at 9:00 AM"."""
+
+    key: str
+    kind: Literal["follow_up", "standing_job"]
+    title: str
+    detail: str = ""
+    at: str | None = None
+
+
 class WaitingElsewhereItem(BaseModel):
     """Something waiting on the reader that lives on another page (watch
     suggestions on the Watch list, say): one row in Home's Needs you that
@@ -803,6 +818,10 @@ class TodayResponse(BaseModel):
     # Home shows the first-week card instead of calling the day quiet.
     first_week: bool = False
     first_week_card: FirstWeekCardModel | None = None
+    # Watching next (``_watching``): what it is keeping an eye on for the
+    # reader, with when it acts next. The owner sees the company's; anyone
+    # else only what they asked it to do.
+    watching: list[WatchingItem] = Field(default_factory=list)
     # What waits on the reader on other pages (``_waiting_elsewhere``):
     # Needs you shows one row each and the day isn't quiet while any wait.
     waiting_elsewhere: list[WaitingElsewhereItem] = Field(default_factory=list)
@@ -832,6 +851,9 @@ class ActivityItem(BaseModel):
     # served, since this feed is the whole team's ("named, never quoted").
     mail_subject: str = Field(default="", exclude=True)
     mail_to: str = Field(default="", exclude=True)
+    # What As me did, for Done for you only: how, what made it look, and
+    # what came of it (``_lead_line``). Never served, like the mail fields.
+    lead_line: str = Field(default="", exclude=True)
 
 
 class ActivityResponse(BaseModel):
@@ -1663,6 +1685,7 @@ def _build_activity(
     except Exception:
         logger.warning("activity: couldn't read As me's rows", exc_info=True)
         led = []
+    jobs = take_the_lead.jobs_by_id() if led else {}
     for row in led:
         if row.status not in ("done", "approved"):
             continue
@@ -1687,6 +1710,7 @@ def _build_activity(
             at=row.at,
             mail_subject=row.mail_subject,
             mail_to=row.mail_to,
+            lead_line=_lead_line(row, jobs),
         ))
 
     # Operational alerts the Executive raised. For the rail, all statuses are
@@ -2644,6 +2668,7 @@ async def get_today(request: Request, background_tasks: BackgroundTasks) -> Toda
         response.right_now = _right_now_rows()
         response.waiting_elsewhere = _waiting_elsewhere()
     response.done_for_you = _done_for_you(request, caller, datetime.now(UTC))
+    response.watching = _watching(request, caller)
     return response
 
 
@@ -2753,11 +2778,157 @@ def _done_for_you(request: Request, caller: int | None, now: datetime) -> list[D
                 title = f"{title}: {item.mail_subject}"
         rows.append(DoneRow(
             key=key, kind=item.kind, title=title[:240],
-            detail=item.detail or "", at=item.at, artifact_id=item.artifact_id,
+            detail=item.lead_line or item.detail or "", at=item.at, artifact_id=item.artifact_id,
         ))
     rows.sort(key=lambda r: _parse_aware(r.at) or datetime.min.replace(tzinfo=UTC), reverse=True)
     rows.sort(key=lambda r: 0 if r.status == "working" else 1)
     return rows[:_DONE_MAX]
+
+
+def _lead_line(row: Any, jobs: dict[int, Any]) -> str:
+    """Done for you's second line for something As me did: how it did it,
+    what made it look (or the standing job it was for) and what came of it.
+    "By email, as me · When new mail came in · Riley Park answered at
+    9:40 AM". Never raises."""
+    from openexecutive.orchestrator import take_the_lead
+
+    try:
+        how = take_the_lead.how_line(row.tool, to_person_id=row.to_person_id)
+        parts = [f"{how}, as me" if how else "As me"]
+        job = jobs.get(row.job_id) if row.job_id is not None else None
+        if job is not None:
+            parts.append(f"For your standing job: {job.text}")
+        elif row.prompted_by:
+            parts.append(row.prompted_by)
+        answered = _answered(row.to_person_id, row.at) if row.to_person_id is not None else ""
+        if answered:
+            parts.append(answered)
+        elif row.outcome:
+            parts.append(row.outcome)
+        return " · ".join(parts)
+    except Exception:
+        logger.warning("today: couldn't write As me's line", exc_info=True)
+        return ""
+
+
+def _answered(person_id: int, sent_at: str) -> str:
+    """"Riley answered at 9:40 AM" when the person a message went to
+    replied to it (``outbound_context`` consumed after it was sent); "".
+    Never raises."""
+    from openexecutive.memory.episodic import _get_conn, _resolve_db_path
+    from openexecutive.memory.workspace_settings import get_user_timezone
+    from openexecutive.people.store import get_person
+
+    try:
+        sent = _parse_aware(sent_at)
+        path = _resolve_db_path(None)
+        if sent is None or not path.exists():
+            return ""
+        with _get_conn(path) as conn:
+            row = conn.execute(
+                "SELECT consumed_at FROM outbound_context WHERE recipient_person_id = ? "
+                "AND created_at >= ? AND created_at <= ? AND consumed_at IS NOT NULL "
+                "ORDER BY created_at LIMIT 1",
+                # The message As me sent is recorded beside its log row: a
+                # later message to the same person, answered, isn't this one.
+                (person_id, (sent - timedelta(minutes=2)).isoformat(),
+                 (sent + timedelta(minutes=2)).isoformat()),
+            ).fetchone()
+        replied = _parse_aware(row["consumed_at"]) if row is not None else None
+        if replied is None:
+            return ""
+        person = get_person(person_id)
+        name = (person.full_name or "").split()[0] if person is not None and person.full_name else "They"
+        local = replied.astimezone(get_user_timezone())
+        return f"{name} answered at {local.strftime('%I:%M %p').lstrip('0')}"
+    except Exception:
+        return ""
+
+
+# Home's Watching next: the follow-ups and nudges it will send, then the
+# standing jobs, at most this many lines.
+_WATCHING_MAX = 6
+_WATCHING_KINDS = frozenset({"ad_hoc", "proactive_nudge"})
+
+
+def _next_look() -> str | None:
+    """When As me looks next (its daily look, or a wake already waiting),
+    ISO; None when none is scheduled. Never raises."""
+    from openexecutive.memory.episodic import _get_conn, _resolve_db_path
+    from openexecutive.scheduler.runner import TAKE_THE_LEAD_WAKE_KIND
+
+    try:
+        path = _resolve_db_path(None)
+        if not path.exists():
+            return None
+        with _get_conn(path) as conn:
+            row = conn.execute(
+                "SELECT run_at FROM scheduled_actions WHERE status = 'pending' AND kind IN (?, ?) "
+                "ORDER BY run_at LIMIT 1",
+                ("executive_reflection", TAKE_THE_LEAD_WAKE_KIND),
+            ).fetchone()
+        return str(row["run_at"]) if row is not None else None
+    except Exception:
+        return None
+
+
+def _watching(request: Request, caller: int | None) -> list[WatchingItem]:
+    """Watching next for this reader: the follow-ups and nudges it will
+    send (the owner sees all of them, anyone else the ones they asked for),
+    soonest first, then, for the owner while As me is on, the standing
+    jobs with when it looks next. Never raises."""
+    from openexecutive.api.routes.chat import _caller_is_principal_or_unclaimed
+    from openexecutive.api.routes.people import caller_is_principal
+    from openexecutive.memory.episodic import list_pending_scheduled_actions
+    from openexecutive.orchestrator import take_the_lead
+    from openexecutive.people.store import list_people
+
+    try:
+        owner = _caller_is_principal_or_unclaimed(request)
+        # Standing jobs are the owner's alone, as on the As me tab.
+        principal = caller_is_principal(request)
+    except Exception:
+        owner = principal = False
+    if not owner and caller is None:
+        return []
+    items: list[WatchingItem] = []
+    try:
+        names = {p.id: p.full_name for p in list_people(include_archived=True) if p.id is not None}
+        lookup = _build_channel_lookup()
+        mine = None if owner else caller
+        for action in list_pending_scheduled_actions(
+            limit=_WATCHING_MAX, kinds=_WATCHING_KINDS, created_by_person_id=mine,
+        ):
+            if action.id is None:
+                continue
+            target = names.get(action.assigned_to_person_id) if action.assigned_to_person_id else None
+            target = target or _resolve_channel_target(lookup, action.channel, action.channel_ref or "")
+            verb = "I nudge" if action.kind == "proactive_nudge" else "I follow up with"
+            items.append(WatchingItem(
+                key=f"action:{action.id}",
+                kind="follow_up",
+                title=" ".join(action.intent_text.split())[:200],
+                detail=f"{verb} {target}" if target else "I follow up",
+                at=action.run_at,
+            ))
+    except Exception:
+        logger.warning("today: reading follow-ups for Watching next failed", exc_info=True)
+    items = items[:_WATCHING_MAX]
+    if principal:
+        try:
+            if take_the_lead.executive_on():
+                look = _next_look()
+                for job in take_the_lead.list_jobs():
+                    items.append(WatchingItem(
+                        key=f"job:{job.id}",
+                        kind="standing_job",
+                        title=job.text,
+                        detail="Standing job · I look again" if look else "Standing job",
+                        at=look,
+                    ))
+        except Exception:
+            logger.warning("today: reading standing jobs for Watching next failed", exc_info=True)
+    return items[: _WATCHING_MAX + take_the_lead.JOBS_MAX]
 
 
 def _mail_names(mail_to: str, *, team_only: bool = False) -> str:
@@ -2892,6 +3063,60 @@ class DismissRowRequest(BaseModel):
     """A Right now row to clear, by the ``key`` ``GET /today`` served it with."""
 
     key: str = Field(min_length=1, max_length=200)
+
+
+class StopWatchingRequest(BaseModel):
+    """A Watching next line to stop, by the ``key`` ``GET /today`` served."""
+
+    key: str = Field(min_length=1, max_length=64)
+
+
+@router.post("/today/watching/stop", tags=["today"])
+async def stop_watching(body: StopWatchingRequest, request: Request) -> dict[str, bool]:
+    """Stop one line of Watching next: cancel that follow-up, or stop that
+    standing job. Nothing else changes. The owner may stop any line; anyone
+    else only a follow-up they asked for. 404 when it isn't there (or isn't
+    theirs), 409 when it already ran."""
+    from openexecutive.api.routes.chat import (
+        _caller_is_principal_or_unclaimed,
+        _resolve_caller_person_id,
+    )
+    from openexecutive.api.routes.people import caller_is_principal
+    from openexecutive.audit import log_event as audit_log
+    from openexecutive.memory.episodic import cancel_scheduled_action, get_scheduled_action
+    from openexecutive.orchestrator import take_the_lead
+
+    kind, _, raw = body.key.partition(":")
+    try:
+        item_id = int(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="That isn't there any more.") from exc
+    caller = _resolve_caller_person_id(request)
+    owner = _caller_is_principal_or_unclaimed(request)
+    if kind == "job":
+        # The owner's alone, the same check as DELETE /take-the-lead/jobs.
+        if not caller_is_principal(request) or take_the_lead.stop_job(item_id) is None:
+            raise HTTPException(status_code=404, detail="That isn't there any more.")
+        audit_log("take_the_lead_changed", "Standing job stopped from Home", actor="user",
+                  details={"job_id": item_id})
+        return {"stopped": True}
+    if kind != "action":
+        raise HTTPException(status_code=404, detail="That isn't there any more.")
+    action = get_scheduled_action(item_id)
+    if (
+        action is None or action.kind not in _WATCHING_KINDS
+        or (not owner and (caller is None or action.created_by_person_id != caller))
+    ):
+        raise HTTPException(status_code=404, detail="That isn't there any more.")
+    if cancel_scheduled_action(item_id) != "cancelled":
+        raise HTTPException(status_code=409, detail="It already went out.")
+    audit_log(
+        "scheduled_action_cancelled",
+        f"Stopped from Watching next: {action.kind} #{item_id}",
+        actor="user",
+        details={"action_id": item_id, "kind": action.kind, "via": "watching_next"},
+    )
+    return {"stopped": True}
 
 
 @router.post("/today/right-now/dismiss", tags=["today"])

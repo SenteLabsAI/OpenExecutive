@@ -849,7 +849,9 @@ def update_goal(
             existing = get_goal(goal_id, db_path)
             if existing is None:
                 return False
-            return record_goal_review(
+            # A done goal is not reviewed, so there is nothing to stamp; it
+            # still exists, which is what this function reports.
+            return existing.status == "done" or record_goal_review(
                 goal_id,
                 status=existing.status,
                 last_reviewed_at=last_reviewed_at,

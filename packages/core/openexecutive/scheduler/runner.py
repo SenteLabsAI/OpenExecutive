@@ -183,6 +183,19 @@ def _maybe_send_reminders(now: datetime) -> bool:
         return False
 
 
+def _maybe_watch_for_lead(now: datetime) -> bool:
+    """As me's other times to look: a goal slips, a workflow fails, a
+    meeting ends, a task goes overdue (orchestrator.take_the_lead.watch,
+    throttled there; it wakes the look like new mail). Never raises."""
+    try:
+        from openexecutive.orchestrator.take_the_lead import watch
+
+        return watch(now) is not None
+    except Exception:
+        logger.exception("scheduler: As me's watch failed")
+        return False
+
+
 def _maybe_check_mail_watches(now: datetime) -> bool:
     """Act as me's watch_for_email: look in the person's own mailbox for the
     email they are waiting on and tell them when it lands
@@ -399,6 +412,7 @@ async def run_scheduler(
             _maybe_remind_notes(now)
             _maybe_send_reminders(now)
             _maybe_check_mail_watches(now)
+            _maybe_watch_for_lead(now)
             _maybe_release_held(now)
             _maybe_push_cards(now)
             _maybe_send_monthly_value(now)
@@ -2951,7 +2965,10 @@ async def _run_take_the_lead_wake(action: ScheduledAction, now: datetime) -> Non
     assert action.id is not None
     try:
         if take_the_lead.executive_on():
-            await _reflect(now, kind=TAKE_THE_LEAD_WAKE_KIND)
+            await _reflect(
+                now, kind=TAKE_THE_LEAD_WAKE_KIND,
+                prompted_by=take_the_lead.prompted_line(take_the_lead.wake_reason(action.intent_text)),
+            )
         else:
             logger.info("scheduler: As me is off — skipping the wake")
     finally:
@@ -2992,9 +3009,11 @@ async def _run_chat_review(action: ScheduledAction, now: datetime) -> None:
     await chat_review.run_scheduled(action.channel_ref, now)
 
 
-async def _reflect(now: datetime, *, kind: str) -> None:
+async def _reflect(now: datetime, *, kind: str, prompted_by: str = "") -> None:
     """One executive_reflection run, stored and audited under ``kind``.
-    Never raises."""
+    ``prompted_by`` is what made it look ("When new mail came in"), which
+    the run is told and what it does is recorded with; the daily look's
+    own line when empty. Never raises."""
     import contextlib
     import uuid
 
@@ -3022,14 +3041,17 @@ async def _reflect(now: datetime, *, kind: str) -> None:
         )
         store = ChromaDBStore(persist_directory=get_settings().vector_store_path)
         artifact = ""
-        async for event in run_control.watch(
-            run_id, workflow.run(inputs=wf_inputs, store=store), quiet=True
-        ):
-            event = ensure_workflow_event(event, site="scheduler.executive_reflection")
-            if event.type == "artifact" and event.content:
-                artifact = event.content
-            elif event.type == "error" and event.message:
-                raise RuntimeError(event.message)
+        from openexecutive.orchestrator import take_the_lead
+
+        with take_the_lead.looking(prompted_by or take_the_lead.DAILY_LOOK):
+            async for event in run_control.watch(
+                run_id, workflow.run(inputs=wf_inputs, store=store), quiet=True
+            ):
+                event = ensure_workflow_event(event, site="scheduler.executive_reflection")
+                if event.type == "artifact" and event.content:
+                    artifact = event.content
+                elif event.type == "error" and event.message:
+                    raise RuntimeError(event.message)
         complete_run(run_id, artifact or "(no artifact)")
         audit_log(
             "scheduled_action",
