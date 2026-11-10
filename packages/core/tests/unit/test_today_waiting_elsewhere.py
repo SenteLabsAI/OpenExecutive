@@ -64,3 +64,9 @@ def test_two_suggestions_are_both_named(monkeypatch: pytest.MonkeyPatch) -> None
 def test_a_store_failure_leaves_home_working(monkeypatch: pytest.MonkeyPatch) -> None:
     _stub(monkeypatch, RuntimeError("db gone"))
     assert today_route._waiting_elsewhere() == []
+
+
+def test_a_malformed_url_target_reads_as_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub(monkeypatch, [_suggestion("https://[news] acme pricing", "x")])
+    [row] = today_route._waiting_elsewhere()
+    assert row.detail == "https://[news] acme pricing"

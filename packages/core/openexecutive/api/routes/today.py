@@ -2775,7 +2775,10 @@ def _watch_label(target: str) -> str:
     from urllib.parse import urlsplit
 
     text = " ".join(str(target or "").split())
-    host = urlsplit(text).hostname if "://" in text else None
+    try:
+        host = urlsplit(text).hostname if "://" in text else None
+    except ValueError:  # a malformed bracketed host
+        host = None
     if host:
         return host.removeprefix("www.")
     return text if len(text) <= 40 else text[:39].rstrip() + "…"
