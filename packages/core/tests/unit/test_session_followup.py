@@ -229,6 +229,28 @@ async def test_a_formatting_slip_is_a_warning_not_an_error(monkeypatch: pytest.M
     assert calls == ["warning"]
 
 
+class _SlowProvider:
+    async def messages_create(self, **_kwargs: Any) -> _FakeResponse:
+        raise TimeoutError
+
+
+@pytest.mark.asyncio
+async def test_a_timeout_is_a_warning_not_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive import providers
+    from openexecutive.agents import utility_fast
+
+    calls: list[str] = []
+    fake = SimpleNamespace(
+        warning=lambda *a, **k: calls.append("warning"),
+        exception=lambda *a, **k: calls.append("exception"),
+    )
+    monkeypatch.setattr(chat_route, "logger", fake)
+    monkeypatch.setattr(utility_fast, "get_fast_model", lambda: "claude-haiku-test")
+    monkeypatch.setattr(providers, "get_provider", lambda _model: _SlowProvider())
+    assert await chat_route._generate_followup_via_llm("t") is None
+    assert calls == ["warning"]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "raw",
