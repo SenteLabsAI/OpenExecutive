@@ -10,8 +10,8 @@ import pytest
 from openexecutive.api.routes import today as today_route
 
 
-def _suggestion(target: str, created_at: str) -> SimpleNamespace:
-    return SimpleNamespace(target=target, created_at=created_at)
+def _suggestion(target: str, created_at: str, routed_to: int | None = None) -> SimpleNamespace:
+    return SimpleNamespace(target=target, created_at=created_at, route_to_person_id=routed_to)
 
 
 def _stub(monkeypatch: pytest.MonkeyPatch, items: list[SimpleNamespace] | Exception) -> None:
@@ -80,3 +80,11 @@ def test_repeated_hosts_are_named_once(monkeypatch: pytest.MonkeyPatch) -> None:
     _stub(monkeypatch, [_suggestion(t, "x") for t in ("https://a.com/1", "https://a.com/2", "B", "C")])
     [row] = today_route._waiting_elsewhere()
     assert row.detail == "a.com, B and 1 more"
+
+
+def test_suggestions_routed_to_a_head_are_theirs(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub(monkeypatch, [_suggestion("A", "x", routed_to=7), _suggestion("B", "y")])
+    [row] = today_route._waiting_elsewhere()
+    assert (row.count, row.detail) == (1, "B")
+    _stub(monkeypatch, [_suggestion("A", "x", routed_to=7)])
+    assert today_route._waiting_elsewhere() == []

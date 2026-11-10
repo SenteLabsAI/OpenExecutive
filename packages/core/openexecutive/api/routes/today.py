@@ -2812,7 +2812,11 @@ def _waiting_elsewhere() -> list[WaitingElsewhereItem]:
 
     items: list[WaitingElsewhereItem] = []
     try:
-        suggestions = monitoring_store.list_pending_suggestions()
+        # A suggestion routed to a department head is that head's to answer
+        # (watch_policy._nudge_if_piled_up); the rest are the principal's.
+        suggestions = [
+            w for w in monitoring_store.list_pending_suggestions() if w.route_to_person_id is None
+        ]
     except Exception:
         logger.exception("today: reading watch suggestions failed")
         suggestions = []
