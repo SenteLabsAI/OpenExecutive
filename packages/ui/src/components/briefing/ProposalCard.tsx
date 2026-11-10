@@ -11,6 +11,7 @@ import OverflowMenu, { type OverflowItem } from "@/components/ui/OverflowMenu";
 import type { PersonBriefItem, ProposalItem } from "@/lib/api";
 import { MEMORY_ACTIONS, briefingMemoryLine, nudgeAction } from "@/lib/briefing-memory";
 import { ageLabel, daysUntil, proposalStatusChip } from "@/lib/briefingSummary";
+import { cardButtons, isSignalCard } from "@/lib/needsYou";
 import { type SnoozeChoice, snoozeChoices } from "@/lib/snooze";
 import { hostOf } from "@/lib/url";
 
@@ -284,10 +285,7 @@ export default function ProposalCard({
   // A signal from outside (a watched stock's move, an app's new entries) is
   // for you to know even when its severity lifted it into the action lane:
   // nothing to approve, Got it clears it.
-  const isSignal =
-    isMonitoring ||
-    Boolean(proposal.surfaced_reason) ||
-    proposal.topic_tags.some((t) => t.startsWith("external:"));
+  const isSignal = isSignalCard(proposal);
   // Decision-backed proposals (gated calendar bookings) execute server-side
   // via the /decisions endpoints. The verbatim-DM "Edit & approve" flow
   // doesn't map to a calendar booking, so it's not offered for these.
@@ -409,8 +407,7 @@ export default function ProposalCard({
   // them to know has nothing to approve.
   const needs = proposal.needs ?? "";
   const asks = (needs === "answer" || needs === "choice") && Boolean(onAnswer);
-  const noApprove = needs === "answer" || needs === "choice" || needs === "fyi" || (isSignal && needs !== "ok");
-  const gotIt = needs === "fyi" || (isSignal && !needs);
+  const { noApprove, gotIt } = cardButtons(needs, isSignal);
   const approve: CardAction | null =
     !noApprove && !isMonitoring && !isArtifact && !failedRun && onApprove
       ? { label: "Approve", onSelect: () => onApprove(proposal) }

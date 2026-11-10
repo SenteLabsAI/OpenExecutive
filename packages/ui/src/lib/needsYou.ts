@@ -115,3 +115,36 @@ export function clearNotice(failed: number, total: number): string | null {
 export function approveLabel(n: number): string {
   return n > 1 ? `Approve ${n}` : "Approve";
 }
+
+// A card that's a signal from outside (the watch list, an app's new entries,
+// a watched stock's move) is for the reader to know: Got it, nothing to
+// approve, unless it says it needs an OK. A card that asks or is for them to
+// know has nothing to approve either.
+export function cardButtons(
+  needs: string,
+  isSignal: boolean,
+): { noApprove: boolean; gotIt: boolean } {
+  return {
+    noApprove: needs === "answer" || needs === "choice" || needs === "fyi" || (isSignal && needs !== "ok"),
+    gotIt: needs === "fyi" || (isSignal && !needs),
+  };
+}
+
+// Whether a card's tags or fields mark it as a signal from outside.
+export function isSignalCard(p: { category?: string | null; surfaced_reason?: string | null; topic_tags?: string[] | null }): boolean {
+  return (
+    p.category === "monitoring" ||
+    Boolean(p.surfaced_reason) ||
+    (p.topic_tags ?? []).some((t) => t.startsWith("external:"))
+  );
+}
+
+// The name on a "<name> asked" chip: the first name, past a title such as
+// "Dr." ("Someone …" stays whole).
+export function askerName(name: string): string {
+  const n = name.trim();
+  if (n.startsWith("Someone")) return n;
+  const words = n.split(/\s+/);
+  const first = words.find((w) => !/^(dr|mr|mrs|ms|mx|prof)\.?$/i.test(w));
+  return first ?? words[0];
+}

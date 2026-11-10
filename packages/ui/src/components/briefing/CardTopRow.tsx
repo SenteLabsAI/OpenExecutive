@@ -3,15 +3,12 @@
 // and how old it is. A card someone else is waiting on says who, last.
 
 import FeatureName, { type Feature } from "@/components/FeatureName";
+import { askerName } from "@/lib/needsYou";
 import { formatRelativeTime } from "@/lib/relativeTime";
 
 import { Chip } from "./shared";
 
 // "Sam asked", from Sam Okafor; "Someone on the team asked" stays whole.
-function askerName(name: string): string {
-  return name.startsWith("Someone") ? name : name.split(" ")[0];
-}
-
 export default function CardTopRow({
   need,
   mode,
