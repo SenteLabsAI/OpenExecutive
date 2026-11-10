@@ -2454,6 +2454,7 @@ async def _send_on_plan(
             elif channel == "email":
                 error = await _email_principal(principal, text, label)
                 if error is None:
+                    await asyncio.to_thread(_remember_for_email_reply, principal, text)
                     return _sent(channel, principal.email)
                 failures.append(f"email: {error}")
             else:
@@ -2487,6 +2488,35 @@ async def _remember_in_chat(
         )
     except Exception:
         logger.exception("scheduler: couldn't save the delivery into %s", base_id)
+
+
+# A brief or digest runs longer than a DM; this keeps its items whole.
+_EMAIL_REPLY_CONTEXT_CHARS = 6000
+
+
+def _remember_for_email_reply(person: Person, text: str) -> None:
+    """Record ``text``, just emailed to ``person``, as the message their next
+    email may answer (``integrations.inbound_hydration``), the way a DM the
+    Executive sends is recorded. A chat app has it in the conversation
+    (``_remember_in_chat``); an email reply starts a turn of its own, so
+    without this "why did you do the second one?" after the evening digest
+    has nothing to point at. Keyed on their own address, so a reply from
+    anyone else never sees it. Never raises."""
+    address = (person.email or "").strip().lower()
+    if not address or not (text or "").strip():
+        return
+    try:
+        from openexecutive.memory.episodic import insert_outbound_context
+
+        insert_outbound_context(
+            channel="email",
+            channel_ref=address,
+            outbound_text=text,
+            recipient_person_id=person.id,
+            max_chars=_EMAIL_REPLY_CONTEXT_CHARS,
+        )
+    except Exception:
+        logger.exception("scheduler: couldn't record the email for its reply")
 
 
 def _sent(channel: str, to: str | None) -> PrincipalDelivery:
