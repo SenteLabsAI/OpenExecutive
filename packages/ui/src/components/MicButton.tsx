@@ -145,12 +145,13 @@ export default function MicButton({ disabled, onLive, onText, onError }: Props) 
       } catch {
         return;
       }
+      // Words still pending when it ends on its own are kept too.
       let latest = earlier;
       rec.onresult = (e) => {
         const parts = Array.from(e.results, (r) => ({ transcript: r[0]?.transcript ?? "", isFinal: r.isFinal }));
         const { settled, pending } = splitHeard(earlier, parts);
-        latest = settled;
-        heardRef.current = joinDictation(settled, pending);
+        latest = joinDictation(settled, pending);
+        heardRef.current = latest;
         onLive(settled, pending);
       };
       rec.onerror = (e) => {
