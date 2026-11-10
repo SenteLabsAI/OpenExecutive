@@ -158,7 +158,7 @@ REASONS: dict[str, str] = {
     "level": "Approvals is on Careful, so what it would send as you waits for you.",
     # In training (delegation.training): only people they allowed.
     "training": "In training: you haven't let it send to them on its own yet.",
-    "off": "Handle it for me is off.",
+    "off": "Sending on its own is off.",
     "signing_off": "Sending on its own needs signed sign-ins on this server.",
     "sender_unverified": "Your mail service couldn't confirm who sent it.",
     "unsure": "It wasn't sure enough this needs only a simple reply.",
@@ -174,7 +174,7 @@ REASONS: dict[str, str] = {
     "suspicious": "The email reads like it's trying to give an assistant instructions.",
     # Found just before sending (reply_send.send_on_its_own).
     "draft_changed": "You changed the draft in your mailbox, so it's yours to send.",
-    "handle_it_off": "Handle it for me was off by the time it came to send.",
+    "handle_it_off": "Sending on its own was off by the time it came to send.",
     # After the Executive did what the email asked (delegation.card_work).
     "work_unfinished": "I couldn't finish what they asked, so it waits for you.",
     "work_theirs": "What they asked is yours to do, so this waits for you.",
@@ -187,7 +187,7 @@ REASONS: dict[str, str] = {
     "rule": "One of your rules says this waits for you.",
     "clash": "It clashes with something already on your calendar.",
     "calendar_unread": "It couldn't check your calendar for clashes, so it asked instead.",
-    "calendar_write": "Your calendar sign-in can't answer invites yet. Connect it again under Read my calendar.",
+    "calendar_write": "Your calendar sign-in can't answer invites yet. Connect it again under Read your calendar.",
 }
 
 

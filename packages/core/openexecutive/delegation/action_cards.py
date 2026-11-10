@@ -875,7 +875,7 @@ async def approve(
             "Approving needs signed sign-ins on this server, so that nobody else can approve it for you.",
         )
     if not can_delegate(person) or not is_enabled(person.id):
-        raise ApproveRefused(409, "act_as_me_off", "Act as me is off, so this card can't be approved.")
+        raise ApproveRefused(409, "act_as_me_off", "As you is off, so this card can't be approved.")
     if not _live(instance, datetime.now(UTC)):
         raise ApproveRefused(409, "expired", "This card is more than a week old. Ask again if it still needs doing.")
     actions = [a for a in payload.get("actions") or [] if isinstance(a, dict)]

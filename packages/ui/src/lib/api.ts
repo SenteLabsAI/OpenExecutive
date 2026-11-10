@@ -2052,7 +2052,7 @@ export interface DelegationTeam {
   members: DelegationTeamMember[];
 }
 
-// "Draft replies to my inbox": the Executive watches your own inbox and, for
+// "Draft replies to your inbox": the Executive watches your own inbox and, for
 // mail that needs you, saves a first reply in your Gmail Drafts; each waits
 // on a card on Today (GET /delegation/replies).
 export interface InboxWatch {
@@ -2284,7 +2284,7 @@ async function delegationError(res: Response, fallback: string): Promise<Error> 
 export async function getDelegation(signal?: AbortSignal): Promise<DelegationSettings | null> {
   const res = await fetch(`${API_BASE}/delegation`, { signal });
   if (res.status === 403 || res.status === 404) return null;
-  if (!res.ok) throw await delegationError(res, "Couldn't load Act as me.");
+  if (!res.ok) throw await delegationError(res, "Couldn't load As you.");
   return res.json();
 }
 
@@ -2495,7 +2495,7 @@ export async function setDelegationEnabled(enabled: boolean): Promise<Delegation
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled }),
   });
-  if (!res.ok) throw await delegationError(res, "Couldn't change Act as me.");
+  if (!res.ok) throw await delegationError(res, "Couldn't change As you.");
   delegationChanged();
   return res.json();
 }
@@ -2506,7 +2506,7 @@ export async function setDelegationTeam(enabled: boolean): Promise<DelegationSet
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled }),
   });
-  if (!res.ok) throw await delegationError(res, "Couldn't change Act as me for your team.");
+  if (!res.ok) throw await delegationError(res, "Couldn't change As you for your team.");
   delegationChanged();
   return res.json();
 }
@@ -2519,7 +2519,7 @@ export async function setInboxWatch(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(update),
   });
-  if (!res.ok) throw await delegationError(res, "Couldn't change Draft replies to my inbox.");
+  if (!res.ok) throw await delegationError(res, "Couldn't change Draft replies to your inbox.");
   delegationChanged();
   return res.json();
 }
@@ -2601,7 +2601,7 @@ export async function setReadMyCalendar(enabled: boolean): Promise<DelegationSet
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled }),
   });
-  if (!res.ok) throw await delegationError(res, "Couldn't change Read my calendar.");
+  if (!res.ok) throw await delegationError(res, "Couldn't change Read your calendar.");
   return res.json();
 }
 
@@ -6757,7 +6757,7 @@ async function leadError(res: Response, fallback: string): Promise<Error> {
 export async function getTakeTheLead(signal?: AbortSignal): Promise<TakeTheLead | null> {
   const res = await fetch(`${API_BASE}/take-the-lead`, { signal });
   if (res.status === 403 || res.status === 404) return null;
-  if (!res.ok) throw await leadError(res, "Couldn't load Take the lead.");
+  if (!res.ok) throw await leadError(res, "Couldn't load As me.");
   return res.json();
 }
 
@@ -6771,7 +6771,7 @@ export async function setTakeTheLead(update: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(update),
   });
-  if (!res.ok) throw await leadError(res, "Couldn't change Take the lead.");
+  if (!res.ok) throw await leadError(res, "Couldn't change As me.");
   delegationChanged();
   return res.json();
 }

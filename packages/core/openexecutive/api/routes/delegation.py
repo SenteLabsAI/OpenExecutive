@@ -612,7 +612,7 @@ def _caller(request: Request) -> Person:
 
     who = api_caller.caller(request)
     if not who.email and not (who.defaults_to_principal and local_login()):
-        raise _refuse(403, "sign_in_required", "Sign in to change Act as me.")
+        raise _refuse(403, "sign_in_required", "Sign in to change As you.")
     try:
         person_id = _resolve_caller_person_id(request)
         if person_id is None:
@@ -628,7 +628,7 @@ def _caller(request: Request) -> Person:
     return person
 
 
-_NOT_AVAILABLE = "Act as me isn't available to you here. The account owner can let team members use it."
+_NOT_AVAILABLE = "As you isn't available to you here. The account owner can let team members use it."
 
 
 def _person_id(person: Person) -> int:
@@ -792,7 +792,7 @@ def _training_out(person_id: int) -> TrainingOut:
             for a in training.learned(person_id)
         ]
     except Exception:
-        logger.warning("delegation: couldn't read what Act as me learned", exc_info=True)
+        logger.warning("delegation: couldn't read what As you learned", exc_info=True)
         learned = []
     return TrainingOut(training=switches.training, drafts=switches.drafts, learned=learned)
 
@@ -869,12 +869,12 @@ async def update_delegation(request: Request, body: DelegationUpdate) -> Delegat
         if body.enabled:
             _audit(
                 "delegation_gmail_verified",
-                f"Checked person {person_id}'s own Gmail before turning Act as me on",
+                f"Checked person {person_id}'s own Gmail before turning As you on",
                 {"person_id": person_id, "status": "connected"},
             )
         _audit(
             "delegation_settings_changed",
-            f"Act as me turned {'on' if body.enabled else 'off'} by person {person_id}",
+            f"As you turned {'on' if body.enabled else 'off'} by person {person_id}",
             {"person_id": person_id, "enabled": body.enabled},
         )
     return await _state(person)
@@ -891,12 +891,12 @@ async def update_delegation_team(request: Request, body: TeamUpdate) -> Delegati
     if not person.is_principal:
         raise _refuse(403, "principal_only", "Only the account owner can change this.")
     if not team_members_available():
-        raise _refuse(409, "not_available", "Act as me for team members isn't available on this install.")
+        raise _refuse(409, "not_available", "As you for team members isn't available on this install.")
     if team_members_switch() != body.enabled:
         set_team_members(body.enabled, updated_by=f"person:{person_id}")
         _audit(
             "delegation_settings_changed",
-            f"Act as me for team members turned {'on' if body.enabled else 'off'} by person {person_id}",
+            f"As you for team members turned {'on' if body.enabled else 'off'} by person {person_id}",
             {"person_id": person_id, "team_members": body.enabled},
         )
     return await _state(person)
@@ -937,7 +937,7 @@ async def update_delegation_inbox(request: Request, body: InboxUpdate) -> Delega
         if caller_refusal(api_caller.caller(request), normalize_email(person.email or "")) == NOT_YOURS:
             raise _refuse(403, "not_yours", "Only you can turn on replies to your inbox.")
         if not is_enabled(person_id):
-            raise _refuse(409, "act_as_me_off", "Turn Act as me on first.")
+            raise _refuse(409, "act_as_me_off", "Turn As you on first.")
         status = await gmail_status(person.email)
         if status != "connected":
             raise _refuse(409, _BLOCKING_CODES.get(status, "gmail_error"), STATUS_MESSAGES[status])
@@ -973,7 +973,7 @@ async def check_delegation_inbox(request: Request) -> InboxOut:
     person = _caller(request)
     person_id = _person_id(person)
     if not inbox.get_watch(person_id).enabled:
-        raise _refuse(409, "inbox_off", "Turn on Draft replies to my inbox first.")
+        raise _refuse(409, "inbox_off", "Turn on Draft replies to your inbox first.")
     if inbox.scanning(person_id):
         raise _refuse(409, "in_progress", "It's checking your inbox already.")
     with unscoped_audit_rows():
@@ -1119,7 +1119,7 @@ async def reply_to_delegation_mail(request: Request, body: MailReplyIn) -> MailR
     person = _caller(request)
     person_id = _person_id(person)
     if not is_enabled(person_id):
-        raise _refuse(409, "act_as_me_off", "Turn Act as me on first.")
+        raise _refuse(409, "act_as_me_off", "Turn As you on first.")
     client = await _connected_mailbox(person)
     try:
         got = await draft_on_request(person, body.thread_id, body.message_id, gmail=client)
@@ -1418,7 +1418,7 @@ def _set_calendar(person_id: int, enabled: bool) -> None:
     calendar.set_enabled(person_id, enabled, updated_by=f"person:{person_id}")
     _audit(
         "delegation_calendar_changed",
-        f"Read my calendar turned {'on' if enabled else 'off'} by person {person_id}",
+        f"Read your calendar turned {'on' if enabled else 'off'} by person {person_id}",
         {"person_id": person_id, "enabled": enabled},
     )
 
@@ -1437,7 +1437,7 @@ async def update_delegation_calendar(request: Request, body: CalendarUpdate) -> 
     person_id = _person_id(person)
     if body.enabled:
         if not is_enabled(person_id):
-            raise _refuse(409, "act_as_me_off", "Turn Act as me on first.")
+            raise _refuse(409, "act_as_me_off", "Turn As you on first.")
         status = await gmail_status(person.email)
         if status != "connected":
             raise _refuse(409, _BLOCKING_CODES.get(status, "gmail_error"), STATUS_MESSAGES[status])
@@ -1492,7 +1492,7 @@ async def update_delegation_training(request: Request, body: TrainingUpdate) -> 
     if changed:
         training.set_(person_id, changed, updated_by=f"person:{person_id}")
         _audit(
-            "delegation_training_changed", f"Act as me training changed for person {person_id}",
+            "delegation_training_changed", f"As you training changed for person {person_id}",
             {"person_id": person_id, **changed},
         )
     return await _state(person)
@@ -1509,7 +1509,7 @@ async def delete_delegation_learned(request: Request, allowed_id: int) -> Delega
     if not training.forget(person_id, allowed_id):
         raise _refuse(404, "not_found", "That isn't there.")
     _audit(
-        "delegation_learned_removed", f"Person {person_id} removed something Act as me had learned",
+        "delegation_learned_removed", f"Person {person_id} removed something As you had learned",
         {"person_id": person_id, "allowed_id": allowed_id},
     )
     return await _state(person)

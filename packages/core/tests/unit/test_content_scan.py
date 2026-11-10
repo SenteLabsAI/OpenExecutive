@@ -260,7 +260,7 @@ OUR_OWN = {
     )}),
     "teammate's mail": "This email involves another teammate and is their own mail with the Executive, so it "
     "is private to them. Say so plainly and suggest asking them directly; don't guess what it says.",
-    "calendar off": json.dumps({"status": "calendar_off", "error": "Read my calendar is off. They can turn it on in Settings → Act as me."}),
+    "calendar off": json.dumps({"status": "calendar_off", "error": "Read your calendar is off. They can turn it on in Delegate → As you."}),
     "own footer": "Thanks, attached.\n--\nOE is an AI assistant working for Example Labs. To reach a person, "
     "reply and ask, or write to owner@example.com.",
     "synced heading": (

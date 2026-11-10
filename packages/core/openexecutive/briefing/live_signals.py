@@ -1012,7 +1012,7 @@ def render_live_blocks(signals: LiveSignals, *, window: str) -> list[str]:
             n = signals.drafts
             parts.append(
                 f"- {n} email draft{'s' if n != 1 else ''} saved in the reader's own "
-                "Gmail (Act as me), waiting for them to review and send"
+                "Gmail (As you), waiting for them to review and send"
                 + (
                     "; name each by who it goes to and its subject:"
                     if signals.draft_lines else ""

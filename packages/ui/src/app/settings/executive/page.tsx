@@ -34,7 +34,7 @@ export default function ExecutiveSettingsPage() {
     >
       <SettingsCard
         title="Pause everything"
-        description="Stops everything it does on its own, Take the lead included, plus briefs, nudges and research. It still answers when someone messages it, and anything you tap Send or Approve on still goes."
+        description="Stops everything it does on its own, As me included, plus briefs, nudges and research. It still answers when someone messages it, and anything you tap Send or Approve on still goes."
       >
         <ExecutiveRunSwitch />
       </SettingsCard>

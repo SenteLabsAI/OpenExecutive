@@ -257,7 +257,7 @@ def render_connected_systems(
     # Constant either way, so switching Act as me changes block 0 only by
     # DELEGATION_ADDENDUM itself.
     lines.append(
-        "- **Act as me:** on only if a *Writing as Someone* section follows "
+        "- **As you (writing email as the person):** on only if a *Writing as Someone* section follows "
         "below; without it, it is off and you cannot write email as anyone but "
         "yourself."
     )

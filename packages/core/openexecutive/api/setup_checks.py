@@ -101,7 +101,7 @@ LABELS: dict[str, str] = {
     "exec_email": "The Executive's email address",
     "api_secret": "API protection",
     "gmail": "Email (Gmail)",
-    "your_gmail": "Your own mailbox (Act as me)",
+    "your_gmail": "Your own mailbox (As you)",
     "slack": "Slack",
     "discord": "Discord",
     "telegram": "Telegram",
@@ -923,7 +923,7 @@ async def check_your_gmail(snap: Snapshot) -> SetupCheck:
         return _result(
             "your_gmail",
             "off",
-            "Not set up (optional): Act as me needs an owner with an email on the team list.",
+            "Not set up (optional): As you needs an owner with an email on the team list.",
         )
     on = await asyncio.to_thread(is_enabled, owner.id)
     try:
@@ -938,9 +938,9 @@ async def check_your_gmail(snap: Snapshot) -> SetupCheck:
         )
     if status == "connected":
         summary = f"Connected to {owner.email}. " + (
-            "Act as me is on: the Executive can draft replies as you, in your own mailbox."
+            "As you is on: the Executive can draft replies as you, in your own mailbox."
             if on
-            else "Turn Act as me on in Settings to let the Executive draft replies as you."
+            else "Turn As you on in Settings to let the Executive draft replies as you."
         )
         watch = await asyncio.to_thread(get_watch, owner.id) if on and owner.id is not None else None
         if watch is not None and watch.enabled:
@@ -948,11 +948,11 @@ async def check_your_gmail(snap: Snapshot) -> SetupCheck:
                 return _result(
                     "your_gmail",
                     "warn",
-                    f"Connected to {owner.email}. Draft replies to my inbox: "
+                    f"Connected to {owner.email}. Draft replies to your inbox: "
                     + INBOX_STATUS_MESSAGES[watch.status],
                     link="/settings",
                 )
-            summary += " Draft replies to my inbox is on."
+            summary += " Draft replies to your inbox is on."
         return _result("your_gmail", "ok", summary, link="/settings")
     if status == "not_configured":
         return _result(

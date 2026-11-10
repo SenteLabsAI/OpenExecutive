@@ -625,7 +625,7 @@ def test_my_calendar_is_off_until_they_turn_it_on(roster: SimpleNamespace) -> No
     mailbox = CalendarMailbox()
     session = _session(mailbox)
     result = _calendar(session, {})
-    assert result["status"] == "calendar_off" and "Settings" in result["error"]
+    assert result["status"] == "calendar_off" and "Delegate → As you" in result["error"]
     assert mailbox.windows == [] and session.turn_delegation.touched_mail is False
 
 
@@ -654,7 +654,7 @@ def test_my_calendar_lists_their_day_in_their_time_zone(calendar_on: None) -> No
 
 def test_my_calendar_says_how_to_add_it_to_their_sign_in(calendar_on: None) -> None:
     result = _calendar(_session(CalendarMailbox(granted=False)), {})
-    assert result["status"] == "calendar_not_granted" and "Read my calendar in Delegate → As you" in result["error"]
+    assert result["status"] == "calendar_not_granted" and "Read your calendar in Delegate → As you" in result["error"]
 
 
 def test_my_calendar_refuses_a_bad_date_and_caps_the_span(calendar_on: None) -> None:

@@ -38,12 +38,12 @@ _THREAD_ID_RE = re.compile(r"[A-Za-z0-9_\-=+/.:]+")
 TIMEOUT_S = 300.0
 DESCRIPTION = (
     "Answer one email in the inbox of the person who created this workflow, AS "
-    "them, the way their Handle it for me does: pass `thread_id` (from "
+    "them, the way its other replies as them do: pass `thread_id` (from "
     "oe__search_my_email or oe__my_email_awaiting_reply). The reply is written in "
     "their voice from the email itself, to the people it already went to; it goes "
-    "out on its own when Handle it for me's rules allow, and otherwise waits on a "
+    "out on its own when their Approvals allow, and otherwise waits on a "
     "card for them to send. You can't choose its words or its recipients. Works "
-    "only when they connected their own mailbox under Act as me."
+    "only when they connected their own mailbox under As you."
 )
 INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -57,8 +57,8 @@ _OUTCOMES: dict[str, tuple[str, str]] = {
     "sent": ("sent", "Answered on its own, from their mailbox. Say in your report that it was answered."),
     "card": (
         "waiting",
-        "A reply is written and waits on a card for them to send: Handle it for me's "
-        "rules held it back, or it is off. Say so in your report.",
+        "A reply is written and waits on a card for them to send: Approvals "
+        "held it back, or sending is off. Say so in your report.",
     ),
     "not_needed": ("not_needed", "This email doesn't need a reply from them."),
     "skipped": (

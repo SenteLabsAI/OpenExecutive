@@ -1611,7 +1611,7 @@ def _build_activity(
     try:
         led = take_the_lead.done([take_the_lead.SCOPE_EXECUTIVE], days=30, limit=pool)
     except Exception:
-        logger.warning("activity: couldn't read Take the lead's rows", exc_info=True)
+        logger.warning("activity: couldn't read As me's rows", exc_info=True)
         led = []
     for row in led:
         if row.status not in ("done", "approved"):

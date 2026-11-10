@@ -208,7 +208,7 @@ export default function LeadTrainingCard({
               disabled={busy}
               onChange={setNextTime}
               label="Do this on its own next time"
-              help={`From now on: ${allowLabel}. You can undo this in Take the lead.`}
+              help={`From now on: ${allowLabel}. You can undo this in As me.`}
             />
           )}
           <div className="mt-3 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">

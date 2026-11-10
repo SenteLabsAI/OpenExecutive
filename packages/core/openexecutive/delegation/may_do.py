@@ -132,7 +132,7 @@ def as_you(person_id: int, *, can_have_it: bool, signing: bool, is_principal: bo
     if not can_have_it:
         return Section(
             SECTION_AS_YOU, title, available=False,
-            unavailable="Act as me isn't available to you here. The owner of this Open Executive can turn it on "
+            unavailable="As you isn't available to you here. The owner of this Open Executive can turn it on "
             "for team members.",
         )
 
@@ -170,7 +170,7 @@ def as_you(person_id: int, *, can_have_it: bool, signing: bool, is_principal: bo
     def mail_row(row_id: str, what: str, goes_why: str) -> Row:
         if not watching:
             why = (
-                "Draft replies to my inbox is off." if drafts_on
+                "Draft replies to your inbox is off." if drafts_on
                 else "Write drafts as me is off. Replies to your inbox need it."
             )
             return Row(row_id, what, "off", "Off", why, SETTING_ACT_AS_ME)
@@ -210,7 +210,7 @@ def as_you(person_id: int, *, can_have_it: bool, signing: bool, is_principal: bo
         if not watching:
             rows.append(Row(
                 "actions", what, "waits", "Waits for you",
-                "Each one waits on a card. Draft replies to my inbox is off.", SETTING_ACT_AS_ME,
+                "Each one waits on a card. Draft replies to your inbox is off.", SETTING_ACT_AS_ME,
             ))
         elif not signing:
             rows.append(Row(
@@ -280,7 +280,7 @@ def _lead_in_training() -> bool:
     try:
         return take_the_lead.get(take_the_lead.SCOPE_EXECUTIVE).training
     except Exception:
-        logger.warning("may_do: couldn't read Take the lead's In training", exc_info=True)
+        logger.warning("may_do: couldn't read As me's In training", exc_info=True)
         return False
 
 

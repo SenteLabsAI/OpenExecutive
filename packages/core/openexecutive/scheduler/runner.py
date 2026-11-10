@@ -2953,7 +2953,7 @@ async def _run_take_the_lead_wake(action: ScheduledAction, now: datetime) -> Non
         if take_the_lead.executive_on():
             await _reflect(now, kind=TAKE_THE_LEAD_WAKE_KIND)
         else:
-            logger.info("scheduler: Take the lead is off — skipping the wake")
+            logger.info("scheduler: As me is off — skipping the wake")
     finally:
         mark_action_done(action.id)
 

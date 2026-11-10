@@ -68,8 +68,8 @@ _FALL_BACK = " Use the Executive's own email for this instead, if this step has 
 _WHAT = (
     "Pass `to` (and optionally `cc`) and `intent`: the points, figures and dates "
     "the email should carry, from this run's results. The tool writes the subject "
-    "and the words. Works only when they connected their own mailbox under Act as "
-    "me; otherwise use the Executive's own email."
+    "and the words. Works only when they connected their own mailbox under As "
+    "you; otherwise use the Executive's own email."
 )
 DRAFT_DESCRIPTION = (
     "Write an email AS the person who created this workflow, in their own voice, "
@@ -310,7 +310,7 @@ async def creator_mailbox(*, mailbox: Any) -> tuple[Any, str, Any] | str:
         logger.warning("workflow email: roster unreadable", exc_info=True)
         return _error("Couldn't read the People list just now. Try again later.")
     if not can_delegate(person) or not is_enabled(creator_id):
-        return _error("Its creator hasn't turned on Act as me (writing email as them)." + _FALL_BACK)
+        return _error("Its creator hasn't turned on As you (writing email as them)." + _FALL_BACK)
     if person is None or person.id is None:  # can_delegate checked both; for the type checker
         return _error("I can't tell whose mailbox this is.")
     email = normalize_email(person.email)

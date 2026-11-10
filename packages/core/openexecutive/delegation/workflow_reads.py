@@ -242,7 +242,7 @@ def _creator_writer() -> Any:
         return _error((refused or "This workflow doesn't read email.") + _FALL_BACK)
     person = get_person(creator_id)
     if not can_delegate(person) or not is_enabled(creator_id):
-        return _error("Its creator hasn't turned on Act as me." + _FALL_BACK)
+        return _error("Its creator hasn't turned on As you." + _FALL_BACK)
     if person is None or person.id is None:  # can_delegate checked both; for the type checker
         return _error("I can't tell whose mailbox this is." + _FALL_BACK)
     email = normalize_email(person.email)
@@ -284,7 +284,7 @@ def specs() -> dict[str, tuple[str, str, dict[str, Any], Callable[..., Awaitable
         tool = defs[chat_name]
         description = (
             "Reads the mailbox or calendar of the person who created this workflow "
-            "(Act as me), as theirs alone. " + str(tool["description"])
+            "(As you), as theirs alone. " + str(tool["description"])
         )
         out[name] = (name, description, tool["input_schema"], _reader(chat_name, MAIL_READ_TOOL_HANDLERS[chat_name]))
     return out

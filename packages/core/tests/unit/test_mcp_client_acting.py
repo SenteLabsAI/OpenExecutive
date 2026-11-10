@@ -298,7 +298,7 @@ def test_the_last_check_uses_the_cards_own_rule(act_as_me: SimpleNamespace, send
 
 
 def test_no_card_without_act_as_me_or_a_speaker(roster: SimpleNamespace, sends: list[Any]) -> None:
-    assert "Act as me" in _ai_propose(roster.principal, {"why": "x", "actions": [_message(roster.teammate)]})["error"]
+    assert "As you" in _ai_propose(roster.principal, {"why": "x", "actions": [_message(roster.teammate)]})["error"]
     session = _acting(None)
     pin_turn_delegation(session, "x")
 

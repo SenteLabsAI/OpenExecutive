@@ -746,9 +746,9 @@ async def answer(
     if answer not in ANSWERS:
         raise AnswerRefused(422, "bad_answer", "Accept or decline.")
     if not can_delegate(person) or not is_enabled(person.id):
-        raise AnswerRefused(409, "act_as_me_off", "Act as me is off, so this invite can't be answered from here.")
+        raise AnswerRefused(409, "act_as_me_off", "As you is off, so this invite can't be answered from here.")
     if not calendar.enabled(person.id):
-        raise AnswerRefused(409, "calendar_off", "Read my calendar is off, so this invite can't be answered from here.")
+        raise AnswerRefused(409, "calendar_off", "Read your calendar is off, so this invite can't be answered from here.")
     if not _live(payload, instance.created_at, at):
         raise AnswerRefused(409, "expired", "This meeting has started or the card is too old. Answer it in your calendar.")
     accept = answer == "accept"
@@ -775,8 +775,8 @@ async def answer(
         write = isinstance(exc, CalendarWriteNotGranted)
         raise AnswerRefused(
             409, "calendar_write_needed" if write else "calendar_not_granted",
-            "Your calendar sign-in can read but not answer invites. Connect it again under Read my calendar, then try again."
-            if write else "Your saved sign-in doesn't include your calendar any more. Connect it again under Read my calendar.",
+            "Your calendar sign-in can read but not answer invites. Connect it again under Read your calendar, then try again."
+            if write else "Your saved sign-in doesn't include your calendar any more. Connect it again under Read your calendar.",
         ) from None
     except GmailNotFound:
         finish_execution(instance.id, STATUS_FAILED, final_payload={"answer": answer, "error": "not_found"})

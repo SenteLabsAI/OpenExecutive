@@ -155,7 +155,7 @@ async def _save(
     with rows_for_person(person.id):
         _check_caller(caller, normalize_email(person.email))
         if not is_enabled(person.id):
-            raise SendRefused(409, "act_as_me_off", "Turn on Act as me to change it here, or change it in your Drafts.")
+            raise SendRefused(409, "act_as_me_off", "Turn on As you to change it here, or change it in your Drafts.")
         closed = _closed(row)
         if closed is not None:
             raise SendRefused(409, "draft_gone", "That draft isn't in your Drafts any more.", state=closed)
@@ -263,7 +263,7 @@ async def discard(
         if closed is not None:
             return closed
         if not is_enabled(person.id):
-            raise SendRefused(409, "act_as_me_off", "Turn on Act as me to delete it here, or delete it in your Drafts.")
+            raise SendRefused(409, "act_as_me_off", "Turn on As you to delete it here, or delete it in your Drafts.")
         if row.id in _CHANGING or row.id in _CHAT_SENDING:
             raise SendRefused(409, "busy", "This draft is being changed or sent right now. Try again in a moment.")
         _CHANGING.add(row.id)

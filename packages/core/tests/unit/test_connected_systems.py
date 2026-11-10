@@ -194,7 +194,7 @@ def test_a_notion_server_is_not_also_reported_missing(channel_env: Any) -> None:
 
 def test_act_as_me_is_named_by_a_constant_line(channel_env: Any) -> None:
     text = build_system_blocks()[0]["text"]
-    assert "**Act as me:** on only if a *Writing as Someone* section follows" in text
+    assert "**As you (writing email as the person):** on only if a *Writing as Someone* section follows" in text
 
 
 # ── block 0 ─────────────────────────────────────────────────────────────────

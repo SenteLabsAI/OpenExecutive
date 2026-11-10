@@ -120,7 +120,7 @@ export default function DelegatePage() {
               {delegation.state === "hidden" && (
                 <SettingsCard>
                   <p className="text-[15px] text-fg-muted leading-relaxed">
-                    Act as me isn&apos;t available to you here. The owner of this Open Executive can turn it on for team
+                    As you isn&apos;t available to you here. The owner of this Open Executive can turn it on for team
                     members.
                   </p>
                 </SettingsCard>

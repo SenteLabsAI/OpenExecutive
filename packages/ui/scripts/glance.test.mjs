@@ -40,7 +40,7 @@ test("goal totals count every goal, with or without a department", () => {
   assert.deepEqual(goalTotals([]), { goals: 0, atRisk: 0, unchecked: 0 });
 });
 
-test("Act as me counts what it handled in the last seven days", () => {
+test("As you counts what it handled in the last seven days", () => {
   const replies = [{ sent_at: daysAgo(1) }, { sent_at: daysAgo(6.9) }, { sent_at: daysAgo(8) }, { sent_at: "" }];
   assert.equal(handledThisWeek(replies, NOW), 2);
 });
