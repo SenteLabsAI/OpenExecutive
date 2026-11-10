@@ -300,6 +300,10 @@ def _migrate_floor_to_trigger(conn: sqlite3.Connection) -> None:
     "Tells you when" sentence says it. Every other floor was a default nobody
     chose and is dropped. All floors are reset to low so nothing reads as a
     setting that no longer does anything.
+
+    Stocks are left out of the ``only_big`` step: a stock's bar is its percent
+    (``abs_change_pct_gte``), the too-noisy remedy for a stock doubled that
+    percent, and ``only_big`` is ignored on a stock.
     """
     already = conn.execute(
         "SELECT 1 FROM monitoring_migrations WHERE name = ?",

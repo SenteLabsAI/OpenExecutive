@@ -399,15 +399,24 @@ def test_watching_quietly_says_so_in_the_last_check_note(
 
 
 def test_old_floors_become_only_big_once(db: Path) -> None:
-    """Rows saved before the floor went: a high floor becomes "only big
-    changes" in the trigger, and every floor is reset."""
+    """Rows saved before the floor went: a high or urgent floor becomes "only
+    big changes" in the trigger, and every floor is reset. A stock keeps its
+    percent as its bar, a trigger that was not JSON starts over, and a second
+    boot changes nothing."""
     loud = _insert_feed(db, "loud", trigger={"keywords": ["outage"]})
+    urgent = _insert_feed(db, "urgent")
+    broken = _insert_feed(db, "broken")
     mid = _insert_feed(db, "mid")
     stock = ms.insert_watchlist_item(
         slug="acme-stock", signal_type="stock", target="ACME", db_path=db,
     )
     with sqlite3.connect(db) as conn:
-        conn.execute("UPDATE watchlist SET severity_floor='high' WHERE id IN (?, ?)", (loud, stock))
+        conn.execute(
+            "UPDATE watchlist SET severity_floor='high' WHERE id IN (?, ?, ?)",
+            (loud, stock, broken),
+        )
+        conn.execute("UPDATE watchlist SET severity_floor='urgent' WHERE id=?", (urgent,))
+        conn.execute("UPDATE watchlist SET trigger_json='not json' WHERE id=?", (broken,))
         conn.execute("UPDATE watchlist SET severity_floor='medium' WHERE id=?", (mid,))
         conn.execute(
             "DELETE FROM monitoring_migrations WHERE name = ?", (ms._MIGRATION_FLOOR_TO_TRIGGER,),
@@ -416,9 +425,20 @@ def test_old_floors_become_only_big_once(db: Path) -> None:
 
     by_id = {i.id: i for i in ms.list_watchlist(db_path=db)}
     assert by_id[loud].trigger_json == {"keywords": ["outage"], "only_big": True}
+    assert by_id[urgent].trigger_json == {"only_big": True}
+    assert by_id[broken].trigger_json == {"only_big": True}
     assert by_id[mid].trigger_json == {}
     assert "only_big" not in by_id[stock].trigger_json
     assert {i.severity_floor for i in by_id.values()} == {AlertSeverity.LOW}
+
+    # A floor written after the migration is left alone on the next boot.
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE watchlist SET severity_floor='high' WHERE id=?", (mid,))
+    ms.initialize_db(db)
+    again = ms.get_watchlist_item(mid, db_path=db)
+    assert again is not None
+    assert again.trigger_json == {}
+    assert again.severity_floor == AlertSeverity.HIGH
 
 
 def test_disabled_watchlist_skipped(
