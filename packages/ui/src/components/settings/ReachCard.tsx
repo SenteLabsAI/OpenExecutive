@@ -3,6 +3,7 @@
 import { useState, type ReactNode } from "react";
 
 import SettingsCard from "@/components/settings/SettingsCard";
+import { LearnPart } from "@/components/settings/TrainingCard";
 import Switch from "@/components/Switch";
 import {
   getDelegation,
@@ -175,17 +176,21 @@ export function Check({
   );
 }
 
-// The As you picker. `inbox` (the inbox watcher's status, Check now and Also
-// save in Drafts) shows under Your inbox; `level` is the Approvals level,
-// for the "Now:" line.
+// The As you picker. `mailbox` (which mailbox it writes from, with Change,
+// or the buttons that connect one) is the card's first line, since every
+// choice below depends on it. `inbox` (the inbox watcher's status, Check now
+// and Also save in Drafts) shows under Your inbox; `level` is the Approvals
+// level, for the "Now:" line.
 export function ReachCard({
   settings,
   onSettings,
+  mailbox: mailboxLine,
   inbox,
   level,
 }: {
   settings: DelegationSettings;
   onSettings: (next: DelegationSettings) => void;
+  mailbox?: ReactNode;
   inbox?: ReactNode;
   level: OutsideContentMode | null;
 }) {
@@ -208,7 +213,7 @@ export function ReachCard({
     {
       value: "inbox",
       label: "Your inbox",
-      line: "It also drafts a reply to each email that needs you and puts it on Home. Approvals decides which go on their own.",
+      line: "For each email that needs you, it does what the email asks where it can, writes the reply and puts it on Home. Approvals decides which go on their own.",
       reason: needsMailbox,
     },
   ];
@@ -229,6 +234,7 @@ export function ReachCard({
 
   return (
     <SettingsCard title="How far it goes as you" titleId="reach-label">
+      {mailboxLine && <div className="mb-4">{mailboxLine}</div>}
       <StepList name="reach" labelledBy="reach-label" steps={steps} current={current} busy={busy} onPick={pick} />
       <p className="mt-3 text-[15px] text-fg">
         <span className="text-fg-muted">Now: </span>
@@ -251,47 +257,48 @@ export function ReachCard({
 // In training for As you (PUT /delegation/training {training}): while it is
 // on, nothing goes out as you on its own, on any Approvals level, until you
 // tick "Send to them on its own next time" on a card. Learn from my edits
-// (drafts) sits with it. Shown once it writes as you at all.
-export function AsYouTrainingCard({
+// (drafts) sits with it. The While it learns part of How it learns from you,
+// shown once it writes as you at all.
+export function WhileItLearnsSection({
   settings,
   onSettings,
-  children,
 }: {
   settings: DelegationSettings;
   onSettings: (next: DelegationSettings) => void;
-  children?: ReactNode;
 }) {
   const { busy, error, save } = useReachSave(onSettings);
   const training = settings.training;
   if (!training) return null;
   const on = Boolean(training.training);
   return (
-    <SettingsCard
-      title="In training"
-      titleId="as-you-training-label"
-      description={
-        on
-          ? "Everything waits for you first, whatever Approvals says. Tick “on its own next time” when you send one and that person goes on their own."
-          : "Off: Approvals alone decides what goes on its own as you."
-      }
-      action={
+    <LearnPart title="While it learns">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h4 id="as-you-training-label" className="text-[17px] font-semibold text-fg">
+            In training
+          </h4>
+          <p className="mt-1 text-sm text-fg-muted leading-relaxed">
+            {on
+              ? "Everything waits for you first, whatever Approvals says. Tick “on its own next time” when you send one and that person goes on their own."
+              : "Off: Approvals alone decides what goes on its own as you."}
+          </p>
+        </div>
         <Switch
           checked={on}
           disabled={busy}
           labelledBy="as-you-training-label"
           onChange={(next) => void save(() => setTraining({ training: next }))}
         />
-      }
-    >
+      </div>
       <Check
         checked={Boolean(training.drafts)}
         disabled={busy}
         onChange={(learn) => void save(() => setTraining({ drafts: learn }))}
         label="Learn from my edits"
         help="Change a draft, tick Do it like this next time, and it learns how you write to that person."
+        className="mt-4"
       />
-      {children}
       {error && <p className="mt-3 text-sm text-red-500">{error}</p>}
-    </SettingsCard>
+    </LearnPart>
   );
 }
