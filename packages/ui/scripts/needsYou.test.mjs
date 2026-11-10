@@ -10,6 +10,7 @@ import {
   isOlder,
   newestAnchor,
   splitOlder,
+  waitedOnFirst,
 } from "../src/lib/needsYou.ts";
 
 const NOW = new Date("2026-11-04T16:00:00Z");
@@ -84,4 +85,10 @@ test("Clear all leaves kept cards in view and only clears the older ones", async
   assert.deepEqual(failed.map((c) => c.id), ["old-decision"]);
   assert.equal(clearNotice(failed.length, older.length), "1 of 2 didn't clear. They're still under Older. Try again.");
   assert.equal(clearNotice(0, 2), null);
+});
+
+test("a card someone else is waiting on goes first, each part in its order", () => {
+  const items = [{ id: 1 }, { id: 2, waited: true }, { id: 3 }, { id: 4, waited: true }];
+  assert.deepEqual(waitedOnFirst(items).map((i) => i.id), [2, 4, 1, 3]);
+  assert.deepEqual(waitedOnFirst([]), []);
 });

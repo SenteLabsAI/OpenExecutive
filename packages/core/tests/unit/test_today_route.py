@@ -3175,3 +3175,45 @@ def test_held_back_page_lines_are_the_principals_alone(
     assert client.get("/today/held-back", headers={"x-caller-email": "jordan@example.com"}).json()[0][
         "lines"] == ["Call Robin about the 4% raise"]
     assert client.get("/today/held-back", headers={"x-caller-email": "sam@example.com"}).json() == []
+
+
+def test_today_says_why_a_booking_waits_and_who_waits_on_a_held_ask(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A gated booking's card says why it waited (the Approvals level); a
+    teammate's held ask names them, and the reader's own held ask names
+    nobody."""
+    db = tmp_path / "waiting.db"
+    _setup_isolated_db(db, monkeypatch)
+
+    def card(headline: str, decision_class: str, payload: dict[str, object]) -> None:
+        decision_id = decision_ledger.create_decision_instance(
+            decision_class=decision_class, department="ops", originating_session_id=None,
+            proposed_payload=payload, idempotency_key=None, gate_mode="propose",
+            approver_person_id=5, confidence=None, db_path=db,
+        )
+        alert_store.insert_alert(
+            source="decision",
+            external_id=f"decision:{decision_id}",
+            severity="medium",
+            headline=headline,
+            body="...",
+            topic_tags=[f"decision_instance:{decision_id}", f"decision_class:{decision_class}"],
+            routed_to_person_id=5,
+            db_path=db,
+        )
+
+    card("Approve meeting: Pricing review", "meeting_scheduling", {"title": "Pricing review"})
+    card("Sam Okafor asked the Executive to: email Northgate", "department_action",
+         {"tool": "send_email", "requested_by_person_id": 9, "requested_by": "Sam Okafor"})
+    card("Waiting for your OK: save a file", "department_action",
+         {"tool": "drive_save", "requested_by_person_id": 5, "requested_by": "Jordan Avery"})
+
+    by_headline = {p["headline"]: p for p in _make_client().get("/today").json()["proposals"]}
+    booking = by_headline["Approve meeting: Pricing review"]
+    assert booking["waiting_because"] == "Approvals is on Careful, so a booking waits for your OK."
+    assert booking["waiting_on"] == ""
+    assert by_headline["Sam Okafor asked the Executive to: email Northgate"]["waiting_on"] == "Sam Okafor"
+    own = by_headline["Waiting for your OK: save a file"]
+    assert own["waiting_on"] == ""
+    assert own["waiting_because"] == ""

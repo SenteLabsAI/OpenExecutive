@@ -18,10 +18,10 @@ import {
   type HeldActionPayload,
   type ProposalItem,
 } from "@/lib/api";
-import { approveLabel } from "@/lib/needsYou";
+import { approveLabel, newestAnchor } from "@/lib/needsYou";
 
 import { isHeldAction } from "./HeldActionCard";
-import { Chip } from "./shared";
+import CardTopRow from "./CardTopRow";
 
 // The words every card of a held request starts with, left off each row.
 const LEAD_INS = ["Waiting for your OK: "];
@@ -107,13 +107,14 @@ export default function RequestGroupCard({
         emphasized ? "border-accent/60 ring-1 ring-accent/25 shadow-sm" : "border-line"
       }`}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 text-base sm:text-[17px] font-semibold leading-snug text-fg break-words">
-          {proposals.length} steps from one request
-        </div>
-        <span className="flex-shrink-0">
-          <Chip tone="amber">Waiting on you</Chip>
-        </span>
+      <CardTopRow
+        need="Needs your OK"
+        mode="take_the_lead"
+        at={newestAnchor(proposals)}
+        waitingOn={proposals.find((p) => p.waiting_on)?.waiting_on}
+      />
+      <div className="min-w-0 text-base sm:text-[17px] font-semibold leading-snug text-fg break-words">
+        {proposals.length} steps from one request
       </div>
       <ul className="mt-3 flex flex-col gap-1 rounded-xl border border-line bg-surface p-2">
         {proposals.map((p) => {

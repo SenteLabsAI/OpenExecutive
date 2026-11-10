@@ -251,6 +251,12 @@ class ProposalItem(BaseModel):
     # carries the same opaque key, so Needs you shows them as one card with a
     # box per item. None on a card that stands alone.
     group_key: str | None = None
+    # Why an Approve card waited for the reader, in their words, when the
+    # card's own text doesn't say it (a gated booking): '' otherwise.
+    waiting_because: str = ""
+    # Who else is waiting on this card: the teammate whose ask was held for
+    # the reader's OK. Home puts these first. '' when nobody else waits.
+    waiting_on: str = ""
 
 
 def _proposal_body(alert: Alert) -> str:
@@ -446,6 +452,55 @@ def _group_requests(items: list[ProposalItem]) -> None:
         shared = keys.get(p.alert_id)
         if shared is not None and counts[shared] > 1:
             p.group_key = shared
+
+
+# The Approvals levels by name (outside_mode.MODES), as the reader sees them.
+_LEVEL_NAMES = {"ask": "Careful", "outsiders": "Balanced", "trust": "Hands-off"}
+
+
+def _mark_waiting(items: list[ProposalItem]) -> None:
+    """Fill ``waiting_because`` on a gated booking's card (its text doesn't
+    say why it waited) and ``waiting_on`` on a teammate's held ask. Never
+    raises: a card without them still shows."""
+    from openexecutive.memory.decision_ledger import get_decision_instances
+    from openexecutive.orchestrator import department_gate, outside_mode
+
+    bookings = [p for p in items if "decision_class:meeting_scheduling" in p.topic_tags]
+    if bookings:
+        try:
+            level = _LEVEL_NAMES.get(outside_mode.get_mode(), "")
+        except Exception:
+            logger.debug("today: couldn't read the Approvals level", exc_info=True)
+            level = ""
+        # On Hands-off a booking goes on its own: one still waiting is from
+        # before the change, and the level isn't why.
+        if level and level != "Hands-off":
+            for p in bookings:
+                p.waiting_because = f"Approvals is on {level}, so a booking waits for your OK."
+    held_tag = f"decision_class:{department_gate.DECISION_CLASS}"
+    held = [p for p in items if p.decision_instance_id is not None and held_tag in p.topic_tags]
+    if not held:
+        return
+    try:
+        instances = get_decision_instances([i for p in held if (i := p.decision_instance_id) is not None])
+    except Exception:
+        logger.debug("today: reading held asks failed", exc_info=True)
+        return
+    for p in held:
+        inst = instances.get(p.decision_instance_id or 0)
+        if inst is None:
+            continue
+        try:
+            payload = json.loads(inst.proposed_payload_json or "{}")
+        except ValueError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        asker = payload.get("requested_by_person_id")
+        name = str(payload.get("requested_by") or "").strip()
+        # The reader's own ask held for their own OK: nobody else waits.
+        if isinstance(asker, int) and asker != p.routed_to_person_id and name:
+            p.waiting_on = name
 
 
 def _parse_decision_instance_id(topic_tags: list[str]) -> int | None:
@@ -1164,6 +1219,7 @@ def _build_today(
     proposal_items.sort(key=lambda p: p.created_at, reverse=True)
     proposal_items.sort(key=lambda p: (0 if p.category == "action" else 1, -p.score))
     _group_requests(proposal_items)
+    _mark_waiting(proposal_items)
 
     response = TodayResponse(
         departments=dept_items,

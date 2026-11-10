@@ -72,6 +72,12 @@ export function groupByRequest<T extends { group_key?: string | null }>(
   return out;
 }
 
+// The queue with the cards someone else is waiting on first (a teammate's
+// ask held for your OK), each part in its own order.
+export function waitedOnFirst<T extends { waited?: boolean }>(items: T[]): T[] {
+  return [...items.filter((i) => i.waited), ...items.filter((i) => !i.waited)];
+}
+
 // The newest age anchor in a group, so a group is old only when all of it is.
 export function newestAnchor(items: Aged[]): string {
   let best = "";
