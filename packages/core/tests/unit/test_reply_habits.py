@@ -120,3 +120,18 @@ def test_only_the_owner_sees_or_keeps_them(db: Path, monkeypatch: pytest.MonkeyP
     assert client.post(f"/people/{pid}/reply-habits/keep", json={"kind": "channel"}).status_code == 204
     assert [s["kind"] for s in client.get(f"/people/{pid}/reply-habits").json()["suggestions"]] == ["reply_time"]
     assert client.post(f"/people/{pid}/reply-habits/keep", json={"kind": "nope"}).status_code == 422
+
+
+def test_keep_with_nothing_to_keep_is_409_and_an_archived_person_is_404(db: Path) -> None:
+    from openexecutive.api.main import create_app
+
+    people_store.upsert_person(full_name="Jordan Avery", email="jordan@example.com", is_principal=True)
+    pid = _person(preferred_channel="email", response_sla_hours=24)
+    people_registry.invalidate()
+    client = TestClient(create_app())
+    assert client.get(f"/people/{pid}/reply-habits").json() == {"suggestions": []}
+    assert client.post(f"/people/{pid}/reply-habits/keep", json={"kind": "reply_time"}).status_code == 409
+    people_store.archive_person(pid)
+    people_registry.invalidate()
+    assert client.get(f"/people/{pid}/reply-habits").status_code == 404
+    assert client.get("/people/9999/reply-habits").status_code == 404

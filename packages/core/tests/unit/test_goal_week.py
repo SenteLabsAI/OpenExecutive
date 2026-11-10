@@ -149,3 +149,31 @@ def test_a_busy_goal_does_not_crowd_out_the_others(db: Path) -> None:
     rows = ttl.goal_rows([busy, quiet], limit=3)
     assert sum(r.goal_id == busy for r in rows) == 3
     assert [r.summary for r in rows if r.goal_id == quiet] == ["Message Dana"]
+
+
+def test_a_teammate_gets_shared_lines_but_not_what_was_done_as_the_owner(db: Path) -> None:
+    from openexecutive.api.main import create_app
+
+    people_store.upsert_person(full_name="Jordan Avery", email="jordan@example.com", is_principal=True)
+    people_store.upsert_person(full_name="Sam Lee", email="sam@example.com")
+    people_registry.invalidate()
+    gid = _goal()
+    _update(gid, from_status="on_track", to_status="at_risk")
+    audit_logger.get_audit_logger().log(
+        "tool_invocation", f"update_department_goal goal/{gid}: on_track->off_track", actor="executive",
+        details={"tool": "update_department_goal", "ok": True, "goal_id": gid, "to_status": "off_track"},
+        private=True,
+    )
+    with ttl.looking(ttl.DAILY_LOOK):
+        ttl.focus_goal(gid)
+        ttl.record(scope=ttl.SCOPE_EXECUTIVE, source="lead", tool="message_person", summary="Message Dana", status="done")
+        ttl.record(scope=ttl.SCOPE_EXECUTIVE, source="lead", tool="message_person", summary="Message Lee", status="waiting")
+    client = TestClient(create_app())
+    owner = client.get("/goals/week").json()["goals"][str(gid)]
+    assert {line["text"] for line in owner["done"]} == {"Marked it at risk.", "Marked it off track.", "Message Dana."}
+    assert [w["text"] for w in owner["waiting"]] == ["Message Lee"]
+    for path in ("/goals/week", f"/goals/{gid}/activity"):
+        body = client.get(path, headers={"x-caller-email": "sam@example.com"}).json()
+        week = body["goals"][str(gid)] if path == "/goals/week" else body
+        assert [line["text"] for line in week["done"]] == ["Marked it at risk."]
+        assert week["waiting"] == []
