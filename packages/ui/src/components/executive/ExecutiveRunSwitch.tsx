@@ -100,7 +100,7 @@ export default function ExecutiveRunSwitch() {
           </p>
           <p className="text-sm text-amber-500">{heldLabel(status.held_actions)}</p>
           {!status.can_resume && (
-            <p className="text-sm text-fg-muted">Only the principal can resume the Executive.</p>
+            <p className="text-sm text-fg-muted">Only the account owner can resume the Executive.</p>
           )}
         </div>
       ) : expanded ? (
