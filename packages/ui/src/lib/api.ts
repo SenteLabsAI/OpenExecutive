@@ -5469,6 +5469,9 @@ export interface DepartmentBriefItem {
   at_risk_count: number;
   off_track_count: number;
   awaiting_count: number;
+  // Goals on their "on track" default that nothing has checked yet. Optional
+  // so older API builds / test mocks without it still typecheck.
+  unchecked_count?: number;
   // The actual problem goals (worst first, capped). Optional so older API
   // builds / test mocks without the field still typecheck.
   attention_goals?: GoalBrief[];
