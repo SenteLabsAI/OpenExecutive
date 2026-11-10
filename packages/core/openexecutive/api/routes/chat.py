@@ -2507,6 +2507,10 @@ async def _fast_json_call(
         log_model_usage(response, model=model, actor=log_tag)
         text_blocks = [b for b in response.content if getattr(b, "type", "") == "text"]
         raw = text_blocks[0].text.strip() if text_blocks else ""
+    except TimeoutError:
+        # A slow fast model, not a fault: the caller falls back.
+        logger.warning("%s: LLM call timed out", log_tag)
+        return None
     except Exception:
         logger.exception("%s: LLM call failed", log_tag)
         return None
