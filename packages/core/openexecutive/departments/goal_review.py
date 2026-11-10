@@ -34,6 +34,8 @@ _FRESH_FOR = timedelta(days=6)
 def _needs_review(goal: Goal, now: datetime) -> bool:
     from openexecutive.alerts.lifecycle import parse_aware
 
+    if goal.status == "done":
+        return False  # finished: nothing left to grade
     reviewed = parse_aware(goal.last_reviewed_at) if goal.last_reviewed_at else None
     if reviewed is None:
         return True

@@ -373,15 +373,16 @@ def needs_check_in(state: DepartmentState, now: datetime) -> str | None:
     slug = state.config.slug
     if not state.config.specialist_key:
         return "informational department (no specialist agent)"
-    if not state.goals:
+    open_goals = [g for g in state.goals if g.status != "done"]
+    if not open_goals:
         return "no Goals to review"
 
-    reviewed = [parse_aware(g.last_reviewed_at) for g in state.goals]
+    reviewed = [parse_aware(g.last_reviewed_at) for g in open_goals]
     if any(r is None for r in reviewed):
         return None  # a Goal was never graded
     baseline = min(r for r in reviewed if r is not None)
 
-    for goal, goal_reviewed in zip(state.goals, reviewed, strict=True):
+    for goal, goal_reviewed in zip(open_goals, reviewed, strict=True):
         edited = parse_aware(goal.updated_at)
         if edited is not None and goal_reviewed is not None and edited > goal_reviewed:
             return None
@@ -424,10 +425,13 @@ def needs_check_in(state: DepartmentState, now: datetime) -> str | None:
 def _render_goals(state: object) -> str:  # type: ignore[type-arg]
     from openexecutive.departments.models import DepartmentState
     assert isinstance(state, DepartmentState)
-    if not state.goals:
+    # A done goal is finished, so the grader never sees it
+    # (``persist_goal_verdicts`` would drop a verdict for one anyway).
+    open_goals = [g for g in state.goals if g.status != "done"]
+    if not open_goals:
         return "No Goals configured for this department."
     lines = ["**Goals:**"]
-    for goal in state.goals:
+    for goal in open_goals:
         current = f" (current: {goal.current})" if goal.current else ""
         target = f" — target: {goal.target}" if goal.target else ""
         period_label = (
@@ -560,7 +564,8 @@ def persist_goal_verdicts(
     overwrites — the one ``goal_status_review`` audit row (tagged with
     ``actor``) keeps each prior status for the diff trail, and the principal
     keeps the manual UI edit as the final override. A verdict for a goal id
-    not in ``state.goals`` (a hallucinated id) is dropped, and a failed write
+    not in ``state.goals`` (a hallucinated id) or for a goal a person marked
+    done is dropped, and a failed write
     skips that goal: persistence is best-effort, the artifact still ships.
     Returns one ``{goal_id, from, to, rationale}`` per goal written.
     """
@@ -573,11 +578,11 @@ def persist_goal_verdicts(
     transitions: list[dict[str, Any]] = []
     for v in verdicts:
         goal = goals_by_id.get(v["goal_id"])
-        if goal is None:
+        if goal is None or goal.status == "done":
             continue
         prior_status = goal.status
         try:
-            _dept_store.record_goal_review(
+            written = _dept_store.record_goal_review(
                 v["goal_id"],
                 status=v["status"],
                 last_reviewed_at=now.isoformat(),
@@ -587,6 +592,9 @@ def persist_goal_verdicts(
                 "check_in: record_goal_review failed slug=%s goal_id=%s",
                 slug, v["goal_id"],
             )
+            continue
+        if not written:
+            # Marked done (or deleted) while the review ran: nothing changed.
             continue
         transitions.append({
             "goal_id": v["goal_id"],

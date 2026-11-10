@@ -149,6 +149,7 @@ export default function DepartmentsPage() {
               const counts = goalCounts(ds.goals);
               const atRisk = counts.at_risk;
               const offTrack = counts.off_track;
+              const open = ds.goals.length - counts.done;
               return (
                 <Link
                   key={cfg.slug}
@@ -167,7 +168,7 @@ export default function DepartmentsPage() {
                   <div className="text-[15px] text-fg-muted mt-1.5">{cfg.charter.mission.slice(0, 80)}{cfg.charter.mission.length > 80 ? "…" : ""}</div>
 
                   <div className="flex flex-wrap items-center gap-2 mt-4 text-sm text-fg-muted">
-                    <span className="mr-1">{ds.goals.length} Goal{ds.goals.length !== 1 ? "s" : ""}</span>
+                    <span className="mr-1">{open} Goal{open !== 1 ? "s" : ""}</span>
                     {atRisk > 0 && <GoalStatusPill status="at_risk" />}
                     {offTrack > 0 && <GoalStatusPill status="off_track" />}
                     {counts.not_checked > 0 && <GoalStatusPill status="not_checked" />}

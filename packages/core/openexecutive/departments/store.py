@@ -902,8 +902,9 @@ def record_goal_review(
     a principal renaming the KR on Tuesday and OE re-grading it on
     Wednesday must be distinguishable.
 
-    Always overwrites — the workflow re-grades every Goal each cycle,
-    and the audit row carries the prior value for the diff trail. The
+    Overwrites every status but ``done`` — the workflow re-grades every
+    open Goal each cycle, and the audit row carries the prior value for
+    the diff trail. The
     Honcho mirror fires after the SQL commit with ``transition="reviewed"``
     so the dept peer's notes timeline captures cadence reviews
     distinctly from content edits.
@@ -912,7 +913,9 @@ def record_goal_review(
     """
     with _get_conn(db_path) as conn:
         cursor = conn.execute(
-            "UPDATE department_goals SET status = ?, last_reviewed_at = ? WHERE id = ?",
+            # A goal a person marked done while the review ran stays done.
+            "UPDATE department_goals SET status = ?, last_reviewed_at = ? "
+            "WHERE id = ? AND status != 'done'",
             (status, last_reviewed_at, goal_id),
         )
         updated = cursor.rowcount > 0
