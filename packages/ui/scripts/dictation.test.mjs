@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { clock, joinDictation, pickRecordingType, recordingFilename } from "../src/lib/dictation.ts";
+import { MIC_TONES, clock, joinDictation, pickRecordingType, recordingFilename, splitHeard } from "../src/lib/dictation.ts";
 
 test("what was heard follows what the box held", () => {
   assert.equal(joinDictation("", "  move my call  "), "move my call");
@@ -27,4 +27,24 @@ test("the timer reads minutes and seconds", () => {
   assert.equal(clock(7.9), "0:07");
   assert.equal(clock(102), "1:42");
   assert.equal(clock(-3), "0:00");
+});
+
+test("live words: settled ones follow what came before, the latest guess stays apart", () => {
+  const parts = [
+    { transcript: "move the board prep", isFinal: true },
+    { transcript: " to Thursday", isFinal: true },
+    { transcript: " and ask", isFinal: false },
+    { transcript: " Dan", isFinal: false },
+  ];
+  assert.deepEqual(splitHeard("", parts), { settled: "move the board prep to Thursday", pending: "and ask Dan" });
+  assert.deepEqual(splitHeard("Earlier words", parts.slice(0, 1)), {
+    settled: "Earlier words move the board prep",
+    pending: "",
+  });
+  assert.deepEqual(splitHeard("", []), { settled: "", pending: "" });
+});
+
+test("the start tone rises and the stop tone falls", () => {
+  assert.ok(MIC_TONES.start[1] > MIC_TONES.start[0]);
+  assert.ok(MIC_TONES.stop[1] < MIC_TONES.stop[0]);
 });

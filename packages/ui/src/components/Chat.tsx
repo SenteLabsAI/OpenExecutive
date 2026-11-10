@@ -145,6 +145,12 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
 
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages ?? []);
   const [input, setInput] = useState(initialInput ?? "");
+  // While the mic listens: what the box held when it started (the heard
+  // words go after it), and the browser's guess at the latest words, drawn
+  // tinted after the box's text until they settle.
+  const dictationBaseRef = useRef<string | null>(null);
+  const [dictating, setDictating] = useState(false);
+  const [heardPending, setHeardPending] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const { isStopping, beginTurn, stop: handleStop, serverAcknowledgedStop, endTurn } =
     useStoppableTurn();
@@ -958,6 +964,8 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
   // Enter and the Send button: an edit replaces the last turn.
   function submit() {
     if (redoing) return;
+    // The mic is still listening or writing it out: stop it first.
+    if (dictating) return;
     // One turn at a time in a shared chat: wait for someone else's to end.
     if (!editing && !isLoading && liveRef.current.turn) return;
     if (editing) void sendEdit();
@@ -1003,7 +1011,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     });
   }
 
-  const showFollowup = Boolean(followup) && !input && !isLoading && !live.turn;
+  const showFollowup = Boolean(followup) && !input && !isLoading && !live.turn && !dictating;
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     // Tab / → take the suggestion only while the box is empty; otherwise
@@ -1549,13 +1557,27 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                   {followup}
                 </div>
               )}
+              {dictating && heardPending && (
+                <div
+                  aria-hidden
+                  className="col-start-1 row-start-1 pointer-events-none text-sm sm:text-base leading-relaxed whitespace-pre-wrap break-words max-h-40 overflow-hidden"
+                >
+                  <span className="text-transparent">{input ? `${input} ` : ""}</span>
+                  <span className="text-fg-muted bg-accent/15 rounded">{heardPending}</span>
+                </div>
+              )}
               <textarea
                 ref={textareaRef}
                 value={input}
                 onChange={handleTextareaChange}
                 onKeyDown={handleKeyDown}
+                readOnly={dictating}
                 placeholder={
-                  isLoading
+                  dictating
+                    ? heardPending
+                      ? ""
+                      : "Listening… start talking"
+                    : isLoading
                     ? WORKING_PLACEHOLDER
                     : blockedBy
                       ? `The Executive is answering ${blockedBy}…`
@@ -1574,8 +1596,19 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
             {!isLoading && (
               <MicButton
                 disabled={Boolean(blockedBy)}
+                onLive={(settled, pending) => {
+                  if (dictationBaseRef.current === null) dictationBaseRef.current = input;
+                  setDictating(true);
+                  setInput(joinDictation(dictationBaseRef.current, settled));
+                  setHeardPending(pending);
+                }}
                 onText={(text) => {
-                  setInput((prev) => joinDictation(prev, text));
+                  // The written-out words replace the live ones.
+                  const base = dictationBaseRef.current;
+                  dictationBaseRef.current = null;
+                  setDictating(false);
+                  setHeardPending("");
+                  setInput((prev) => joinDictation(base ?? prev, text));
                   setFileError(null);
                   textareaRef.current?.focus();
                 }}
@@ -1601,8 +1634,8 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                 onClick={submit}
                 disabled={
                   editing
-                    ? !input.trim() || redoing
-                    : Boolean(blockedBy) || (!input.trim() && pendingFiles.length === 0)
+                    ? dictating || !input.trim() || redoing
+                    : dictating || Boolean(blockedBy) || (!input.trim() && pendingFiles.length === 0)
                 }
                 aria-label={isLoading ? "Add to what it's working on" : editing ? "Send edited message" : "Send message"}
                 className="flex-shrink-0 w-11 h-11 rounded-xl bg-accent-strong hover:bg-accent-strong/90 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 flex items-center justify-center cursor-pointer"
