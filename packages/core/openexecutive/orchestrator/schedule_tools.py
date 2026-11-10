@@ -1578,6 +1578,20 @@ async def handle_message_person(tool_input: dict[str, Any]) -> str:
     return await message_person(tool_input)
 
 
+def usable_chat_ref(channel: str, channel_ref: str | None) -> bool:
+    """Whether ``channel_ref`` is an id ``message_person`` can send to on
+    ``channel``: a Discord snowflake is all digits, a Telegram chat id an
+    integer with at most one leading '-' (a group's), a Slack id anything."""
+    if not channel_ref:
+        return False
+    if channel == "discord":
+        return channel_ref.isascii() and channel_ref.isdigit()
+    if channel == "telegram":
+        digits = channel_ref[1:] if channel_ref.startswith("-") else channel_ref
+        return channel_ref.isascii() and digits.isdigit()
+    return channel == "slack"
+
+
 def _chat_candidates(person: Any) -> list[tuple[str, str | None]]:
     """The person's chat channels as (channel, stored id) pairs, in
     ``people.reach.reach_order``'s order."""
@@ -1667,20 +1681,13 @@ async def message_person(tool_input: dict[str, Any], *, alert_fallback: bool = T
     for channel, channel_ref in candidates:
         if channel not in configured or not channel_ref:
             continue
+        if not usable_chat_ref(channel, channel_ref):
+            continue  # e.g. a Discord "@handle" or a Telegram "--1"
         if channel == "discord":
-            if not (channel_ref.isascii() and channel_ref.isdigit()):
-                continue  # not a usable Discord snowflake
             result = await handle_send_discord_dm(
                 {"discord_user_id": channel_ref, "text": text}
             )
         elif channel == "telegram":
-            # Telegram chat ids are integers; group ids carry ONE leading '-'.
-            # Strip a single sign (not lstrip, which would accept "--1") and
-            # require the rest to be ascii digits, so the value round-trips
-            # through int() in the delegate.
-            digits = channel_ref[1:] if channel_ref.startswith("-") else channel_ref
-            if not (channel_ref.isascii() and digits.isdigit()):
-                continue  # not a usable Telegram chat id (e.g. "--1", "@handle")
             result = await handle_send_telegram_message(
                 {"chat_id": channel_ref, "text": text}
             )
