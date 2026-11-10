@@ -72,8 +72,11 @@ _PLACES = {
     "google_chat": "Google Chat",
     "teams": "Teams",
 }
-# Source kinds that are not the company's own documents.
-_NOT_COMPANY_SOURCES = frozenset({"knowledge", "web"})
+# Source kinds that are the company's own documents (orchestrator
+# .answer_sources.SourceKind): uploads and the synced sources. Built-in
+# playbooks, web pages, research results and the person's own attachments are
+# not, so a new kind counts only once it is added here.
+_COMPANY_SOURCES = frozenset({"company", "notion", "drive", "onedrive", "confluence"})
 _STOPWORDS = frozenset(
     ["a", "an", "the", "and", "or", "but", "of", "to", "in", "on", "at", "for", "by", "with", "from", "about", "as", "is", "are", "was", "were", "be", "been", "being", "do", "does", "did", "done", "have", "has", "had", "i", "me", "my", "we", "our", "us", "you", "your", "it", "its", "this", "that", "these", "those", "what", "which", "who", "whom", "whose", "when", "where", "why", "how", "there", "here", "can", "could", "would", "should", "will", "shall", "may", "might", "must", "any", "some", "all", "please", "tell", "know", "let", "lets", "get", "got", "just", "not", "no", "yes", "so", "if", "than", "then", "them", "they", "their", "he", "she", "his", "her", "one"]
 )
@@ -182,7 +185,7 @@ def has_company_source(sources: Any) -> bool:
     if not isinstance(items, list):
         return False
     return any(
-        isinstance(s, dict) and str(s.get("kind") or "") not in _NOT_COMPANY_SOURCES for s in items
+        isinstance(s, dict) and str(s.get("kind") or "") in _COMPANY_SOURCES for s in items
     )
 
 
@@ -295,7 +298,13 @@ def note_answered(question: str, *, person_id: int, db_path: Path | None = None)
 
 def _prune(conn: sqlite3.Connection) -> None:
     cutoff = (_now() - timedelta(days=KEEP_DAYS)).isoformat()
-    conn.execute(f"DELETE FROM {ASKS} WHERE asked_at < ?", (cutoff,))  # noqa: S608
+    # A dismissed line keeps its asks, so the person it was dismissed for is
+    # still matched and it never comes back for them.
+    conn.execute(
+        f"DELETE FROM {ASKS} WHERE asked_at < ? "  # noqa: S608
+        f"AND line_id NOT IN (SELECT id FROM {TABLE} WHERE status = 'dismissed')",
+        (cutoff,),
+    )
     conn.execute(f"DELETE FROM {TABLE} WHERE id NOT IN (SELECT line_id FROM {ASKS})")  # noqa: S608
 
 

@@ -131,6 +131,16 @@ def test_company_sources_are_told_from_playbooks_and_the_web() -> None:
     assert not kg.has_company_source({"sources": [{"kind": "knowledge"}, {"kind": "web"}]})
     assert kg.has_company_source({"sources": [{"kind": "web"}, {"kind": "company"}]})
     assert kg.has_company_source({"sources": [{"kind": "drive"}]})
+    assert not kg.has_company_source({"sources": [{"kind": "research"}, {"kind": "document"}]})
+
+
+def test_a_dismissed_question_stays_dismissed_past_the_retention(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    line = kg.note_unanswered(REFUND, person_id=1, session_id="s-1", asked_at=NOW, db_path=db)
+    assert line is not None and kg.close(line, "dismissed", db_path=db)
+    monkeypatch.setattr(kg, "_now", lambda: NOW + timedelta(days=kg.KEEP_DAYS + 5))
+    # Another person's asking runs the prune; the dismissed line survives it.
+    kg.note_unanswered("Who signs off on vendor contracts?", person_id=2, session_id="s-2", db_path=db)
+    assert kg.note_unanswered(REFUND, person_id=1, session_id="s-3", db_path=db) is None
 
 
 # --------------------------------------------------------------------------- #
