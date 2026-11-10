@@ -3239,7 +3239,7 @@ def test_done_for_you_says_how_why_and_what_came_of_what_it_did_as_me(
     from openexecutive.api.routes import today as today_route
 
     earlier = (_dt.now(_UTC) - _td(hours=1)).isoformat()
-    assert today_route._answered(riley, earlier) == ""
+    assert today_route._answers([(riley, earlier)]) == {}
     # Many messages in one read: only the one answered gets a line.
     sam = people_store.upsert_person(full_name="Sam Lee", email="sam@example.com", db_path=db)
     episodic.insert_outbound_context(
@@ -3249,6 +3249,10 @@ def test_done_for_you_says_how_why_and_what_came_of_what_it_did_as_me(
     got = today_route._answers([(riley, just_now), (riley, earlier), (sam, just_now)])
     assert list(got) == [(riley, just_now)]
     assert got[(riley, just_now)].startswith("Riley answered at")
+    # Two sends to Riley a minute apart, one answered: one line, on the nearer send.
+    a_minute_ago = (_dt.now(_UTC) - _td(minutes=1, seconds=30)).isoformat()
+    got = today_route._answers([(riley, a_minute_ago), (riley, just_now)])
+    assert list(got) == [(riley, just_now)]
 
 
 def test_watching_next_lists_follow_ups_and_standing_jobs_and_stop_ends_one(

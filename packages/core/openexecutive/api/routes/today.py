@@ -2812,11 +2812,6 @@ def _lead_line(row: Any, jobs: dict[int, Any], answers: dict[tuple[int, str], st
         return ""
 
 
-def _answered(person_id: int, sent_at: str) -> str:
-    """"Riley answered at 9:40 AM" for one message; see ``_answers``."""
-    return _answers([(person_id, sent_at)]).get((person_id, sent_at), "")
-
-
 def _answers(sent: list[tuple[int, str]]) -> dict[tuple[int, str], str]:
     """"Riley answered at 9:40 AM" for each (person, sent at) whose message
     was replied to (``outbound_context`` recorded beside the send, then
@@ -2852,16 +2847,19 @@ def _answers(sent: list[tuple[int, str]]) -> dict[tuple[int, str], str]:
         return out
     replies = [(r["recipient_person_id"], _parse_aware(r["created_at"]), _parse_aware(r["consumed_at"]))
                for r in rows]
+    # The message As me sent is recorded beside its log row, so each reply
+    # belongs to the send nearest it (within the window), and to one only:
+    # two messages to Riley a minute apart, one answered, give one line.
+    matched: dict[tuple[int, str], datetime] = {}
+    for p, made, consumed in replies:
+        if made is None or consumed is None:
+            continue
+        near = [(abs(made - t), key) for key, t in when.items()
+                if key[0] == p and t is not None and abs(made - t) <= window and key not in matched]
+        if near:
+            matched[min(near)[1]] = consumed
     names: dict[int, str] = {}
-    for (pid, at), at_time in when.items():
-        if at_time is None:
-            continue
-        # The message As me sent is recorded beside its log row: a later
-        # message to the same person, answered, isn't this one.
-        replied = next((c for p, made, c in replies if p == pid and made is not None and c is not None
-                        and abs(made - at_time) <= window), None)
-        if replied is None:
-            continue
+    for (pid, at), replied in matched.items():
         try:
             if pid not in names:
                 person = get_person(pid)
