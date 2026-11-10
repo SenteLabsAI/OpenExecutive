@@ -3614,6 +3614,10 @@ export interface ArtifactSummary {
   // (packages/core/openexecutive/orchestrator/extensions.py).
   collection?: string | null;
   collection_label?: string | null;
+  // The Documents page group ("chats" | "briefs" | "c:<name>" | "wf:<name>")
+  // and its plain name.
+  group: string;
+  group_label: string;
 }
 
 export type ArtifactFormat = "docx" | "html" | "link" | "markdown" | "xlsx";
@@ -5469,6 +5473,9 @@ export interface DepartmentBriefItem {
   at_risk_count: number;
   off_track_count: number;
   awaiting_count: number;
+  // Goals on their "on track" default that nothing has checked yet. Optional
+  // so older API builds / test mocks without it still typecheck.
+  unchecked_count?: number;
   // The actual problem goals (worst first, capped). Optional so older API
   // builds / test mocks without the field still typecheck.
   attention_goals?: GoalBrief[];

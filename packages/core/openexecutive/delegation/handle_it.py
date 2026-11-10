@@ -145,6 +145,9 @@ _LINK_RE = re.compile(
     r"|\b[\w-]+(?:\.[\w-]+)*\.(?:com|net|org|io|co|ly|ai|app|dev|me|info|biz|us|uk|link|xyz|gl|to|site|online)\b)",
     re.IGNORECASE,
 )
+# An email address (a signature's, say) is not a link: its domain alone would
+# read as a bare host, so addresses are taken out before looking for links.
+_EMAIL_RE = re.compile(r"(?:mailto:)?[\w.+-]+@[\w-]+(?:\.[\w-]+)+", re.IGNORECASE)
 _AMOUNT_RE = re.compile(
     r"[$€£¥₹]\s*\d|\d\s*%|\b\d[\d,.]*\s*(?:usd|eur|gbp|dollars?|euros?|pounds?|percent)\b",
     re.IGNORECASE,
@@ -224,7 +227,7 @@ def content_hold(
         return "rule"
     if hands_off(db_path=db_path):
         return None
-    if any(_LINK_RE.search(t or "") for t in link_texts):
+    if any(_LINK_RE.search(_EMAIL_RE.sub(" ", t or "")) for t in link_texts):
         return "link"
     if any(_CREDENTIALS_RE.search(t or "") for t in texts):
         return "sensitive"

@@ -569,7 +569,7 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
       });
     }
     if (goals.goals > 0)
-      tiles.push({ key: "goals", href: "/goals", text: goalsText(goals.goals, goals.atRisk) });
+      tiles.push({ key: "goals", href: "/goals", text: goalsText(goals.goals, goals.atRisk, goals.unchecked) });
     if (glance.workflows && glance.workflows.scheduled > 0)
       tiles.push({
         key: "workflows",
@@ -608,7 +608,12 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
         tiles.push({
           key: "departments",
           panel: "departments",
-          text: departmentsText(activeRealDepts.length, attentionRealDepts.length, deptAtRiskCount > 0),
+          text: departmentsText(
+            activeRealDepts.length,
+            attentionRealDepts.length,
+            deptAtRiskCount > 0,
+            activeRealDepts.filter((d) => (d.unchecked_count ?? 0) > 0).length,
+          ),
         });
       if (showPeople && today) {
         const people = today.people;

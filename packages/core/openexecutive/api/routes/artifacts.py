@@ -39,6 +39,7 @@ Endpoints:
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import Callable
 from typing import Annotated, Literal
@@ -74,6 +75,19 @@ logger = logging.getLogger(__name__)
 
 # Max artifacts returned by the list endpoint (mirrors alerts.list_alerts' cap).
 _DEFAULT_LIMIT = 200
+# The Executive's own working notes: kept in the run log and recall, left
+# off the Documents page (its owner never asked for them).
+_OFF_THE_PAGE: frozenset[str] = frozenset({"executive_reflection", "executive_research"})
+# Daily write-ups that pile up: one closed group at the bottom of the page.
+_BRIEFS: frozenset[str] = frozenset({"morning_brief", "end_of_day_digest"})
+_BRIEFS_LABEL = "Briefs and wrap-ups"
+# What a run's title says about how it started (workflows/, research_tools,
+# workflow_run_tools, onboarding).
+_HOW_IT_STARTED: tuple[str, ...] = (
+    "(periodic)", "(post-onboarding auto-fire)", "(chat-tool fire)",
+)
+_CHATS_LABEL = "From chats"
+
 # Chars of body shown as a card preview. Unrelated to _DEFAULT_LIMIT despite
 # the shared value — keep them as separate named knobs.
 _PREVIEW_CHARS = 200
@@ -103,6 +117,12 @@ class ArtifactSummary(BaseModel):
     # the Documents page gives each its own filter.
     collection: str | None = None
     collection_label: str | None = None
+    # Where the Documents page files it: "chats" (drafted in a chat),
+    # "briefs" (morning briefs and wrap-ups, one closed group), "c:<name>"
+    # (an extension's collection) or "wf:<workflow name>"; and that group's
+    # plain name.
+    group: str = "chats"
+    group_label: str = "From chats"
 
 
 class ArtifactDetail(ArtifactSummary):
@@ -120,9 +140,18 @@ async def list_artifacts(
 
     Defaults to active artifacts; `?archived=true` returns only archived ones
     (the gallery's Active / Archived views are clean swaps, not supersets).
+    The Executive's own working notes (`_OFF_THE_PAGE`) are left out of the
+    active list; they still open by id, and one archived earlier still shows
+    under Archived so it can be restored or deleted.
     """
-    records = list_artifact_records(limit, viewer=_viewer(request), archived=archived)
-    return {"artifacts": [_summary(r) for r in records]}
+    records = list_artifact_records(
+        limit,
+        viewer=_viewer(request),
+        archived=archived,
+        exclude_workflows=() if archived else _OFF_THE_PAGE,
+    )
+    labels: dict[str, str] = {}
+    return {"artifacts": [_summary(r, labels) for r in records]}
 
 
 @router.get("/artifacts/{composite_id}")
@@ -131,7 +160,7 @@ async def get_artifact(composite_id: str, request: Request) -> ArtifactDetail:
     rec = _load(composite_id, request)
     stored = rec.stored or ""
     body = stored if rec.format == "html" else get_format(rec.format).display(stored)
-    return ArtifactDetail(**_summary(rec).model_dump(), body=body, rationale=rec.rationale)
+    return ArtifactDetail(**_summary(rec, {}).model_dump(), body=body, rationale=rec.rationale)
 
 
 @router.get("/artifacts/{composite_id}/download")
@@ -255,14 +284,61 @@ def _mutate(action: Callable[[], ArtifactRecord]) -> ArtifactRecord:
 
 
 
-def _summary(rec: ArtifactRecord) -> ArtifactSummary:
+def workflow_label(name: str) -> str:
+    """A workflow's plain name, also for one switched off or deleted since
+    its runs were written: its title where one is known, else its key in
+    words ("weekly_laptop_restock" -> "Weekly laptop restock")."""
+    from openexecutive.workflows import get_workflow
+    from openexecutive.workflows.dynamic_store import get_definition
+
+    with contextlib.suppress(Exception):
+        return get_workflow(name).title
+    with contextlib.suppress(Exception):
+        defn = get_definition(name)
+        if defn is not None and defn.title.strip():
+            return defn.title.strip()
+    words = name.removeprefix("quick_").replace("_", " ").strip()
+    return words[:1].upper() + words[1:] if words else "Workflow"
+
+
+def _group(rec: ArtifactRecord, collection_label: str | None, labels: dict[str, str]) -> tuple[str, str]:
+    """The Documents page group a record files under, and its name.
+    `labels` caches workflow names across one list."""
+    if rec.collection:
+        return f"c:{rec.collection}", collection_label or rec.collection
+    if rec.kind == "draft":
+        return "chats", _CHATS_LABEL
+    if rec.source_label in _BRIEFS:
+        return "briefs", _BRIEFS_LABEL
+    if rec.source_label not in labels:
+        labels[rec.source_label] = workflow_label(rec.source_label)
+    return f"wf:{rec.source_label}", labels[rec.source_label]
+
+
+def _title(rec: ArtifactRecord) -> str:
+    """A run's title without the note on how it started."""
+    if rec.kind != "workflow":
+        return rec.title
+    # The note on how a run started that the code appends to its name. Only
+    # these: "Report (Q1)" keeps its "(Q1)".
+    title = rec.title.rstrip()
+    for note in _HOW_IT_STARTED:
+        if title.endswith(note):
+            title = title[: -len(note)].rstrip()
+            break
+    return title or rec.title
+
+
+def _summary(rec: ArtifactRecord, labels: dict[str, str]) -> ArtifactSummary:
     fmt = get_format(rec.format)
     collection = get_collection(rec.collection)
     preview = fmt.text(rec.stored)[:_PREVIEW_CHARS] if rec.stored else ""
+    collection_label = collection.label if collection is not None else None
+    group, group_label = _group(rec, collection_label, labels)
     return ArtifactSummary(
         id=rec.id,
         kind=rec.kind,
-        title=rec.title,
+        title=_title(rec),
         source_label=rec.source_label,
         created_at=rec.created_at,
         preview=preview or None,
@@ -276,5 +352,7 @@ def _summary(rec: ArtifactRecord) -> ArtifactSummary:
         link_label=rec.link_label,
         supersedes_id=rec.supersedes_id,
         collection=rec.collection,
-        collection_label=collection.label if collection is not None else None,
+        collection_label=collection_label,
+        group=group,
+        group_label=group_label,
     )

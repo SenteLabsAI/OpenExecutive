@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { goalCounts, groupGoals } from "../src/lib/goalGroups.ts";
+import { goalCounts, groupGoals, shownStatus } from "../src/lib/goalGroups.ts";
 
-const goal = (id, { dept = null, deptTitle = null, owner = 1, ownerName = "Rufus", status = "on_track" } = {}) => ({
+const goal = (id, { dept = null, deptTitle = null, owner = 1, ownerName = "Rufus", status = "on_track", reviewed = "2026-11-02T09:00:00+00:00" } = {}) => ({
   id,
   department_slug: dept,
   department_title: deptTitle,
@@ -16,7 +16,7 @@ const goal = (id, { dept = null, deptTitle = null, owner = 1, ownerName = "Rufus
   status,
   created_at: "",
   updated_at: "",
-  last_reviewed_at: "",
+  last_reviewed_at: reviewed,
 });
 
 const GOALS = [
@@ -48,6 +48,16 @@ test("by status: worst first, empty statuses left out", () => {
 test("a goal nobody owns groups last; counts per status", () => {
   const groups = groupGoals([goal(1, { owner: null, ownerName: "" }), goal(2)], "owner", { viewerId: 1 });
   assert.deepEqual(groups.map((g) => g.title), ["Rufus (you)", "No owner yet"]);
-  assert.deepEqual(goalCounts(GOALS), { on_track: 2, at_risk: 1, off_track: 1 });
+  assert.deepEqual(goalCounts(GOALS), { on_track: 2, at_risk: 1, off_track: 1, not_checked: 0 });
   assert.deepEqual(groupGoals([], "owner"), []);
+});
+
+test("a goal never checked reads not checked yet, not on track", () => {
+  assert.equal(shownStatus(goal(1, { reviewed: "" })), "not_checked");
+  assert.equal(shownStatus(goal(1)), "on_track");
+  // A status someone set stays shown, checked or not.
+  assert.equal(shownStatus(goal(1, { status: "at_risk", reviewed: "" })), "at_risk");
+  const goals = [...GOALS, goal(5, { reviewed: "" })];
+  assert.deepEqual(goalCounts(goals), { on_track: 2, at_risk: 1, off_track: 1, not_checked: 1 });
+  assert.deepEqual(groupGoals(goals, "status").map((g) => g.title), ["Off track", "At risk", "Not checked yet", "On track"]);
 });
