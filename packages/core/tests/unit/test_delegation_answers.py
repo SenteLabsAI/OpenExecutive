@@ -62,7 +62,7 @@ def test_compose_returns_the_choices(monkeypatch: pytest.MonkeyPatch) -> None:
     draft = asyncio.run(gw.compose(
         writer_name="Olivia Owner", voice_block="", thread_text="hi", reply_subject="Re: x", intent="reply",
         recipients=[gw.Recipient(email="dana@northpeak.example")], signature="", exec_name="Open Executive",
-        model="m",
+        model="m", writer_person_id=None,
     ))
     assert draft.open_questions == ["Which week?"]
     assert draft.question_choices[0].choices == ["This week", "Next week"]
@@ -81,7 +81,7 @@ def test_the_summary_has_no_link_or_address_and_stays_short(monkeypatch: pytest.
     draft = asyncio.run(gw.compose(
         writer_name="Olivia Owner", voice_block="", thread_text="hi", reply_subject="Re: x", intent="reply",
         recipients=[gw.Recipient(email="dana@northpeak.example")], signature="", exec_name="Open Executive",
-        model="m",
+        model="m", writer_person_id=None,
     ))
     # No summary from the composer: none on the card.
     assert draft.gist == ""

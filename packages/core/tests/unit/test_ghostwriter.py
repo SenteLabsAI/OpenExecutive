@@ -78,6 +78,7 @@ def _compose(**kw: Any) -> Any:
         "signature": "Olivia Owner\nFernway Studio",
         "exec_name": "Open Executive",
         "model": "claude-test",
+        "writer_person_id": None,
     }
     base.update(kw)
     return asyncio.run(compose(**base))

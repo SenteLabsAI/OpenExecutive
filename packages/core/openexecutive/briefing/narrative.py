@@ -865,6 +865,15 @@ async def synthesize_briefing_narrative(
         reflection_flags=reflection_flags, standing_facts=standing_facts,
         brief_requests=not viewer, reader=reader,
     )
+    if not viewer:
+        # The principal's lessons that bear on this brief (memory.lessons),
+        # added here and not in the rendered context: the /today header
+        # hashes that string as its cache key, and a lesson is counted as
+        # used only when a brief is really written. A teammate's own view
+        # is not written to the principal's lessons.
+        from openexecutive.memory.lessons import with_owner_lessons
+
+        user_content = await asyncio.to_thread(with_owner_lessons, user_content)
     model = brief_model()
     messages: list[dict[str, Any]] = [{"role": "user", "content": user_content}]
     text = ""

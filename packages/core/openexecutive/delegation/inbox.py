@@ -806,6 +806,9 @@ async def compose_reply(
         signature=stored.profile.signature,
         exec_name=get_settings().exec_display_name,
         model=composer_model(),
+        writer_person_id=person.id,
+        # A stranger's words pick nothing out of the writer's memory.
+        recall_from_thread=relation != "stranger",
     )
     if not composed.subject:
         return "no_subject"

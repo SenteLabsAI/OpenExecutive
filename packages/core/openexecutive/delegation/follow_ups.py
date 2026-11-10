@@ -168,6 +168,7 @@ async def _follow_up(
                 signature=stored.profile.signature,
                 exec_name=settings.exec_display_name,
                 model=composer_model(),
+                writer_person_id=person.id,
                 now=now,
                 writer_example=example_for(person.id, to[0]) if len(going) == 1 else None,
             )

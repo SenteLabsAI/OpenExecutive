@@ -424,6 +424,7 @@ async def _write(ask: _Ask, *, sending: bool) -> str:
             signature=stored.profile.signature,
             exec_name=settings.exec_display_name,
             model=composer_model(),
+            writer_person_id=person.id,
             writer_example=example_for(person.id, recipients[0]) if len(recipients) == 1 else None,
         )
         if not composed.subject:

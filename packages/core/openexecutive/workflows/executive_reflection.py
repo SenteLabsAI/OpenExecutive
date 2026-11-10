@@ -802,6 +802,13 @@ class ExecutiveReflectionWorkflow(Workflow):
         from openexecutive.memory.facts import with_standing_facts
 
         user_content = await asyncio.to_thread(with_standing_facts, user_content)
+        # And how they asked for things to be done (memory.lessons), so what
+        # this pass starts on its own is done the way they taught it.
+        from openexecutive.memory import lessons as lessons_store
+
+        user_content = await asyncio.to_thread(
+            lessons_store.with_owner_lessons, user_content, surface=lessons_store.SURFACE_LEAD
+        )
 
         # Seed a synthetic Session into the `current_session` ContextVar
         # so schedule_followup's anti-spam guard accepts the reflection's

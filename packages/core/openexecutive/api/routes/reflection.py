@@ -92,6 +92,9 @@ class LessonOut(BaseModel):
     shown: int
     fine_after: int
     miss_after: int
+    # How often it was used on each surface (``lessons.SURFACES``: chat,
+    # one_on_one, email, meeting, brief, lead).
+    used_in: dict[str, int] = {}
 
 
 class WeekOut(BaseModel):
@@ -106,6 +109,10 @@ class ReflectionOut(BaseModel):
     weeks: list[WeekOut]
     replay: ReplayOut
     sees_everyone: bool
+    # This week, over the lessons listed: how many were learned and how
+    # often they were used on each surface.
+    learned_this_week: int = 0
+    used_this_week: dict[str, int] = {}
 
 
 def _refuse(status_code: int, code: str, message: str) -> HTTPException:
@@ -205,7 +212,15 @@ def get_reflection(
         misses = chat_review.list_misses(person_id=scope, limit=_PAGE)
         learned = lessons.list_lessons(person_id=scope, limit=_PAGE)
     weeks = chat_review.weekly_rates(person_id=scope)
+    from datetime import UTC, datetime, timedelta
+
+    week_ago = (datetime.now(UTC) - timedelta(days=7)).isoformat()
+    live = [lesson for lesson in learned if lesson["retired_at"] is None]
     return ReflectionOut(
+        learned_this_week=sum(1 for lesson in live if lesson["created_at"] >= week_ago),
+        used_this_week=lessons.used_since(
+            week_ago, person_ids=sorted({int(lesson["person_id"]) for lesson in learned})
+        ),
         misses=[MissOut(**m) for m in misses],
         lessons=[LessonOut(**lesson, person_name=_name(lesson["person_id"])) for lesson in learned],
         replay=ReplayOut(**replay.summary_for(misses)),
