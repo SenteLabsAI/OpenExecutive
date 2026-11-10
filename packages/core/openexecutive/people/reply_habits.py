@@ -47,6 +47,8 @@ CHANNEL_LABELS: dict[str, str] = {
     "telegram": "Telegram",
     "discord": "Discord",
 }
+# What the person's page calls each setting, "any" included.
+_SETTING_LABELS: dict[str, str] = {**CHANNEL_LABELS, "any": "Where they last talked"}
 
 # The replies read: their latest, within this window.
 WINDOW_DAYS = 90
@@ -214,8 +216,8 @@ def _channel(person: Person, replies: list[Reply], kept: str | None) -> Suggesti
         return None
     label = CHANNEL_LABELS[best]
     have = (
-        f"You have {CHANNEL_LABELS[person.preferred_channel]} set."
-        if person.preferred_channel in CHANNEL_LABELS else "You have no channel set."
+        f"You have {_SETTING_LABELS[person.preferred_channel]} set."
+        if person.preferred_channel in _SETTING_LABELS else "You have no channel set."
     )
     return Suggestion(
         kind="channel",

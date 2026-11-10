@@ -135,3 +135,11 @@ def test_keep_with_nothing_to_keep_is_409_and_an_archived_person_is_404(db: Path
     people_registry.invalidate()
     assert client.get(f"/people/{pid}/reply-habits").status_code == 404
     assert client.get("/people/9999/reply-habits").status_code == 404
+
+
+def test_where_they_last_talked_is_named_as_the_setting(db: Path) -> None:
+    pid = _person(preferred_channel="any", response_sla_hours=4)
+    for i in range(6):
+        _reply(db, pid, "slack_dm", 2, days_ago=i + 1)
+    (channel,) = [s for s in reply_habits.suggestions(_get(pid), now=NOW) if s.kind == "channel"]
+    assert channel.evidence.startswith("You have Where they last talked set.")
