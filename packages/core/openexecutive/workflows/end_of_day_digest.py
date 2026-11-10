@@ -691,10 +691,14 @@ class EndOfDayDigestWorkflow(Workflow):
             conversation=conversation, live_lines=live_lines, coming_up=coming_up,
             leave_out=leave_out, found=found,
         ))
-        # The principal's lessons that bear on the day (memory.lessons).
-        from openexecutive.memory.lessons import with_owner_lessons
+        # The principal's lessons that bear on the day (memory.lessons), in
+        # a digest that is theirs alone: never one a teammate started.
+        from openexecutive.workflows.morning_brief import _private_ok
 
-        user_content = await asyncio.to_thread(with_owner_lessons, user_content)
+        if _private_ok():
+            from openexecutive.memory.lessons import with_owner_lessons
+
+            user_content = await asyncio.to_thread(with_owner_lessons, user_content)
         # Who reads it: the activity names the principal like anyone else
         # ("Sent a DM to <their name>"), and the digest repeated it.
         reader = await asyncio.to_thread(principal_reader)

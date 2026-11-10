@@ -218,9 +218,9 @@ def get_reflection(
     live = [lesson for lesson in learned if lesson["retired_at"] is None]
     return ReflectionOut(
         learned_this_week=sum(1 for lesson in live if lesson["created_at"] >= week_ago),
-        used_this_week=lessons.used_since(
-            week_ago, person_ids=sorted({int(lesson["person_id"]) for lesson in learned})
-        ),
+        # Over the lessons listed, and no others: the count gives away
+        # nothing about a lesson this caller may not see.
+        used_this_week=lessons.used_since(week_ago, lesson_ids=[int(lesson["id"]) for lesson in live]),
         misses=[MissOut(**m) for m in misses],
         lessons=[LessonOut(**lesson, person_name=_name(lesson["person_id"])) for lesson in learned],
         replay=ReplayOut(**replay.summary_for(misses)),

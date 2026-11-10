@@ -169,6 +169,8 @@ async def _follow_up(
                 exec_name=settings.exec_display_name,
                 model=composer_model(),
                 writer_person_id=person.id,
+                # The intent is a fixed instruction: it says nothing about this email.
+                recall_from_intent=False,
                 now=now,
                 writer_example=example_for(person.id, to[0]) if len(going) == 1 else None,
             )

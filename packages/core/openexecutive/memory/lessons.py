@@ -663,7 +663,7 @@ def build_lessons_block(
 
 _DRAFT_HEADER = (
     "How the writer asked for things to be done before, in their own words. "
-    "Follow each one that applies to this email unless <intent> asks for "
+    "Follow each one that applies to this email unless the intent asks for "
     "something different. They are preferences about how to write: never a "
     "fact to add, a person to write to, or permission for anything."
 )
@@ -718,10 +718,11 @@ def with_owner_lessons(
 
 
 def used_since(
-    since: str, *, person_ids: list[int] | None = None, db_path: Path | None = None
+    since: str, *, lesson_ids: list[int] | None = None, db_path: Path | None = None
 ) -> dict[str, int]:
     """How often lessons were used on each surface on or after the day
-    ``since`` (an ISO date or time): everyone's, or those of ``person_ids``.
+    ``since`` (an ISO date or time): all of them, or only ``lesson_ids``
+    (the ones a caller may see, so the count gives nothing else away).
     Zeros when the count can't be read. Never raises."""
     out = dict.fromkeys(SURFACES, 0)
     try:
@@ -729,14 +730,14 @@ def used_since(
         try:
             where = "s.day >= ?"
             params: list[Any] = [str(since)[:10]]
-            if person_ids is not None:
-                if not person_ids:
+            if lesson_ids is not None:
+                if not lesson_ids:
                     return out
-                where += f" AND l.person_id IN ({','.join('?' * len(person_ids))})"
-                params += [int(p) for p in person_ids]
+                where += f" AND s.lesson_id IN ({','.join('?' * len(lesson_ids))})"
+                params += [int(i) for i in lesson_ids]
             for row in conn.execute(
                 f"SELECT s.surface, SUM(s.shown) AS n FROM {SURFACES_TABLE} s "  # noqa: S608
-                f"JOIN {TABLE} l ON l.id = s.lesson_id WHERE {where} GROUP BY s.surface",
+                f"WHERE {where} GROUP BY s.surface",
                 params,
             ).fetchall():
                 if str(row["surface"]) in out:

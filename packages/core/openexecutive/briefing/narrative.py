@@ -809,8 +809,13 @@ async def synthesize_briefing_narrative(
     now_label: str | None = None,
     reflection_flags: str = "",
     reader: Reader | None = None,
+    owner_lessons: bool = False,
 ) -> str:
-    """Synthesize the briefing narrative as Markdown. Raises
+    """``owner_lessons``: this brief is the principal's own, read by them
+    alone, so their matching lessons (``memory.lessons``) are added. Off by
+    default: a caller says so only when it knows who reads it.
+
+    Synthesize the briefing narrative as Markdown. Raises
     :class:`BriefNotWritten` when the model writes none (an empty draft is
     never a quiet day: the prompts have the quiet line for that).
 
@@ -865,12 +870,13 @@ async def synthesize_briefing_narrative(
         reflection_flags=reflection_flags, standing_facts=standing_facts,
         brief_requests=not viewer, reader=reader,
     )
-    if not viewer:
+    if owner_lessons and not viewer:
         # The principal's lessons that bear on this brief (memory.lessons),
         # added here and not in the rendered context: the /today header
         # hashes that string as its cache key, and a lesson is counted as
-        # used only when a brief is really written. A teammate's own view
-        # is not written to the principal's lessons.
+        # used only when a brief is really written. Only for a brief the
+        # principal alone reads (``owner_lessons``): a lesson is theirs, and
+        # never shapes what a teammate or anyone else is shown.
         from openexecutive.memory.lessons import with_owner_lessons
 
         user_content = await asyncio.to_thread(with_owner_lessons, user_content)

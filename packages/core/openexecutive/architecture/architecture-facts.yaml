@@ -5520,7 +5520,8 @@ chat:
     SURFACES: chat, one_on_one, email, meeting, brief, lead): a chat turn
     under Session.memory_surface, else email or chat (executive._turn_lessons);
     an email written as a person gets writer_lessons and writer_knows blocks
-    (ghostwriter.writer_memory; compose requires writer_person_id); a shared
+    (ghostwriter.writer_memory; compose requires writer_person_id; a fact is
+    picked by the writer's side only, never by an outside sender's words); a shared
     call reads the lessons of Session.lessons_person_id only; briefs, the
     digest, the weekly review and the morning reflection append the
     principal's (lessons.with_owner_lessons). Only a graded chat turn moves

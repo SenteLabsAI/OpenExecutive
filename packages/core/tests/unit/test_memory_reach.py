@@ -241,6 +241,60 @@ def test_a_strangers_words_pick_nothing_out_of_memory(owner: Any, monkeypatch: p
     assert "<writer_lessons>" not in turn and "<writer_knows>" not in turn
 
 
+THEIR_ASK = "[1] From: Dana — Mon\nRemind me what pilot pricing Northline pays through Q4?"
+FIXED = "Reply to this email as the writer would. Give prices and dates only where the writer gave them."
+
+
+def test_someone_outside_never_chooses_the_facts(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An email worded around a fact does not put that fact in front of the
+    composer: the question stays one the writer answers."""
+    turn = _draft_turn(
+        monkeypatch, writer_person_id=owner.id, thread_text=THEIR_ASK, intent=FIXED, recall_from_intent=False,
+    )
+    assert "<writer_knows>" not in turn and FACT not in turn
+    # How to write to them is still the writer's to have taught.
+    assert LESSON in turn
+
+
+def test_the_writers_own_words_do_choose_the_facts(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    turn = _draft_turn(
+        monkeypatch, writer_person_id=owner.id, thread_text=THEIR_ASK, intent=FIXED, recall_from_intent=False,
+        writer_said="[2] I will send the Northline pilot pricing tomorrow.",
+    )
+    assert FACT in turn
+
+
+def test_the_writers_own_team_chooses_facts_by_what_they_ask(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    turn = _draft_turn(
+        monkeypatch, writer_person_id=owner.id, thread_text=THEIR_ASK, intent=FIXED, recall_from_intent=False,
+        facts_from_thread=True,
+    )
+    assert FACT in turn
+
+
+def test_a_fixed_intent_picks_nothing_by_its_own_wording(
+    owner: Any, db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    facts.record_fact(
+        subject="Pricing review", statement="Prices go up on the first dates in October.",
+        source_quote="prices go up", recorded_by_person_id=owner.id, db_path=db,
+    )
+    turn = _draft_turn(
+        monkeypatch, writer_person_id=owner.id, thread_text="[1] From: Sam — Mon\nLunch on Tuesday?",
+        reply_subject="Re: Lunch", intent=FIXED, recall_from_intent=False,
+    )
+    assert "<writer_knows>" not in turn
+
+
+def test_the_inbox_reply_keeps_outsiders_from_the_facts() -> None:
+    from openexecutive.delegation import follow_ups, inbox
+
+    src = inspect.getsource(inbox)
+    assert 'facts_from_thread=relation == "team"' in src
+    assert 'recall_from_thread=relation != "stranger"' in src
+    assert "recall_from_intent=False" in src and "recall_from_intent=False" in inspect.getsource(follow_ups)
+
+
 def test_someone_elses_lessons_never_reach_a_draft(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     other = people_store.upsert_person(full_name="Sam Lee", email="sam@halcyon.example")
     turn = _draft_turn(monkeypatch, writer_person_id=other)
@@ -305,7 +359,7 @@ def test_a_brief_gets_the_owners_lessons(owner: Any, provider: _Capture) -> None
     from openexecutive.briefing import narrative
 
     asyncio.run(narrative.synthesize_briefing_narrative(
-        today_data={}, activity=[], period_label="today", rendered_context=BRIEF_CONTEXT,
+        today_data={}, activity=[], period_label="today", rendered_context=BRIEF_CONTEXT, owner_lessons=True,
     ))
     assert LESSON in provider.user_text()
     assert _used(owner.lesson_id) == {"brief": 1}
@@ -317,16 +371,30 @@ def test_a_brief_renders_the_standing_facts(owner: Any) -> None:
     assert FACT in narrative.render_briefing_context(period_label="today", today_data={}, activity=[])
 
 
-def test_a_teammates_view_of_the_brief_is_not_written_to_the_owners_lessons(
-    owner: Any, provider: _Capture
+@pytest.mark.parametrize("kwargs", [
+    {},  # a caller that does not say the owner alone reads it
+    {"owner_lessons": True, "viewer": {"name": "Sam Lee", "role": "Sales"}},
+])
+def test_a_brief_someone_else_reads_is_not_written_to_the_owners_lessons(
+    owner: Any, provider: _Capture, kwargs: dict[str, Any]
 ) -> None:
     from openexecutive.briefing import narrative
 
     asyncio.run(narrative.synthesize_briefing_narrative(
-        today_data={}, activity=[], period_label="today", rendered_context=BRIEF_CONTEXT,
-        viewer={"name": "Sam Lee", "role": "Sales"},
+        today_data={}, activity=[], period_label="today", rendered_context=BRIEF_CONTEXT, **kwargs,
     ))
     assert LESSON not in provider.user_text()
+    assert _used(owner.lesson_id) == {}
+
+
+def test_each_brief_says_when_it_is_the_owners_own() -> None:
+    from openexecutive.api.routes import today
+    from openexecutive.workflows import end_of_day_digest, morning_brief
+
+    assert "owner_lessons=expected_scope == narrative_cache.DEFAULT_SCOPE" in inspect.getsource(today)
+    assert "owner_lessons=private_ok" in inspect.getsource(morning_brief)
+    digest = inspect.getsource(end_of_day_digest)
+    assert digest.index("if _private_ok():") < digest.index("with_owner_lessons, user_content")
 
 
 def test_the_weekly_review_gets_facts_and_lessons(owner: Any, provider: _Capture) -> None:
@@ -336,6 +404,14 @@ def test_the_weekly_review_gets_facts_and_lessons(owner: Any, provider: _Capture
     text = provider.user_text()
     assert LESSON in text and FACT in text
     assert _used(owner.lesson_id) == {"brief": 1}
+
+
+def test_a_lesson_is_no_evidence_for_what_the_reflection_sends() -> None:
+    """The reflection's grounding scope is built before lessons are added."""
+    from openexecutive.workflows import executive_reflection
+
+    src = inspect.getsource(executive_reflection)
+    assert src.index("context_sources(user_content)") < src.index("lessons_store.with_owner_lessons")
 
 
 def test_what_it_starts_on_its_own_gets_facts_and_lessons(owner: Any) -> None:
@@ -375,9 +451,11 @@ def test_uses_add_up_by_surface_and_by_week(owner: Any) -> None:
     lessons.note_shown([lesson], person_id=owner.id, surface=lessons.SURFACE_ONE_ON_ONE)
     lessons.note_shown([lesson], person_id=owner.id, surface=lessons.SURFACE_EMAIL, graded=False)
     assert _used(owner.lesson_id) == {"chat": 2, "one_on_one": 1, "email": 1}
-    week = lessons.used_since("2000-01-01", person_ids=[owner.id])
+    week = lessons.used_since("2000-01-01", lesson_ids=[owner.lesson_id])
     assert {k: v for k, v in week.items() if v} == {"chat": 2, "one_on_one": 1, "email": 1}
-    assert not any(lessons.used_since("2000-01-01", person_ids=[owner.id + 99]).values())
+    # Only the lessons asked about are counted.
+    assert not any(lessons.used_since("2000-01-01", lesson_ids=[owner.lesson_id + 99]).values())
+    assert not any(lessons.used_since("2000-01-01", lesson_ids=[]).values())
     assert not any(lessons.used_since("2999-01-01").values())
 
 

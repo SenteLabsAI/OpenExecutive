@@ -842,8 +842,8 @@ DRAFT_MAX_CHARS = 1500
 _DRAFT_FACTS_HEADER = (
     "What the writer's company has on record about what this email touches, "
     "the closest first. Use one only to get right a name, a term, a date or a "
-    "figure the email already has to mention; where <intent> says otherwise, "
-    "<intent> wins. Never add one the email does not need, never list them, "
+    "figure the email already has to mention; where the intent says otherwise, "
+    "the intent wins. Never add one the email does not need, never list them, "
     "and never mention that they are kept."
 )
 

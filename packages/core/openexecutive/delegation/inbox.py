@@ -807,8 +807,12 @@ async def compose_reply(
         exec_name=get_settings().exec_display_name,
         model=composer_model(),
         writer_person_id=person.id,
-        # A stranger's words pick nothing out of the writer's memory.
+        # The intent is a fixed instruction: it says nothing about this email.
+        recall_from_intent=False,
+        # A stranger's words pick nothing out of the writer's memory, and
+        # only the writer's own team picks facts by what they write.
         recall_from_thread=relation != "stranger",
+        facts_from_thread=relation == "team",
     )
     if not composed.subject:
         return "no_subject"
