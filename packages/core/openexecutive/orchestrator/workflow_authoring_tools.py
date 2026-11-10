@@ -82,7 +82,7 @@ DEFINITION_SCHEMA: dict[str, Any] = {
                 "Executive's own email, when it isn't clear. To read their own mail or "
                 "calendar (the same condition): 'oe__search_my_email', "
                 "'oe__read_my_email', 'oe__my_email_awaiting_reply', 'oe__my_calendar', and "
-                "'oe__answer_email_as_me' answers a thread from those as its other "
+                "'oe__answer_email_as_me' answers a thread from those the way its inbox "
                 "replies as them would. The gateway's mail and calendar tools "
                 "(google_workspace__*, microsoft_365__*) act as YOUR account, not theirs: "
                 "a calendar step with no calendar named reads your own calendar. To read "
