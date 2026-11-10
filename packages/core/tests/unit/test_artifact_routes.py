@@ -642,6 +642,10 @@ async def test_list_leaves_out_the_executives_working_notes(db: Path) -> None:
     # Still opens by id (the activity feed links research).
     detail = await artifacts_route.get_artifact("run:run-res", _REQ)
     assert detail.kind == "workflow"
+    # One archived earlier stays reachable under Archived.
+    wf_persistence.set_run_archived("run-refl", True, db_path=db)
+    archived = (await artifacts_route.list_artifacts(_REQ, archived=True))["artifacts"]
+    assert [a.id for a in archived] == ["run:run-refl"]
 
 
 def test_store_exclude_workflows_filter(db: Path) -> None:

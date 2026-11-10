@@ -140,11 +140,15 @@ async def list_artifacts(
 
     Defaults to active artifacts; `?archived=true` returns only archived ones
     (the gallery's Active / Archived views are clean swaps, not supersets).
-    The Executive's own working notes (`_OFF_THE_PAGE`) are left out; they
-    still open by id.
+    The Executive's own working notes (`_OFF_THE_PAGE`) are left out of the
+    active list; they still open by id, and one archived earlier still shows
+    under Archived so it can be restored or deleted.
     """
     records = list_artifact_records(
-        limit, viewer=_viewer(request), archived=archived, exclude_workflows=_OFF_THE_PAGE
+        limit,
+        viewer=_viewer(request),
+        archived=archived,
+        exclude_workflows=() if archived else _OFF_THE_PAGE,
     )
     labels: dict[str, str] = {}
     return {"artifacts": [_summary(r, labels) for r in records]}
