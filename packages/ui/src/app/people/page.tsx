@@ -111,7 +111,7 @@ function PersonRow({
             </span>
             {person.is_principal && (
               <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-accent/10 text-accent">
-                Principal
+                Owner
               </span>
             )}
             {isNew && (

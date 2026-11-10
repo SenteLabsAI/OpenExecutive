@@ -373,7 +373,7 @@ export const ADVANCED_ITEMS: AdvancedItem[] = [
     icon: "doc-search",
     group: "diagnose",
     description:
-      "A searchable record of everything the Executive did: each chat, each question it passed to an expert, each tool it used and each scheduled job.",
+      "A searchable record of everything the Executive did: each chat, each question it passed to an expert, each tool it used and each thing it did on a schedule.",
   },
   {
     href: "/audit/usage",
