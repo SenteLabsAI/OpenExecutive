@@ -2463,12 +2463,14 @@ def stop_job(job_id: int, *, db_path: Path | None = None) -> Job | None:
         ).fetchone()
         if row is None:
             return None
-        conn.execute(
-            f"UPDATE {JOBS_TABLE} SET stopped_at = ? WHERE id = ?",  # noqa: S608
+        # Only the stop that changes the row wins: two at once (a double
+        # tap, or Home and the As me tab) stop it once.
+        cur = conn.execute(
+            f"UPDATE {JOBS_TABLE} SET stopped_at = ? WHERE id = ? AND stopped_at IS NULL",  # noqa: S608
             (datetime.now(UTC).isoformat(), job_id),
         )
         conn.commit()
-        return Job(**dict(row))
+        return Job(**dict(row)) if cur.rowcount == 1 else None
     finally:
         conn.close()
 

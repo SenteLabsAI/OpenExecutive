@@ -1668,6 +1668,11 @@ def test_two_adds_at_once_make_one_standing_job(tmp_path: Path) -> None:
     assert results.count("added") == 1
     assert [j.text for j in ttl.list_jobs(db_path=db)] == ["Chase late invoices"]
 
+    [job] = ttl.list_jobs(db_path=db)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        stopped = list(pool.map(lambda _: ttl.stop_job(job.id, db_path=db), range(8)))
+    assert sum(s is not None for s in stopped) == 1
+
 
 def test_it_only_watches_while_as_me_is_on(monkeypatch: pytest.MonkeyPatch, watched: None) -> None:
     monkeypatch.setattr(ttl, "executive_on", lambda **_: False)
