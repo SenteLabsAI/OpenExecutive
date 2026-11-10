@@ -43,6 +43,7 @@ from openexecutive.monitoring.enrichment import build_company_context, enrich_si
 from openexecutive.monitoring.models import (
     MODE_ACTIVE,
     MODE_DRY_RUN,
+    ORIGIN_RESEARCH_PROPOSED,
     OUTCOME_ALERTED,
     OUTCOME_FAILED,
     OUTCOME_HELD_DIGEST,
@@ -54,15 +55,19 @@ from openexecutive.monitoring.models import (
     PAGE_WATCH_DIGEST_HOURS,
     SOURCE_KIND_PAGE_WATCH,
     SOURCE_KIND_QUERY,
+    SOURCE_KIND_RSS,
+    TRIGGER_ONLY_BIG,
     Signal,
     WatchlistItem,
 )
 from openexecutive.monitoring.sources import Source, get_source_for_kind
 from openexecutive.monitoring.sources._http import strip_url_query
 from openexecutive.monitoring.sources.base import (
+    COULD_NOT_REACH,
     collapse_whitespace,
     future_skew_for,
     is_implausibly_future,
+    take_observation,
 )
 
 logger = logging.getLogger(__name__)
@@ -194,8 +199,7 @@ def _is_future(signal: Signal, now: datetime, skew: timedelta) -> bool:
 def _cap_to_ceiling(
     hint: AlertSeverity, item: WatchlistItem,
 ) -> AlertSeverity:
-    # Ceiling-only — raising to meet the floor would defeat the below-
-    # floor suppression gate downstream. NOTE: this caps the value
+    # NOTE: this caps the value
     # recorded on the external_signals row (used by the reflection
     # context in PR-C). The user-visible alert severity is independently
     # produced by the triage agent; PR-C adds an external_signal
@@ -207,24 +211,36 @@ def _cap_to_ceiling(
     return hint
 
 
-# Relevance → severity bands for standing-query signals. The `query` adapter
-# emits every web hit flat-LOW (sources/query.py) because it can't judge how
-# material a hit is on its own — so a query watch item with a severity_floor
-# above "low" used to suppress *every* hit below the floor, including genuinely
-# material ones, leaving the Monitoring lane permanently empty. We instead
-# grade severity from the capture-time relevance read: a directly-material hit
-# (>= _HIGH) escalates to the action lane, a moderately-relevant one (>= _MEDIUM)
-# clears a medium floor into Monitoring, and the rest stay LOW so a medium/high
-# floor still filters them as noise. Capped to the row's ceiling so an operator's
-# explicit cap is honoured.
+# Relevance → severity bands for sources that can't judge their own severity.
+# The `query` and `page_watch` adapters emit every signal flat-LOW (a web hit
+# or a page diff says nothing about how material it is), so the capture-time
+# relevance read grades them: a directly-material one (>= _HIGH) is HIGH, a
+# moderately-relevant one (>= _MEDIUM) is MEDIUM, the rest stay LOW. The grade
+# is what triage reads as the severity hint, and what a watch that asks for
+# big changes only (TRIGGER_ONLY_BIG) is held to. It is never a filter by
+# itself: a watch tells the person whenever its own trigger is met. Capped to
+# the row's ceiling so an operator's explicit cap is honoured.
 _QUERY_RELEVANCE_HIGH = 0.8
 _QUERY_RELEVANCE_MEDIUM = 0.5
-# Sources that can't judge their own severity and emit every signal LOW, so
-# the relevance read grades them before the floor gate. ``page_watch`` is the
-# same case as ``query``: a page diff is LOW by construction, and every
-# research watch lands at a MEDIUM floor, so without grading no page change
-# could ever reach the principal.
 _RELEVANCE_GRADED_SOURCES = frozenset({SOURCE_KIND_QUERY, SOURCE_KIND_PAGE_WATCH})
+# What counts as a big change for a watch that asks for those only.
+_BIG_RANK = SEVERITY_RANK[AlertSeverity.HIGH.value]
+
+
+def _only_big(item: WatchlistItem) -> bool:
+    """Read ``only_big`` the way the "Tells you when" sentence does (only a
+    real ``true``), so the watch never holds back what its sentence says it
+    tells you."""
+    return (item.trigger_json or {}).get(TRIGGER_ONLY_BIG) is True
+
+
+def _graded_by_relevance(item: WatchlistItem, signal: Signal) -> bool:
+    """Whether this signal's severity comes from the relevance read. A feed
+    post is flat-LOW too, so a feed that asks for big changes only is graded
+    the same way; otherwise it keeps the adapter's value."""
+    return signal.source_kind in _RELEVANCE_GRADED_SOURCES or (
+        signal.source_kind == SOURCE_KIND_RSS and _only_big(item)
+    )
 
 
 def _grade_query_severity(
@@ -793,6 +809,14 @@ class _PollTally:
     deferred: list[Signal] = field(default_factory=list)
     deferred_skew: timedelta = timedelta(0)
     race_tick: bool = False
+    # What this check did with what it found, for the watch's last-check
+    # note: summaries it told the person about, ``(outcome, summary)`` for
+    # what it held back, how many entries it noted as already there, and
+    # what the adapter said when it emitted nothing.
+    told: list[str] = field(default_factory=list)
+    held: list[tuple[str, str]] = field(default_factory=list)
+    baselined: int = 0
+    observation: str = ""
 
 
 def _suppress(
@@ -801,6 +825,7 @@ def _suppress(
     signal: Signal,
     outcome: str,
     *,
+    tally: _PollTally | None = None,
     db_path: Path | None = None,
 ) -> None:
     """Record a suppression outcome on the row and emit its paired audit
@@ -808,6 +833,55 @@ def _suppress(
     in lockstep."""
     store.mark_signal_processed(signal_id, outcome, db_path=db_path)
     _audit_suppressed(signal_id, item, signal, outcome)
+    if tally is not None:
+        tally.held.append((outcome, signal.normalized_summary))
+
+
+# --------------------------------------------------------------------- #
+# Last-check note
+# --------------------------------------------------------------------- #
+
+_NOTE_SUMMARY_CHARS = 140
+# Why a change was noticed and not passed on, said to the person.
+_HELD_WORDS: dict[str, str] = {
+    OUTCOME_SUPPRESSED_DRY_RUN: "It is watching quietly, so it did not tell you.",
+    OUTCOME_SUPPRESSED_BELOW_FLOOR: "Not a big change, so it stayed quiet.",
+    OUTCOME_SUPPRESSED_LOW_RELEVANCE: "Not close enough to your company, so it stayed quiet.",
+    OUTCOME_HELD_DIGEST: "It already told you today, so this waits for the next summary.",
+}
+
+
+def _note_summary(text: str) -> str:
+    """A signal's one-line summary as the note quotes it: the leading
+    ``[label]`` the adapters add is dropped (the note sits under the
+    watch's own name), links go, and it is cut to a line."""
+    line = _without_links(collapse_whitespace(text))
+    if line.startswith("[") and "] " in line[:90]:
+        line = line.split("] ", 1)[1]
+    line = line.strip().rstrip(".")
+    if len(line) > _NOTE_SUMMARY_CHARS:
+        line = line[: _NOTE_SUMMARY_CHARS - 1].rstrip() + "…"
+    return line[:1].upper() + line[1:]
+
+
+def check_note(item: WatchlistItem, tally: _PollTally, *, failed: bool = False) -> str:
+    """What this check found, and why it stayed quiet when it did."""
+    if failed:
+        return COULD_NOT_REACH
+    if tally.told:
+        more = len(tally.told) - 1
+        return f"Told you: {_note_summary(tally.told[-1])}." + (f" And {more} more." if more > 0 else "")
+    for outcome, summary in reversed(tally.held):
+        if outcome in _HELD_WORDS:
+            why = _HELD_WORDS[outcome]
+            if outcome == OUTCOME_SUPPRESSED_DRY_RUN and item.origin == ORIGIN_RESEARCH_PROPOSED:
+                why = "It is waiting for your OK, so it did not tell you."
+            return f"Noticed: {_note_summary(summary)}. {why}"
+    if any(outcome == OUTCOME_SUPPRESSED_STALE for outcome, _ in tally.held):
+        return "Found only older items, so it stayed quiet."
+    if tally.baselined:
+        return "First look: it noted what is already there. It tells you about what is new from here on."
+    return tally.observation or "Nothing new."
 
 
 async def _poll_one_watchlist_item(
@@ -845,7 +919,9 @@ async def _poll_one_watchlist_item(
     max_age_days = get_settings().external_monitor_max_signal_age_days
 
     try:
+        take_observation(item)  # drop a stale one from a poll that raised
         emitted = await src.poll(item, db_path=db_path)
+        tally.observation = take_observation(item)
         fetched_at = datetime.now(UTC)
         # Inside the guard so a settings/config surprise here is handled
         # like an adapter crash (logged, row still marked polled).
@@ -931,6 +1007,7 @@ async def _poll_one_watchlist_item(
         recorded = _record_baseline(item, archive, fetched_at, db_path=db_path)
         if recorded is not None:
             tally.written += recorded
+            tally.baselined += recorded
             if not exempt:
                 return
             # The stamp is claimed and the archive is recorded, so this row
@@ -1007,59 +1084,68 @@ async def _poll_one_watchlist_item(
                 signal_id, item, signal, OUTCOME_SUPPRESSED_BASELINE,
                 db_path=db_path,
             )
+            tally.baselined += 1
             continue
 
         if _is_stale(signal, now, max_age_days):
-            _suppress(signal_id, item, signal, OUTCOME_SUPPRESSED_STALE, db_path=db_path)
+            _suppress(
+                signal_id, item, signal, OUTCOME_SUPPRESSED_STALE,
+                tally=tally, db_path=db_path,
+            )
             continue
 
         if item.mode == MODE_DRY_RUN:
-            _suppress(signal_id, item, signal, OUTCOME_SUPPRESSED_DRY_RUN, db_path=db_path)
+            _suppress(
+                signal_id, item, signal, OUTCOME_SUPPRESSED_DRY_RUN,
+                tally=tally, db_path=db_path,
+            )
             continue
 
-        # Standing-query signals arrive flat-LOW: the `query` adapter can't
-        # judge how material a web hit is, so it grades every result LOW. Left
-        # as-is, any query watch item with a severity_floor above "low"
-        # suppresses every hit below the floor — even a material one — before it
-        # can reach the Monitoring lane. So for query signals we run the
-        # capture-time relevance read BEFORE the floor gate and grade severity
-        # from it, letting a material hit clear a medium/high floor. Other
-        # sources arrive pre-graded by their adapter and keep the cheaper
-        # "enrich after the floor gate" order below (no LLM call spent on a
-        # signal that's already being floor-suppressed).
+        # The watch's own trigger was met (``_matches`` above), so this
+        # change reaches the person. There is no severity floor: the "Tells
+        # you when" sentence is the only filter, and the one thing it can add
+        # is "only when it is a big change" (TRIGGER_ONLY_BIG).
+        #
+        # Sources that can't judge their own severity (query, page_watch, and
+        # a feed that asks for big changes only) arrive flat-LOW, so the
+        # capture-time relevance read runs first and grades them. Sources
+        # that grade themselves (stock, edgar, vendor_status) are held to
+        # "big" on the adapter's value before any model call is spent.
+        only_big = _only_big(item)
         enrichment_payload: dict | None = None
         enriched = False
-        if signal.source_kind in _RELEVANCE_GRADED_SOURCES:
+        if _graded_by_relevance(item, signal):
             should_promote, enrichment_payload = await _maybe_enrich(
-                signal, item, signal_id, company_ctx=company_ctx, db_path=db_path,
+                signal, item, signal_id, company_ctx=company_ctx, tally=tally, db_path=db_path,
             )
             if not should_promote:
                 # Relevance gate already recorded + audited the suppression.
                 continue
-            # Set the flag only on the surviving path, so it means "enriched AND
-            # kept" — keeps the non-query branch below the sole enrichment site
-            # for non-query signals even if this block is later edited.
             enriched = True
             signal = signal.model_copy(update={
                 "severity_hint": _grade_query_severity(enrichment_payload, item),
             })
+            # No relevance read (enrichment off, or a miss) means there is
+            # nothing to call it small on: it goes through.
+            judged = enrichment_payload is not None
+        else:
+            judged = True
 
-        sev_rank = SEVERITY_RANK[signal.severity_hint.value]
-        floor_rank = SEVERITY_RANK[item.severity_floor.value]
-        if sev_rank < floor_rank:
-            _suppress(signal_id, item, signal, OUTCOME_SUPPRESSED_BELOW_FLOOR, db_path=db_path)
+        if only_big and judged and SEVERITY_RANK[signal.severity_hint.value] < _BIG_RANK:
+            _suppress(
+                signal_id, item, signal, OUTCOME_SUPPRESSED_BELOW_FLOOR,
+                tally=tally, db_path=db_path,
+            )
             continue
 
-        # Capture-time enrichment for pre-graded sources runs here — AFTER the
-        # dry_run / floor gates — so we never spend an LLM call enriching a
-        # signal that's already being suppressed. Fail-open: any miss leaves
-        # enrichment None and the signal promotes unchanged. The optional
-        # relevance gate is the only branch that can suppress here (default
-        # threshold 0.0 = off). Query signals were already enriched above (to
-        # grade severity), so skip the repeat call.
+        # Capture-time enrichment for self-graded sources runs here, after
+        # the gates above, so no model call is spent on a signal already
+        # held back. Fail-open: a miss leaves enrichment None and the signal
+        # promotes unchanged. The optional relevance gate is the only branch
+        # that can suppress here (default threshold 0.0 = off).
         if not enriched:
             should_promote, enrichment_payload = await _maybe_enrich(
-                signal, item, signal_id, company_ctx=company_ctx, db_path=db_path,
+                signal, item, signal_id, company_ctx=company_ctx, tally=tally, db_path=db_path,
             )
             if not should_promote:
                 continue
@@ -1070,13 +1156,14 @@ async def _poll_one_watchlist_item(
             # The row was written LOW, before grading; keep the graded value
             # so the digest goes out at the gravest held change's severity.
             store.set_signal_severity(signal_id, signal.severity_hint.value, db_path=db_path)
-            _suppress(signal_id, item, signal, OUTCOME_HELD_DIGEST, db_path=db_path)
+            _suppress(signal_id, item, signal, OUTCOME_HELD_DIGEST, tally=tally, db_path=db_path)
             continue
 
-        await promote_signal_to_alert(
+        if await promote_signal_to_alert(
             signal, item, signal_id=signal_id, db_path=db_path,
             enrichment=enrichment_payload,
-        )
+        ):
+            tally.told.append(signal.normalized_summary)
 
 
 
@@ -1086,6 +1173,7 @@ async def _maybe_enrich(
     signal_id: int,
     *,
     company_ctx: str,
+    tally: _PollTally | None = None,
     db_path: Path | None = None,
 ) -> tuple[bool, dict | None]:
     """Enrich a promotable signal, persist it, and apply the relevance gate.
@@ -1120,7 +1208,10 @@ async def _maybe_enrich(
         )
 
     if result.relevance_score < settings.external_monitor_enrichment_min_relevance:
-        _suppress(signal_id, item, signal, OUTCOME_SUPPRESSED_LOW_RELEVANCE, db_path=db_path)
+        _suppress(
+            signal_id, item, signal, OUTCOME_SUPPRESSED_LOW_RELEVANCE,
+            tally=tally, db_path=db_path,
+        )
         return False, payload
 
     return True, payload
@@ -1201,6 +1292,13 @@ async def run_external_monitor_scan(
             # before a failure.
             failed = failed or tally.failed
             total_written += tally.written
+            if item.id is not None:
+                try:
+                    store.set_last_check_note(
+                        item.id, check_note(item, tally, failed=failed), db_path=db_path,
+                    )
+                except Exception:
+                    logger.exception("monitoring.pipeline: last-check note failed for %r", item.slug)
             if tally.deferred:
                 _audit_deferred(item, tally)
             duration_ms = int(

@@ -59,6 +59,7 @@ from openexecutive.monitoring.sources._http import (
     fetch_bounded,
     validate_target_url,
 )
+from openexecutive.monitoring.sources.base import COULD_NOT_REACH, observe
 from openexecutive.utils.html_tags import strip_tags
 
 logger = logging.getLogger(__name__)
@@ -124,6 +125,7 @@ class PageWatchSource:
         fetched = await self._fetch_httpx(item)
         if fetched is None:
             # Fetch failed (already logged at the fetch site) — drop this tick.
+            observe(item, COULD_NOT_REACH)
             return []
         text, links = fetched
         if not text:
@@ -156,6 +158,7 @@ class PageWatchSource:
             if legacy_baseline:
                 self._clear_legacy_marker(item, db_path=db_path)
             logger.debug("page_watch: %s baseline captured", item.slug)
+            observe(item, "First look: it noted the page as it is now. It tells you about changes from here on.")
             return []
 
         if prior.get("content_hash") == content_hash:
@@ -166,6 +169,7 @@ class PageWatchSource:
                     item.slug, content_hash, prior.get("text_snapshot") or snapshot,
                     links=links, db_path=db_path,
                 )
+            observe(item, "No change on the page.")
             return []  # unchanged
 
         # Changed — summarise (one diff pass), advance the baseline, emit one Signal.

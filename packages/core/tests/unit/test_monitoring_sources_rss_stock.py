@@ -322,6 +322,11 @@ async def test_stock_no_signal_below_threshold(
     item = _make_item(signal_type="stock", target="AAPL")
     signals = await src.poll(item)
     assert signals == []
+    # It says what it found, for the watch's last-check line.
+    from openexecutive.monitoring.sources.base import take_observation
+
+    assert take_observation(item) == "Up 1.0% today. Under 5%, so it stayed quiet."
+    assert take_observation(item) == ""
 
 
 @pytest.mark.asyncio

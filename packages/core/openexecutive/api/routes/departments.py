@@ -174,6 +174,8 @@ class GoalView(Goal):
     owner_id: int | None = None
     owner_name: str = ""
     department_title: str | None = None
+    # Names of the watch-list items that are for this goal.
+    watching: list[str] = []
 
 
 def _translate_legacy_body(body: dict) -> dict:
@@ -421,15 +423,33 @@ def list_all_goals() -> list[GoalView]:
     """Every goal, with or without a department, with its owner resolved."""
     from openexecutive.departments.goals import list_goal_views
 
+    watching = _watching_by_goal()
     return [
         GoalView(
             **v.goal.model_dump(),
             owner_id=v.owner_id,
             owner_name=v.owner_name,
             department_title=v.department_title,
+            watching=watching.get(v.goal.id or 0, []),
         )
         for v in list_goal_views()
     ]
+
+
+def _watching_by_goal() -> dict[int, list[str]]:
+    """``{goal id: names of its watches}``; empty when the watch list can't
+    be read (the goals still list)."""
+    try:
+        from openexecutive.monitoring import store as watch_store
+        from openexecutive.monitoring.describe import watch_title
+
+        return {
+            goal_id: [watch_title(item) for item in items]
+            for goal_id, items in watch_store.watches_for_goals().items()
+        }
+    except Exception:
+        logger.debug("goals: watch list unavailable", exc_info=True)
+        return {}
 
 
 @router.post("/goals", response_model=Goal, status_code=status.HTTP_201_CREATED)

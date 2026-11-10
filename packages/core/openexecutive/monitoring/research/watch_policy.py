@@ -10,8 +10,7 @@ in itself.
 
 Two tiers:
 
-- **direct** — added live, quietly (daily cadence, medium floor, keyword
-  trigger). Requires the grounding entity to be *in company data* (a named
+- **direct** — added live, quietly (daily cadence, keyword trigger). Requires the grounding entity to be *in company data* (a named
   competitor / vendor / ticker / initiative / priority / the company itself,
   or an entity a department lists under its watched entities) plus enough
   corroboration (see :func:`classify`). This is the "high likelihood, worth
@@ -162,16 +161,20 @@ _STOPWORDS: frozenset[str] = frozenset({
 _MIN_PARTIAL_TOKEN = 4
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
-# Auto-add defaults per source kind: (cadence, severity_floor).
+# Auto-add defaults per source kind: (cadence, severity_floor). The floor
+# is low everywhere: it is no longer a filter (a medium floor here once held
+# back every feed post and page change a research watch noticed). What keeps
+# a research watch quiet is its trigger: the stock threshold and the
+# keywords below, which the watch's "Tells you when" line says out loud.
 _QUIET_DEFAULTS: dict[str, tuple[str, AlertSeverity]] = {
-    SOURCE_KIND_STOCK: ("daily", AlertSeverity.MEDIUM),
-    SOURCE_KIND_EDGAR: ("daily", AlertSeverity.MEDIUM),
-    SOURCE_KIND_RSS: ("daily", AlertSeverity.MEDIUM),
-    SOURCE_KIND_VENDOR_STATUS: ("hourly", AlertSeverity.MEDIUM),
+    SOURCE_KIND_STOCK: ("daily", AlertSeverity.LOW),
+    SOURCE_KIND_EDGAR: ("daily", AlertSeverity.LOW),
+    SOURCE_KIND_RSS: ("daily", AlertSeverity.LOW),
+    SOURCE_KIND_VENDOR_STATUS: ("hourly", AlertSeverity.LOW),
     # Daily, not weekly: a news page changes most days, and the digest keeps
     # it to one alert a day whatever the poll rate.
-    SOURCE_KIND_PAGE_WATCH: ("daily", AlertSeverity.MEDIUM),
-    SOURCE_KIND_QUERY: ("weekly", AlertSeverity.MEDIUM),
+    SOURCE_KIND_PAGE_WATCH: ("daily", AlertSeverity.LOW),
+    SOURCE_KIND_QUERY: ("weekly", AlertSeverity.LOW),
 }
 _STOCK_DEFAULT_PCT = 5
 
@@ -985,7 +988,7 @@ def quiet_defaults(
 
     The model's cadence/floor are ignored: a research watch must be quiet
     by construction and the principal can loosen it on /watchlist."""
-    cadence, floor = _QUIET_DEFAULTS.get(proposal.signal_type, ("daily", AlertSeverity.MEDIUM))
+    cadence, floor = _QUIET_DEFAULTS.get(proposal.signal_type, ("daily", AlertSeverity.LOW))
     trigger: dict[str, Any] = dict(proposal.trigger or {})
     if proposal.signal_type == SOURCE_KIND_STOCK:
         if not isinstance(trigger.get("abs_change_pct_gte"), (int, float)):
@@ -1092,6 +1095,22 @@ def auto_link_finding(
         if best is None or key > best[0]:
             best = (key, index)
     return best[1] if best else None
+
+
+def _goal_for(decision: Decision, db_path: Path | None = None) -> int | None:
+    """The goal a watch is for, when the term that grounded it is a goal's
+    own wording. None for any other grounding, or when goals can't be read."""
+    if decision.grounding_kind != KIND_DEPARTMENT_SCOPE or not decision.entity:
+        return None
+    try:
+        from openexecutive.departments.store import list_all_goals
+
+        for goal in list_all_goals(db_path):
+            if goal.id is not None and _norm(goal.key_result) == decision.entity:
+                return goal.id
+    except Exception:
+        logger.debug("watch_policy: goals unavailable", exc_info=True)
+    return None
 
 
 def policy_stamp_of(item: WatchlistItem) -> dict[str, Any]:
@@ -1242,6 +1261,7 @@ def apply_proposals(
                 mode=MODE_ACTIVE if is_direct else MODE_DRY_RUN,
                 notes=proposal.rationale[:500],
                 origin=ORIGIN_RESEARCH if is_direct else ORIGIN_RESEARCH_PROPOSED,
+                goal_id=_goal_for(decision, db_path),
                 db_path=db_path,
             )
         except Exception:
