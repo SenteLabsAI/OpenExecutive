@@ -1,5 +1,5 @@
 """Saved tools (workflows.saved_tools): the scripts the Executive kept to run
-again by name, shown to people as "Custom tools" (Settings → Advanced).
+again by name, shown to people as "Tools I built" (Settings → Advanced).
 The principal's alone, scripts included.
 
   GET  /saved-tools                     — every saved tool and whether saving is on
@@ -97,7 +97,7 @@ def _require_principal(request: Request) -> None:
     from openexecutive.api.routes.people import caller_is_principal
 
     if not caller_is_principal(request):
-        raise HTTPException(status_code=403, detail="Only the account owner can see custom tools.")
+        raise HTTPException(status_code=403, detail="Only the account owner can see the tools I built.")
 
 
 def _out(tool: Any) -> SavedToolOut:

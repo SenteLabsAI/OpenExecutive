@@ -1699,6 +1699,7 @@ class Executive:
         # loops, style, review or mirror of it (should_extract and
         # schedule_chat_notes refuse a replay session themselves).
         kept = not touched_mail and not host_words and not chat_replay.is_replay(session)
+        repeat_offer: dict[str, Any] | None = None
         mail_words = _mail_turn_words(session, own_text, touched_mail=touched_mail, host_words=host_words)
 
         # Re-bind the audit ContextVars for the duration of these calls so
@@ -1763,6 +1764,15 @@ class Executive:
                 record_turn(own_text, full_response, session=session,
                             person_id=person_id, calls=turn_calls, mail=touched_mail)
 
+            # The same ask on a few different days: offer to do it on a
+            # schedule (workflows.repeat_asks), under this reply and on
+            # Workflows. Their own words only; not a turn private to their
+            # mailbox, a host page's or a replay (``kept``).
+            if kept:
+                from openexecutive.workflows.repeat_asks import note_ask
+
+                repeat_offer = note_ask(own_text, session=session, person_id=person_id, calls=turn_calls)
+
             # What it worked out (memory.worked_out): figures the reply worked
             # out from what the turn read, kept for this person alone (private
             # when the turn touched their mailbox).
@@ -1804,6 +1814,10 @@ class Executive:
                 )
             elif mail_words:
                 _sync_mail_turn_words(mail_words, person_id=person_id, session_id=session.session_id)
+
+        # Outside the turn's context block: the next step may run on another task.
+        if repeat_offer is not None:
+            yield {"type": "repeat_offer", "offer": repeat_offer, "session_id": session.session_id}
 
     async def stream_chat_with_committee(
         self,
@@ -2289,6 +2303,7 @@ class Executive:
         # private_rows: see stream_chat — the scheduled passes copy it.
         # A replay (memory.replay) is kept nowhere — see stream_chat.
         kept = not touched_mail and not host_words and not chat_replay.is_replay(session)
+        repeat_offer: dict[str, Any] | None = None
         mail_words = _mail_turn_words(session, own_text, touched_mail=touched_mail, host_words=host_words)
         with private_rows(touched_mail):
             if should_extract(speaker_text, session=session):
@@ -2322,6 +2337,12 @@ class Executive:
                 record_turn(own_text, final_response, session=session,
                             person_id=person_id, calls=turn_calls, mail=touched_mail)
 
+            # Repeated asks — see stream_chat.
+            if kept:
+                from openexecutive.workflows.repeat_asks import note_ask
+
+                repeat_offer = note_ask(own_text, session=session, person_id=person_id, calls=turn_calls)
+
             # What it worked out — see stream_chat.
             from openexecutive.memory.worked_out import schedule_worked_out_pass
 
@@ -2352,6 +2373,9 @@ class Executive:
         elif mail_words:
             with private_rows(True):
                 _sync_mail_turn_words(mail_words, person_id=person_id, session_id=session.session_id)
+
+        if repeat_offer is not None:
+            yield {"type": "repeat_offer", "offer": repeat_offer, "session_id": session.session_id}
 
         # Reset audit ContextVars at normal completion. The abandoned-stream
         # case (SSE client drop mid-yield) doesn't reach here — accept that

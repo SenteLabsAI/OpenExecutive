@@ -351,3 +351,35 @@ export function addedTools(before: DynamicWorkflowDef, after: DynamicWorkflowDef
     new Set(after.steps.flatMap((s) => (s.kind === "action" ? s.tools : [])))
   ).filter((t) => !had.has(t));
 }
+
+/**
+ * The stored name for a new workflow, made from its title: lowercase words
+ * joined by `_`, starting with a letter, 3-49 characters, never `quick_…`
+ * (kept for ready-made ones) and none of `taken`. The server's rule
+ * (workflows/dynamic_models.py `_NAME_RE`).
+ */
+export function workflowNameFromTitle(title: string, taken: ReadonlySet<string>): string {
+  let base = title
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  if (!/^[a-z]/.test(base)) base = base ? `workflow_${base}` : "workflow";
+  if (base.startsWith("quick_")) base = `my_${base}`;
+  if (base.length < 3) base = `${base}_workflow`;
+  base = base.slice(0, 49).replace(/_+$/, "");
+  if (!taken.has(base)) return base;
+  for (let n = 2; ; n++) {
+    const suffix = `_${n}`;
+    const name = base.slice(0, 49 - suffix.length).replace(/_+$/, "") + suffix;
+    if (!taken.has(name)) return name;
+  }
+}
+
+/** A step id not yet used in `ids`: `step_1`, `step_2`, … */
+export function newStepId(ids: readonly string[]): string {
+  for (let n = 1; ; n++) {
+    const id = `step_${n}`;
+    if (!ids.includes(id)) return id;
+  }
+}

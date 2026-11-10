@@ -12,16 +12,19 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   DynamicWorkflowDef,
+  type RepeatOffer,
   WorkflowMeta,
   WorkflowRunSummary,
   WorkflowSection,
   deleteCustomWorkflow,
   deleteWorkflowRun,
   listCustomWorkflows,
+  listRepeatOffers,
   listWorkflowRuns,
   listWorkflows,
   stopWorkflowRun,
 } from "@/lib/api";
+import RepeatOfferCard from "@/components/jobs/RepeatOfferCard";
 import StartHere from "@/components/jobs/StartHere";
 import { buttonClass } from "@/components/ui/Button";
 import OverflowMenu, { type OverflowItem } from "@/components/ui/OverflowMenu";
@@ -153,6 +156,15 @@ function JobsPageInner() {
   const [runsQuery, setRunsQuery] = useState("");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  // Offers to do something they keep asking for on a schedule; the newest shows.
+  const [offers, setOffers] = useState<RepeatOffer[]>([]);
+  useEffect(() => {
+    const ctrl = new AbortController();
+    listRepeatOffers(ctrl.signal).then((o) => {
+      if (!ctrl.signal.aborted) setOffers(o);
+    });
+    return () => ctrl.abort();
+  }, []);
 
   const refresh = useCallback(async () => {
     setError(null);
@@ -266,6 +278,14 @@ function JobsPageInner() {
         <StartHere
           readyMadeCount={readyMadeCount}
           onBrowseReadyMade={() => setParam({ browse: "1" })}
+          top={
+            offers[0] && (
+              <RepeatOfferCard
+                offer={offers[0]}
+                onDone={(id) => setOffers((os) => os.filter((o) => o.id !== id))}
+              />
+            )
+          }
         />
       )}
 

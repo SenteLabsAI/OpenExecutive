@@ -216,7 +216,27 @@ export interface ProgressEvent {
   found: string[];
 }
 
+// An offer to do an ask the person has made on a few different days on a
+// schedule (workflows/repeat_asks.py). Sent at the end of the reply to it,
+// and listed on Workflows until they answer it.
+export interface RepeatOffer {
+  id: number;
+  // Their latest ask, in their own words.
+  ask: string;
+  // When it would run (workflow cadence, UTC): "weekly@mon@13:00".
+  cadence: string;
+  // When they asked, oldest first (ISO).
+  asked_at: string[];
+}
+
+export interface RepeatOfferEvent {
+  type: "repeat_offer";
+  offer: RepeatOffer;
+  session_id?: string;
+}
+
 export type StreamItem =
+  | RepeatOfferEvent
   | ChatChunk
   | DebugEvent
   | ActionTaken
@@ -7231,5 +7251,31 @@ export async function undoMemoryChange(change: MemoryChange): Promise<void> {
       return forgetReflectionLesson(change.id);
     case "note":
       return forgetHistoryNote(change.id);
+  }
+}
+
+// ── Offers to do a repeated ask on a schedule (workflows/repeat_asks.py) ─────
+
+/** The signed-in person's own open offers, newest first. Empty on an older backend. */
+export async function listRepeatOffers(signal?: AbortSignal): Promise<RepeatOffer[]> {
+  try {
+    const res = await fetch(`${API_BASE}/workflow-offers`, { signal });
+    if (!res.ok) return [];
+    const body = (await res.json()) as { offers?: RepeatOffer[] };
+    return body.offers ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** Set it up (`accept`) or Not now. Best-effort: false when it didn't go through. */
+export async function answerRepeatOffer(id: number, accept: boolean): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}/workflow-offers/${id}/${accept ? "accept" : "dismiss"}`, {
+      method: "POST",
+    });
+    return res.ok;
+  } catch {
+    return false;
   }
 }

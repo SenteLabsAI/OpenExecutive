@@ -134,7 +134,7 @@ async def test_a_script_that_works_is_saved_with_the_tools_it_called() -> None:
     assert not is_error and body["result"] == 3
     assert body["saved"] == {
         "name": "count_files", "version": 1, "uses_tools": [LIST], "enabled": True,
-        "workflows": "off until the owner turns it on in Settings → Advanced → Custom tools",
+        "workflows": "off until the owner turns it on in Settings → Advanced → Tools I built",
     }
     kept = saved_tools.get("count_files")
     assert kept is not None and kept.script == COUNT_SCRIPT and kept.origin == "chat"

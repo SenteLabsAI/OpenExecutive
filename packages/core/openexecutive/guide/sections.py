@@ -92,7 +92,7 @@ GUIDE_SECTIONS: list[GuideSection] = [
     ),
     GuideSection(
         id="custom_tools",
-        title="Custom Tools",
+        title="Tools I Built",
         sub="When the Executive lacks a tool, it builds one — and keeps the ones it will need again.",
     ),
     GuideSection(
