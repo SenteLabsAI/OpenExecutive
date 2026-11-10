@@ -2523,9 +2523,22 @@ _GOAL_RANK = {"on_track": 0, "at_risk": 1, "off_track": 2}
 class _Watched:
     at: datetime | None = None
     goals: dict[int, str] = field(default_factory=dict)
+    # Seen but not yet scheduled (a wake was inside WAKE_GAP, or failed):
+    # kept until one is, so nothing seen is dropped.
+    pending: list[str] = field(default_factory=list)
 
 
 _WATCHED = _Watched()
+_PENDING_MAX = 20
+
+
+def _look_waiting() -> bool:
+    try:
+        from openexecutive.scheduler.runner import TAKE_THE_LEAD_WAKE_KIND, _has_pending_brief
+
+        return bool(_has_pending_brief(TAKE_THE_LEAD_WAKE_KIND))
+    except Exception:
+        return False
 
 
 def _goal_statuses() -> dict[int, tuple[str, str]]:
@@ -2593,6 +2606,7 @@ def watch(now: datetime | None = None) -> str | None:
         if not executive_on():
             _WATCHED.at = None
             _WATCHED.goals = {}
+            _WATCHED.pending = []
             return None
     except Exception:
         return None
@@ -2628,8 +2642,13 @@ def watch(now: datetime | None = None) -> str | None:
         _WATCHED.at = current
     if goals is not None:
         _WATCHED.goals = {goal_id: status for goal_id, (status, _) in goals.items()}
+    reasons = [*_WATCHED.pending, *reasons][-_PENDING_MAX:]
     if not reasons:
         return None
     reason = reasons[0] if len(reasons) == 1 else f"{reasons[0]} (and {len(reasons) - 1} more)"
-    wake(reason, now=current)
+    if wake(reason, now=current) is None:
+        # A look already waiting to run sees all of it; otherwise keep them.
+        _WATCHED.pending = [] if _look_waiting() else reasons
+        return None
+    _WATCHED.pending = []
     return reason

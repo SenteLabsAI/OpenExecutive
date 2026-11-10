@@ -1589,10 +1589,12 @@ def test_what_came_of_a_step() -> None:
 def watched() -> Iterator[None]:
     ttl._WATCHED.at = None
     ttl._WATCHED.goals = {}
+    ttl._WATCHED.pending = []
     ttl._LAST_WAKE.clear()
     yield
     ttl._WATCHED.at = None
     ttl._WATCHED.goals = {}
+    ttl._WATCHED.pending = []
     ttl._LAST_WAKE.clear()
 
 
@@ -1621,6 +1623,9 @@ def test_a_slipping_goal_failed_workflow_overdue_task_or_ended_meeting_wakes_it(
     assert "Ramp gate" not in row.intent_text  # the row names the kind of event only
 
     ttl._LAST_WAKE.clear()
+    from openexecutive.memory.episodic import mark_action_done
+
+    mark_action_done(wake["id"])  # that look has run
     persistence.create_run("r1", "board_prep", "Board prep", {})
     persistence.fail_run("r1", "boom")
     # A teammate's own run is theirs alone: it doesn't wake the company's look.
@@ -1681,3 +1686,34 @@ def test_a_failed_check_is_looked_at_again(monkeypatch: pytest.MonkeyPatch, watc
     monkeypatch.setattr(ttl, "_failed_runs", boom)
     assert ttl.watch(NOW + timedelta(minutes=2)) is None
     assert ttl._WATCHED.at == stocked
+
+
+def test_what_it_sees_inside_the_gap_wakes_it_once_the_gap_is_over(
+    monkeypatch: pytest.MonkeyPatch, watched: None,
+) -> None:
+    """A slip seen while the last look is under WAKE_GAP old is kept, not dropped."""
+    from datetime import timedelta
+
+    monkeypatch.setattr(ttl, "executive_on", lambda **_: True)
+    monkeypatch.setattr(ttl, "_overdue_tasks", lambda since, now: [])
+    monkeypatch.setattr(ttl, "_ended_meetings", lambda since, now: [])
+    monkeypatch.setattr(ttl, "_failed_runs", lambda since: [])
+    monkeypatch.setattr(ttl, "_look_waiting", lambda: False)
+    statuses = {1: ("on_track", "Ramp gate")}
+    monkeypatch.setattr(ttl, "_goal_statuses", lambda: dict(statuses))
+    scheduled: list[str] = []
+    gap_over = NOW + ttl.WAKE_GAP
+
+    def fake_wake(reason: str, *, now: Any = None) -> int | None:
+        if now is not None and now < gap_over:
+            return None
+        scheduled.append(reason)
+        return 1
+
+    monkeypatch.setattr(ttl, "wake", fake_wake)
+    assert ttl.watch(NOW) is None
+    statuses[1] = ("at_risk", "Ramp gate")
+    assert ttl.watch(NOW + timedelta(minutes=2)) is None  # inside the gap: kept
+    assert ttl._WATCHED.pending == ["a goal slipped"]
+    assert ttl.watch(gap_over + timedelta(minutes=1)) == "a goal slipped"
+    assert scheduled == ["a goal slipped"] and ttl._WATCHED.pending == []
