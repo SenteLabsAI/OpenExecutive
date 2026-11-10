@@ -342,6 +342,29 @@ def test_a_person_changing_the_status_counts_as_a_check(client: TestClient) -> N
     assert store.get_goal(gid).last_reviewed_at != ""  # type: ignore[union-attr]
 
 
+def test_a_status_change_still_leaves_the_goal_for_the_next_review(client: TestClient) -> None:
+    # The stamp is written before updated_at, so the edit reads as newer
+    # than the check: the department check-in and the weekly goal review
+    # still grade the goal rather than skipping it as fresh.
+    from datetime import UTC, datetime
+
+    from openexecutive.departments import registry
+    from openexecutive.departments.goal_review import _needs_review
+    from openexecutive.workflows.department_check_in import needs_check_in
+
+    dept = store.create_department("Finance", specialist_key="finance")
+    gid = _goal(dept.config.slug)
+    client.patch(f"/goals/{gid}", json={"status": "off_track"})
+    goal = store.get_goal(gid)
+    assert goal is not None and goal.last_reviewed_at
+    now = datetime.now(UTC)
+    assert _needs_review(goal, now)
+    registry.invalidate()
+    state = registry.get_state(dept.config.slug)
+    assert state is not None
+    assert needs_check_in(state, now) is None
+
+
 def test_department_routes_still_reach_only_their_own_goals(client: TestClient) -> None:
     store.create_department("Sales")
     loose = _goal(None)

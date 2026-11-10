@@ -378,6 +378,8 @@ def _patch_goal(slug: str | None, goal_id: int, body: GoalPatch) -> Goal:
         moves["department_slug"] = body.department_slug or None
     # A person changing the status grades the goal: it counts as checked, so
     # a goal they move back to on track doesn't read "not checked yet".
+    # Stamped before update_goal sets updated_at, so the edit stays newer
+    # than the stamp and the next check-in or goal review still grades it.
     if body.status is not None and body.status != existing.status:
         moves["last_reviewed_at"] = datetime.now(UTC).isoformat()
     store.update_goal(
