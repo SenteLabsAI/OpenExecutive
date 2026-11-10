@@ -124,11 +124,13 @@ def _goal_lines(solo: bool = False) -> tuple[list[str], list[str], list[str]]:
             leaderless.append(f"- {title}")
             keys.append(f"leaderless:{dept.config.slug}")
         for goal in dept.goals:
+            if goal.status == "done":
+                continue
             goals.append(_goal_line(goal, None if solo else title))
             keys.append(f"goal:{goal.id}:{goal.status}")
     # Goals with no area sit under no department row.
     for goal in list_all_goals():
-        if not goal.department_slug:
+        if not goal.department_slug and goal.status != "done":
             goals.append(_goal_line(goal, None))
             keys.append(f"goal:{goal.id}:{goal.status}")
     return goals[:_GOALS_MAX], leaderless[:_LEADERLESS_MAX], keys
