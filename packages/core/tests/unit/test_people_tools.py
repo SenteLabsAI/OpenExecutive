@@ -853,3 +853,50 @@ def test_upsert_person_sets_aliases_and_closes_a_waiting_request(monkeypatch: py
     assert replayed == [waiting.id]
     bad = _call(handle_upsert_person, {"full_name": "X", "email_aliases": ["nope"]})
     assert "error" in bad
+
+
+def test_upsert_refusal_is_a_warning_not_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An address already on someone else is a rule the model is told about,
+    not a fault: it is logged below error level, so no error report."""
+    from openexecutive.orchestrator import people_tools
+
+    calls: list[str] = []
+
+    class _Logger:
+        def warning(self, *args: Any, **kwargs: Any) -> None:
+            calls.append("warning")
+
+        def exception(self, *args: Any, **kwargs: Any) -> None:
+            calls.append("exception")
+
+    _call(handle_upsert_person, {"full_name": "Dana Reyes", "email": "dana@example.com"})
+    monkeypatch.setattr(people_tools, "logger", _Logger())
+    result = _call(handle_upsert_person, {
+        "full_name": "Sam Ortiz", "email": "sam@example.com",
+        "email_aliases": ["dana@example.com"],
+    })
+    assert result["error"] == "that address is already on another person"
+    assert calls == ["warning"]
+
+
+def test_upsert_unexpected_failure_is_still_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failure that isn't one of the store's refusals keeps its error report."""
+    from openexecutive.orchestrator import people_tools
+
+    calls: list[str] = []
+
+    class _Logger:
+        def warning(self, *args: Any, **kwargs: Any) -> None:
+            calls.append("warning")
+
+        def exception(self, *args: Any, **kwargs: Any) -> None:
+            calls.append("exception")
+
+    def _broken(*args: Any, **kwargs: Any) -> int:
+        raise json.JSONDecodeError("bad row", "{", 0)  # a ValueError subclass, not a refusal
+
+    monkeypatch.setattr(people_tools, "logger", _Logger())
+    monkeypatch.setattr(people_store, "upsert_person", _broken)
+    result = _call(handle_upsert_person, {"full_name": "Lee Park"})
+    assert "error" in result
+    assert calls == ["exception"]

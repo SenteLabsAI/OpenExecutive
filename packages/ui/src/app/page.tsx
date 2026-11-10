@@ -21,7 +21,7 @@ import OverflowMenu from "@/components/ui/OverflowMenu";
 import { ChatMessage, DebugEvent, getSessionMessages, updateSession } from "@/lib/api";
 import { downloadChat } from "@/lib/downloadChat";
 import { ASK_SUGGESTION, recall, remember, STORAGE_KEYS } from "@/lib/firstRun";
-import { sessionTitle } from "@/lib/sessionChannel";
+import { headerLabel, sessionTitle } from "@/lib/sessionChannel";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
@@ -367,7 +367,7 @@ export default function HomePage() {
               <Icon name="menu" size="w-5 h-5" />
             </button>
             <span className="text-sm text-fg-muted font-medium truncate">
-              {isOnboarded && companyName ? `${companyName} · Executive` : "Executive"}
+              {headerLabel(isOnboarded && companyName ? `${companyName} · Executive` : "Executive", openChat)}
             </span>
           </div>
           {/* Agent activity (the live trace of the Executive's turn) lives in

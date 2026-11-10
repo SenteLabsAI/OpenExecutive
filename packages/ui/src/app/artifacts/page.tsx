@@ -9,6 +9,9 @@ import {
   deleteArtifact,
   listArtifacts,
   restoreArtifact,
+  shareArtifact,
+  shareLink,
+  stopSharingArtifact,
 } from "@/lib/api";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
@@ -34,6 +37,10 @@ const CHATS_GROUP = "chats";
 const BRIEFS_GROUP = "briefs";
 // A workflow group shows its newest few, then "Show N more".
 const GROUP_PREVIEW = 2;
+// Wait this long after the last keystroke before searching.
+const SEARCH_DELAY_MS = 250;
+// How long "Copied" shows on a shared row.
+const COPIED_MS = 1500;
 
 function FilterButton({
   active,
@@ -63,23 +70,77 @@ function FilterButton({
   );
 }
 
+// "Shared by link · Copy · Stop" on a shared row.
+function SharedPill({
+  item,
+  copied,
+  pending,
+  onCopy,
+  onStop,
+}: {
+  item: ArtifactSummary;
+  copied: boolean;
+  pending: boolean;
+  onCopy: (item: ArtifactSummary) => void;
+  onStop: (item: ArtifactSummary) => void;
+}) {
+  const link = "rounded px-1 font-semibold hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 cursor-pointer disabled:opacity-50";
+  return (
+    <span className="hidden sm:inline-flex flex-shrink-0 items-center gap-1 rounded-lg bg-emerald-500/10 px-2.5 py-1 text-sm text-emerald-700 dark:text-emerald-300">
+      <span className="font-medium">Shared by link</span>
+      <span aria-hidden="true">·</span>
+      <button type="button" className={link} onClick={() => onCopy(item)}>
+        {copied ? "Copied" : "Copy"}
+      </button>
+      <span aria-hidden="true">·</span>
+      <button
+        type="button"
+        className={link}
+        disabled={pending}
+        onClick={() => onStop(item)}
+        aria-label={`Stop sharing ${item.title}`}
+      >
+        Stop
+      </button>
+    </span>
+  );
+}
+
 function ArtifactRow({
   item,
   view,
   pending,
+  copied,
   onArchive,
   onRestore,
   onDelete,
+  onShare,
+  onCopy,
+  onStop,
 }: {
   item: ArtifactSummary;
   view: View;
   pending: boolean;
+  copied: boolean;
   onArchive: (item: ArtifactSummary) => void;
   onRestore: (item: ArtifactSummary) => void;
   onDelete: (item: ArtifactSummary) => void;
+  onShare: (item: ArtifactSummary) => void;
+  onCopy: (item: ArtifactSummary) => void;
+  onStop: (item: ArtifactSummary) => void;
 }) {
+  const shareable = view === "active" && Boolean(item.can_share);
+  const shared = shareable && Boolean(item.share_path);
+  const shareItems = !shareable
+    ? []
+    : shared
+      ? [
+          { label: copied ? "Copied" : "Copy link", onSelect: () => onCopy(item) },
+          { label: "Stop sharing", disabled: pending, onSelect: () => onStop(item) },
+        ]
+      : [{ label: "Share by link", disabled: pending, onSelect: () => onShare(item) }];
   return (
-    <div className="flex items-center gap-2 py-1.5 pl-4 pr-2 hover:bg-surface-overlay/60 transition-colors">
+    <div className="group flex items-center gap-2 py-1.5 pl-4 pr-2 hover:bg-surface-overlay/60 transition-colors">
       <Link
         href={`/artifacts/${encodeURIComponent(item.id)}`}
         className="flex min-h-11 min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-0.5 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
@@ -95,9 +156,24 @@ function ArtifactRow({
         </span>
       </Link>
 
+      {shared && (
+        <SharedPill item={item} copied={copied} pending={pending} onCopy={onCopy} onStop={onStop} />
+      )}
+      {shareable && !shared && (
+        <Button
+          size="sm"
+          disabled={pending}
+          onClick={() => onShare(item)}
+          className="hidden sm:inline-flex flex-shrink-0 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100"
+        >
+          Share by link
+        </Button>
+      )}
+
       <OverflowMenu
         label={`More for ${item.title}`}
         items={[
+          ...shareItems,
           view === "active"
             ? { label: "Archive", disabled: pending, onSelect: () => onArchive(item) }
             : { label: "Restore", disabled: pending, onSelect: () => onRestore(item) },
@@ -129,23 +205,42 @@ export default function ArtifactsPage() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [undo, setUndo] = useState<UndoToast | null>(null);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // What's typed in the search box, and what the list was last loaded for.
+  const [query, setQuery] = useState("");
+  const [searched, setSearched] = useState("");
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loadSeq = useRef(0);
 
-  const load = useCallback((v: View) => {
+  const load = useCallback((v: View, q = "") => {
+    // Only the newest load lands: a slow answer to an older search never
+    // replaces a newer one.
+    const seq = ++loadSeq.current;
     setLoading(true);
     setError(null);
-    listArtifacts({ archived: v === "archived" })
-      .then(setArtifacts)
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setLoading(false));
+    listArtifacts({ archived: v === "archived", q })
+      .then((items) => {
+        if (seq !== loadSeq.current) return;
+        setArtifacts(items);
+        setSearched(q.trim());
+      })
+      .catch((e) => {
+        if (seq === loadSeq.current) setError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (seq === loadSeq.current) setLoading(false);
+      });
   }, []);
 
   useEffect(() => {
-    load(view);
-  }, [view, load]);
+    const t = setTimeout(() => load(view, query), query.trim() ? SEARCH_DELAY_MS : 0);
+    return () => clearTimeout(t);
+  }, [view, query, load]);
 
   useEffect(
     () => () => {
       if (undoTimer.current) clearTimeout(undoTimer.current);
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
     },
     []
   );
@@ -179,12 +274,12 @@ export default function ArtifactsPage() {
         showUndo(item);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
-        load(view); // resync on failure
+        load(view, query); // resync on failure
       } finally {
         setRowPending(item.id, false);
       }
     },
-    [load, view, setRowPending, showUndo]
+    [load, view, query, setRowPending, showUndo]
   );
 
   const handleRestore = useCallback(
@@ -195,12 +290,12 @@ export default function ArtifactsPage() {
         await restoreArtifact(item.id);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
-        load(view);
+        load(view, query);
       } finally {
         setRowPending(item.id, false);
       }
     },
-    [load, view, setRowPending]
+    [load, view, query, setRowPending]
   );
 
   const handleDelete = useCallback(
@@ -217,12 +312,12 @@ export default function ArtifactsPage() {
         await deleteArtifact(item.id);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
-        load(view);
+        load(view, query);
       } finally {
         setRowPending(item.id, false);
       }
     },
-    [load, view, setRowPending]
+    [load, view, query, setRowPending]
   );
 
   const handleUndo = useCallback(async () => {
@@ -233,12 +328,66 @@ export default function ArtifactsPage() {
       await restoreArtifact(item.id);
       // Resync the current view rather than optimistically guessing — the
       // restored item belongs in Active, and may need to leave Archived.
-      load(view);
+      load(view, query);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-      load(view);
+      load(view, query);
     }
-  }, [undo, view, load, dismissUndo]);
+  }, [undo, view, query, load, dismissUndo]);
+
+  const copyLink = useCallback(async (id: string, path: string) => {
+    try {
+      await navigator.clipboard.writeText(shareLink(path));
+      setCopiedId(id);
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+      copiedTimer.current = setTimeout(() => setCopiedId(null), COPIED_MS);
+    } catch {
+      // The clipboard can be unavailable (an insecure page); the link stays shared.
+    }
+  }, []);
+
+  const handleShare = useCallback(
+    async (item: ArtifactSummary) => {
+      setRowPending(item.id, true);
+      try {
+        const path = await shareArtifact(item.id);
+        setArtifacts((prev) =>
+          prev.map((a) => (a.id === item.id ? { ...a, share_path: path } : a))
+        );
+        await copyLink(item.id, path);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setRowPending(item.id, false);
+      }
+    },
+    [setRowPending, copyLink]
+  );
+
+  const handleCopy = useCallback(
+    (item: ArtifactSummary) => {
+      if (item.share_path) void copyLink(item.id, item.share_path);
+    },
+    [copyLink]
+  );
+
+  const handleStop = useCallback(
+    async (item: ArtifactSummary) => {
+      setRowPending(item.id, true);
+      try {
+        await stopSharingArtifact(item.id);
+        setArtifacts((prev) =>
+          prev.map((a) => (a.id === item.id ? { ...a, share_path: null } : a))
+        );
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        load(view, query);
+      } finally {
+        setRowPending(item.id, false);
+      }
+    },
+    [load, view, query, setRowPending]
+  );
 
   const counts = useMemo(() => {
     const c = { all: artifacts.length, draft: 0, workflow: 0 };
@@ -310,8 +459,10 @@ export default function ArtifactsPage() {
     [dismissUndo]
   );
 
-  const emptyMessage =
-    view === "archived"
+  const searching = searched !== "";
+  const emptyMessage = searching
+    ? `Nothing matches “${searched}”.`
+    : view === "archived"
       ? "Nothing archived. Documents you archive will collect here, ready to restore."
       : "No documents yet. Reports and memos the Executive produces will collect here.";
 
@@ -319,17 +470,33 @@ export default function ArtifactsPage() {
     <div className="flex flex-col h-full bg-surface text-fg">
       <main className="flex-1 overflow-y-auto px-4 sm:px-6 py-8">
         <div className="max-w-5xl mx-auto">
-          <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
-            <div className="min-w-0 max-w-2xl">
-              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg mb-2">
-                {view === "archived" ? "Archived documents" : "Your documents"}
-              </h1>
-              <p className="text-[15px] text-fg-muted">
-                What the Executive made for you. Archive what you&apos;re done with.
-              </p>
-            </div>
+          <div className="mb-6 min-w-0 max-w-2xl">
+            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg mb-2">
+              {view === "archived" ? "Archived documents" : "Your documents"}
+            </h1>
+            <p className="text-[15px] text-fg-muted">
+              What the Executive made for you. Archive what you&apos;re done with.
+            </p>
+          </div>
+          <div className="mb-6 flex flex-wrap items-center gap-2">
+            <label className="relative w-full sm:w-80">
+              <span className="sr-only">Search documents</span>
+              <Icon
+                name="search"
+                size="w-4 h-4"
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-fg-subtle"
+              />
+              <input
+                type="search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search titles and what is inside"
+                maxLength={200}
+                className="h-12 w-full rounded-xl border border-line bg-surface-elevated pl-9 pr-3 text-[15px] text-fg placeholder:text-fg-subtle focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+              />
+            </label>
             {/* One filter control: the kind, with Active / Archived in its ⋯. */}
-            <div className="flex items-center gap-1.5">
+            <div className="flex min-w-0 max-w-full items-center gap-1.5">
               <div
                 role="group"
                 aria-label="Show"
@@ -398,10 +565,13 @@ export default function ArtifactsPage() {
             <>
               <div className="space-y-6">
                 {groups.map((group) => {
-                  const isCollapsed = collapsed[group.key] ?? group.key === BRIEFS_GROUP;
+                  // While searching, every match shows: no group is closed or cut short.
+                  const isCollapsed = searching
+                    ? false
+                    : collapsed[group.key] ?? group.key === BRIEFS_GROUP;
                   // A closed briefs group still shows the newest one.
                   const capped =
-                    group.key.startsWith("wf:") && !expanded.has(group.key);
+                    !searching && group.key.startsWith("wf:") && !expanded.has(group.key);
                   const rows = isCollapsed
                     ? group.key === BRIEFS_GROUP
                       ? group.items.slice(0, 1)
@@ -442,9 +612,13 @@ export default function ArtifactsPage() {
                               item={a}
                               view={view}
                               pending={pending.has(a.id)}
+                              copied={copiedId === a.id}
                               onArchive={handleArchive}
                               onRestore={handleRestore}
                               onDelete={handleDelete}
+                              onShare={handleShare}
+                              onCopy={handleCopy}
+                              onStop={handleStop}
                             />
                           ))}
                           {hidden > 0 && (

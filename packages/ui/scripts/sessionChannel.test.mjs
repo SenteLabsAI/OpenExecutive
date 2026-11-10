@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   countByChannel,
   filterSessions,
+  headerLabel,
   recentWebChats,
   sessionChannel,
 } from "../src/lib/sessionChannel.ts";
@@ -82,4 +83,11 @@ test("countByChannel only lists channels that have sessions", () => {
     { web: 2, slack: 1, telegram: 2 },
   );
   assert.deepEqual(countByChannel([]), {});
+});
+
+test("the top bar adds the open chat's title after the name", () => {
+  assert.equal(headerLabel("Acme · Executive", { title: "Q3 hiring plan" }), "Acme · Executive · Q3 hiring plan");
+  assert.equal(headerLabel("Acme · Executive", { title: "  " }), "Acme · Executive");
+  assert.equal(headerLabel("Executive", { title: null }), "Executive");
+  assert.equal(headerLabel("Executive"), "Executive");
 });

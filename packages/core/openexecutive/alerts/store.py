@@ -14,6 +14,7 @@ from openexecutive.alerts.models import (
     Alert,
     MuteTopic,
 )
+from openexecutive.utils.text_search import words_clause
 
 logger = logging.getLogger(__name__)
 
@@ -323,6 +324,7 @@ def list_artifact_alerts(
     *,
     owner_person_id: int | None,
     include_unowned: bool = False,
+    search: str = "",
 ) -> list[Alert]:
     """Alerts authored via `draft_artifact` (source='artifact'), newest first.
 
@@ -338,6 +340,9 @@ def list_artifact_alerts(
     `archived` selects which slice to return: the default (False) lists only
     active artifacts (`archived_at IS NULL`); True lists only archived ones,
     so the gallery's Active / Archived views are clean swaps, not supersets.
+
+    `search`, when set, keeps only those whose title, text or link name
+    contains every word of it (any case, any order; `utils.text_search`).
     """
     if not _resolve_db_path(db_path).exists():
         return []
@@ -353,11 +358,15 @@ def list_artifact_alerts(
     archived_clause = (
         "AND archived_at IS NOT NULL" if archived else "AND archived_at IS NULL"
     )
+    search_clause, search_params = words_clause(
+        ("headline", "body", "COALESCE(artifact_link_label, '')"), search
+    )
+    params.extend(search_params)
     params.append(limit)
     with _get_conn(db_path) as conn:
         rows = conn.execute(
             f"SELECT * FROM alerts WHERE source = 'artifact' {archived_clause} "
-            f"AND ({' OR '.join(owners)}) "
+            f"AND ({' OR '.join(owners)}) {search_clause}"
             "ORDER BY created_at DESC LIMIT ?",
             params,
         ).fetchall()

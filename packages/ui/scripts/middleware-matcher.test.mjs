@@ -72,6 +72,25 @@ test("a path that only starts with an excluded entry is still gated", () => {
   }
 });
 
+test("a document's share link needs no session, and nothing else under /shared does", () => {
+  const key = "AbCdEfGhIjKlMnOpQrStUvWxYz012-_9";
+  for (const path of [`/shared/${key}`, `/shared/${key}/`]) {
+    assert.equal(runsMiddleware(path), true, path);
+    assert.equal(gated(path), false, path);
+  }
+  for (const path of [
+    "/shared",
+    "/shared/",
+    `/shared/${key}x`,
+    `/shared/${key.slice(1)}`,
+    `/shared/${key}/more`,
+    "/shared/../settings",
+    `/sharedX/${key}`,
+  ]) {
+    assert.equal(gated(path), true, path);
+  }
+});
+
 test("ordinary pages and API routes are gated", () => {
   for (const path of ["/", "/settings", "/api/backend/health"]) {
     assert.equal(gated(path), true, path);

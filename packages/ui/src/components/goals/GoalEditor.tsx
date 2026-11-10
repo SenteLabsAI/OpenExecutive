@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import TimeframePicker, { TimeframeChips, suggestPeriodValue } from "@/components/TimeframePicker";
 import Button from "@/components/ui/Button";
@@ -130,6 +130,8 @@ interface GoalRowProps {
   // server snapshot replacing `goals` while a user is mid-edit would
   // flicker the view label and discard the form state.
   onEditingChange?: (editing: boolean) => void;
+  /** Shown under the goal's status line (on /goals: what was done for it). */
+  footer?: ReactNode;
 }
 
 export function formatGoalPeriod(g: Goal): string {
@@ -154,6 +156,7 @@ export function GoalRow({
   onSaved,
   onDeleted,
   onEditingChange,
+  footer,
 }: GoalRowProps) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -247,6 +250,7 @@ export function GoalRow({
               )
             )}
           </div>
+          {footer}
         </div>
         <div className="flex flex-col items-end gap-1 flex-shrink-0 -mr-2 -mt-1.5">
           <OverflowMenu

@@ -3647,6 +3647,10 @@ export interface ArtifactSummary {
   // and its plain name.
   group: string;
   group_label: string;
+  // Share by link: whether you may share it, and the link's path on this
+  // app's address while it is shared.
+  can_share?: boolean;
+  share_path?: string | null;
 }
 
 export type ArtifactFormat = "docx" | "html" | "link" | "markdown" | "xlsx";
@@ -3672,10 +3676,14 @@ export function artifactDownloadUrl(id: string, as?: ArtifactFormat): string {
 }
 
 export async function listArtifacts(
-  opts?: { archived?: boolean }
+  opts?: { archived?: boolean; q?: string; signal?: AbortSignal }
 ): Promise<ArtifactSummary[]> {
-  const qs = opts?.archived ? "?archived=true" : "";
-  const res = await fetch(`${API_BASE}/artifacts${qs}`);
+  const params = new URLSearchParams();
+  if (opts?.archived) params.set("archived", "true");
+  const q = opts?.q?.trim();
+  if (q) params.set("q", q);
+  const qs = params.toString() ? `?${params.toString()}` : "";
+  const res = await fetch(`${API_BASE}/artifacts${qs}`, { signal: opts?.signal });
   if (!res.ok) throw new Error("Failed to list artifacts");
   const data = await res.json();
   return data.artifacts;
@@ -3708,6 +3716,35 @@ export async function deleteArtifact(id: string): Promise<void> {
     method: "DELETE",
   });
   if (!res.ok) throw new Error("Failed to delete artifact");
+}
+
+// Share by link: answers the link's path on this app's address.
+export async function shareArtifact(id: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/artifacts/${encodeURIComponent(id)}/share`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new Error(
+      typeof detail?.detail === "string" && res.status === 409
+        ? detail.detail
+        : "That couldn't be shared. Try again."
+    );
+  }
+  const data = (await res.json()) as { share_path: string };
+  return data.share_path;
+}
+
+export async function stopSharingArtifact(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/artifacts/${encodeURIComponent(id)}/share`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error("The link couldn't be stopped. Try again.");
+}
+
+// The full link to give someone, on this app's own address.
+export function shareLink(sharePath: string): string {
+  return `${window.location.origin}${sharePath}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -4839,6 +4876,26 @@ export async function listGoals(): Promise<GoalView[]> {
   return res.json();
 }
 
+// What the Executive did for a goal (GET /goals/week, /goals/{id}/activity).
+export interface GoalWeek {
+  done: { text: string; at: string }[];
+  /** Steps held for a yes; card_id opens that card on Home. */
+  waiting: { text: string; at: string; card_id: number | null }[];
+}
+
+export async function listGoalWeeks(): Promise<Record<string, GoalWeek>> {
+  const res = await fetch(`${API_BASE}/goals/week`, { cache: "no-store" });
+  if (!res.ok) throw await goalError(res, "Couldn't load what was done for the goals");
+  const body = (await res.json()) as { goals: Record<string, GoalWeek> };
+  return body.goals;
+}
+
+export async function getGoalActivity(id: number): Promise<GoalWeek> {
+  const res = await fetch(`${API_BASE}/goals/${id}/activity`, { cache: "no-store" });
+  if (!res.ok) throw await goalError(res, "Couldn't load what was done for this goal");
+  return res.json();
+}
+
 // The server's reason when it gives one — a string `detail`, or the first
 // FastAPI validation message — else `fallback`.
 async function goalError(res: Response, fallback: string): Promise<Error> {
@@ -5470,6 +5527,34 @@ export async function getPersonOutreach(id: number): Promise<OutreachStat[]> {
   const res = await fetch(`${API_BASE}/people/${id}/outreach`);
   if (!res.ok) throw new Error(`Failed to load outreach: ${res.statusText}`);
   return res.json();
+}
+
+// A reply time or channel to suggest from how the person really answers
+// (GET /people/{id}/reply-habits). Use it is a plain updatePerson; Keep mine
+// hides that suggestion until the evidence changes.
+export interface ReplyHabitSuggestion {
+  kind: "reply_time" | "channel";
+  /** reply_time: whole hours; channel: email, slack, telegram or discord. */
+  value: string;
+  headline: string;
+  evidence: string;
+}
+
+export async function getPersonReplyHabits(id: number): Promise<ReplyHabitSuggestion[]> {
+  const res = await fetch(`${API_BASE}/people/${id}/reply-habits`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`Failed to load reply habits: ${res.statusText}`);
+  const body = (await res.json()) as { suggestions: ReplyHabitSuggestion[] };
+  return body.suggestions;
+}
+
+export async function keepPersonReplyHabit(id: number, kind: ReplyHabitSuggestion["kind"]): Promise<void> {
+  const res = await fetch(`${API_BASE}/people/${id}/reply-habits/keep`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind }),
+  });
+  // 409: nothing left to keep (the evidence moved); the panel just reloads.
+  if (!res.ok && res.status !== 409) throw new Error(`Couldn't keep it: ${res.statusText}`);
 }
 
 // Attunement working style: a few short "how they like replies" rules pinned

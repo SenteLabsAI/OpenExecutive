@@ -880,6 +880,9 @@ class ExecutiveReflectionWorkflow(Workflow):
             tools, {**_ALL_SKILL_HANDLERS, **KNOWLEDGE_TOOL_HANDLERS}, mode, source="reflection"
         )
         tools, handlers, leading = _with_lead_tools(tools, handlers)
+        # Added to the turn after the grounding scope is built (as lessons
+        # are): teammates write goals, so their text grounds no send.
+        goals_note = ""
         if leading:
             from openexecutive.orchestrator import take_the_lead
 
@@ -894,6 +897,10 @@ class ExecutiveReflectionWorkflow(Workflow):
                 user_content += jobs
                 tools = sorted([*tools, take_the_lead.FOCUS_JOB_TOOL], key=lambda t: t["name"])
                 handlers = {**handlers, take_the_lead.FOCUS_JOB_TOOL["name"]: take_the_lead.handle_focus_job}
+            goals_note = take_the_lead.goals_note()
+            if goals_note:
+                tools = sorted([*tools, take_the_lead.FOCUS_GOAL_TOOL], key=lambda t: t["name"])
+                handlers = {**handlers, take_the_lead.FOCUS_GOAL_TOOL["name"]: take_the_lead.handle_focus_goal}
         # Nobody reads what this pass sends before it goes: an outward tool
         # whose text names a person or figure absent from the input (or a
         # tool result so far) is refused with a reason the model can act on.
@@ -908,6 +915,7 @@ class ExecutiveReflectionWorkflow(Workflow):
             surface="executive reflection", private=private_context,
         )
         handlers = grounding.guard(handlers)
+        user_content += goals_note
         # How the principal asked for things to be done (memory.lessons), so
         # what this pass starts on its own is done the way they taught it.
         # Added after the grounding scope is built: a name or figure in a
