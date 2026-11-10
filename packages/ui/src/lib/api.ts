@@ -5670,6 +5670,35 @@ export interface PointSource {
 // One row of Home's Done for you (GET /today `done_for_you`): a card the
 // viewer approved (`kind` "approval", one row per card, its status changing
 // in place) or something the Executive did on its own in the last day.
+// One line of Home's Watching next (GET /today `watching`): a follow-up it
+// will send (`action:<id>`) or a standing job (`job:<id>`), what it does
+// next and when. Stop ends that one thing (POST /today/watching/stop).
+export interface WatchingItem {
+  key: string;
+  kind: "follow_up" | "standing_job";
+  title: string;
+  detail: string;
+  at: string | null;
+}
+
+export async function stopWatching(key: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/today/watching/stop`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key }),
+  });
+  if (!res.ok) {
+    let message = "Couldn't stop it.";
+    try {
+      const body = await res.json();
+      if (typeof body?.detail === "string") message = body.detail;
+    } catch {
+      // keep the fallback
+    }
+    throw new Error(message);
+  }
+}
+
 export interface DoneRow {
   key: string;
   kind: string;
@@ -5755,6 +5784,7 @@ export interface Today {
   right_now?: RightNowRow[];
   // Done for you: what the Executive did or is doing for the viewer today.
   done_for_you?: DoneRow[];
+  watching?: WatchingItem[];
   inbox_also_total?: number;
   // The owner's own: today's delivered morning brief and the meetings still
   // ahead today.
@@ -6762,6 +6792,18 @@ export interface TakeTheLead {
   suggested: LeadSuggested[];
   available: boolean;
   paused: boolean;
+  // Things you asked it to keep doing, with what it did for each this week.
+  jobs?: LeadJob[];
+  // Today: what it did on its own, and what it left for your yes.
+  done_today?: number;
+  left_today?: number;
+}
+
+export interface LeadJob {
+  id: number;
+  text: string;
+  created_at: string;
+  this_week: string;
 }
 
 async function leadError(res: Response, fallback: string): Promise<Error> {
@@ -6828,6 +6870,22 @@ export async function allowLeadSuggestion(key: string): Promise<TakeTheLead> {
   });
   if (!res.ok) throw await leadError(res, "Couldn't allow it.");
   delegationChanged();
+  return res.json();
+}
+
+export async function addLeadJob(text: string): Promise<TakeTheLead> {
+  const res = await fetch(`${API_BASE}/take-the-lead/jobs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) throw await leadError(res, "Couldn't add it.");
+  return res.json();
+}
+
+export async function stopLeadJob(id: number): Promise<TakeTheLead> {
+  const res = await fetch(`${API_BASE}/take-the-lead/jobs/${id}`, { method: "DELETE" });
+  if (!res.ok) throw await leadError(res, "Couldn't stop it.");
   return res.json();
 }
 

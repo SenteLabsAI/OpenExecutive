@@ -139,7 +139,7 @@ export default function DelegatePage() {
             <Panel
               id={AS_ME_ANCHOR}
               hidden={tab !== AS_ME_ANCHOR}
-              lede="In its own name, without being asked. Every day before your brief, and when new mail or a message comes in, it follows up with people, books meetings, starts workflows, assigns tasks and makes changes in your apps. People can see it's the Executive."
+              lede="In its own name, without being asked. Every day before your brief, and when something comes up, it follows up with people, books meetings, starts workflows, assigns tasks and makes changes in your apps. People can see it's the Executive."
             >
               <div className="grid gap-4 @4xl:grid-cols-2 @4xl:items-start">
                 <AsMeCard lead={lead.lead} state={lead.state} setLead={lead.setLead} level={level} />

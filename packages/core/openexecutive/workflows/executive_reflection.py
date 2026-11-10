@@ -884,6 +884,16 @@ class ExecutiveReflectionWorkflow(Workflow):
             from openexecutive.orchestrator import take_the_lead
 
             user_content += _LEAD_NOTE + take_the_lead.learned_note()
+            look = take_the_lead.current_look()
+            if look is not None and look.prompted_by and look.prompted_by != take_the_lead.DAILY_LOOK:
+                # A wake: what made it look. Only the kind of event (a
+                # channel, "a meeting ended"), never text someone else wrote.
+                user_content += f"\n\nWhy you are looking now: {look.prompted_by}."
+            jobs = take_the_lead.jobs_note()
+            if jobs:
+                user_content += jobs
+                tools = sorted([*tools, take_the_lead.FOCUS_JOB_TOOL], key=lambda t: t["name"])
+                handlers = {**handlers, take_the_lead.FOCUS_JOB_TOOL["name"]: take_the_lead.handle_focus_job}
         # Nobody reads what this pass sends before it goes: an outward tool
         # whose text names a person or figure absent from the input (or a
         # tool result so far) is refused with a reason the model can act on.

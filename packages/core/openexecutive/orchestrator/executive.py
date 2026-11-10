@@ -2544,7 +2544,7 @@ class Executive:
         # Take the lead on, the reflection looks at it soon, batched.
         origin = str(getattr(current_session.get(), "origin_channel", "") or "")
         if origin and not unattended_withheld and not replaying:
-            take_the_lead.wake(f"a message on {origin}")
+            take_the_lead.wake(take_the_lead.arrival_reason(origin))
         current_messages = list(messages)
         if self._settings.enable_caching:
             system_blocks, current_messages = _apply_history_cache_marker(
