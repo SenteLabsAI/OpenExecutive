@@ -56,6 +56,10 @@ test("live words from Chrome on Android, which repeats what came before, don't r
     settled: "the theory",
     pending: "",
   });
+  assert.deepEqual(splitHeard("", [{ transcript: "hello", isFinal: true }, { transcript: "Hello, how are you", isFinal: false }], true), {
+    settled: "",
+    pending: "Hello, how are you",
+  });
   // Desktop sends only new words, so a repeated word is kept.
   const desktop = [
     { transcript: "very", isFinal: true },

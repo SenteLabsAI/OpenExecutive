@@ -60,9 +60,12 @@ export function splitHeard(
     const text = part.transcript.trim();
     if (!text) continue;
     const prev = pieces[pieces.length - 1];
-    const before = prev?.transcript.toLowerCase();
+    // Android may add a comma or full stop as it revises ("hello" then
+    // "hello, how are you"), so trailing punctuation doesn't count.
+    const before = prev?.transcript.toLowerCase().replace(/[.,;:!?]+$/, "");
     const lower = text.toLowerCase();
-    if (cumulative && before && (lower === before || lower.startsWith(`${before} `))) pieces.pop();
+    const next = lower.charAt(before?.length ?? 0);
+    if (cumulative && before && lower.startsWith(before) && (!next || /[\s.,;:!?]/.test(next))) pieces.pop();
     pieces.push({ transcript: text, isFinal: part.isFinal });
   }
   let settled = earlier.trim();
