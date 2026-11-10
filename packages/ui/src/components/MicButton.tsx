@@ -54,6 +54,9 @@ export default function MicButton({ disabled, onLive, onText, onError }: Props) 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const recognitionRef = useRef<Recognition | null>(null);
+  // True from the start of a recording until it stops: a recognizer that
+  // ends on its own starts again only while this holds.
+  const wantLiveRef = useRef(false);
   // What the browser heard, kept for when the written-out version fails.
   const heardRef = useRef("");
   // For leaving mid-recording: the box keeps what was heard and unlocks.
@@ -83,6 +86,7 @@ export default function MicButton({ disabled, onLive, onText, onError }: Props) 
   };
 
   const stopRecognition = () => {
+    wantLiveRef.current = false;
     const rec = recognitionRef.current;
     recognitionRef.current = null;
     if (!rec) return;
@@ -116,21 +120,22 @@ export default function MicButton({ disabled, onLive, onText, onError }: Props) 
     clearTimer();
     stopRecognition();
     const rec = recorderRef.current;
-    if (rec && rec.state !== "inactive") {
-      playMicTone("stop");
-      rec.stop();
-    }
+    if (rec && rec.state !== "inactive") rec.stop();
   }, []);
 
   // Live words from the browser's own recognition. It ends on its own after
-  // a pause or a minute, so it starts again (keeping what it had) until the
-  // recording stops. Any failure just means no live words.
+  // a pause or a minute, so it starts again (keeping what it had, a little
+  // later each time) until the recording stops. An error other than silence
+  // ends live words for this recording; the words still come when it stops.
   const listen = useCallback(() => {
     const Ctor = browserRecognition();
     if (!Ctor || !onLive) return;
     let earlier = "";
     let restarts = 0;
+    let failed = false;
+    wantLiveRef.current = true;
     const begin = () => {
+      if (!wantLiveRef.current) return;
       let rec: Recognition;
       try {
         rec = new Ctor();
@@ -149,13 +154,15 @@ export default function MicButton({ disabled, onLive, onText, onError }: Props) 
         onLive(settled, pending);
       };
       rec.onerror = (e) => {
-        if (e.error === "not-allowed" || e.error === "service-not-allowed") restarts = Infinity;
+        if (e.error !== "no-speech") failed = true;
       };
       rec.onend = () => {
         earlier = latest;
         if (recognitionRef.current !== rec) return;
         recognitionRef.current = null;
-        if (restarts++ < 20) begin();
+        if (failed || restarts >= 20) return;
+        restarts += 1;
+        window.setTimeout(begin, Math.min(2000, 200 * restarts));
       };
       recognitionRef.current = rec;
       try {
@@ -186,6 +193,7 @@ export default function MicButton({ disabled, onLive, onText, onError }: Props) 
       if (e.data.size > 0) chunks.push(e.data);
     };
     rec.onstop = async () => {
+      playMicTone("stop");
       stream.getTracks().forEach((t) => t.stop());
       recorderRef.current = null;
       stopRecognition();

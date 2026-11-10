@@ -1634,7 +1634,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                 onClick={submit}
                 disabled={
                   editing
-                    ? !input.trim() || redoing
+                    ? dictating || !input.trim() || redoing
                     : dictating || Boolean(blockedBy) || (!input.trim() && pendingFiles.length === 0)
                 }
                 aria-label={isLoading ? "Add to what it's working on" : editing ? "Send edited message" : "Send message"}
