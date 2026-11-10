@@ -1897,7 +1897,7 @@ export async function pauseExecutive(reason?: string): Promise<ExecutiveStatus> 
 
 export async function resumeExecutive(): Promise<ExecutiveStatus> {
   const res = await fetch(`${API_BASE}/executive/resume`, { method: "POST" });
-  if (res.status === 403) throw new Error("Only the principal can resume the Executive.");
+  if (res.status === 403) throw new Error("Only the account owner can resume the Executive.");
   if (!res.ok) throw new Error("Failed to resume the Executive");
   delegationChanged();
   return res.json();
@@ -5674,6 +5674,18 @@ export interface DoneRow {
   artifact_id?: string | null;
 }
 
+/** Something waiting on the reader that lives on another page: Home's Needs
+ *  you shows it as one row whose button opens that page. */
+export interface WaitingElsewhereItem {
+  key: string;
+  title: string;
+  detail: string;
+  count: number;
+  href: string;
+  action: string;
+  at: string;
+}
+
 export interface RightNowRow {
   key: string;
   kind: "mail" | "draft" | "chat";
@@ -5743,6 +5755,9 @@ export interface Today {
   // card shows instead of a quiet day. Optional for older API builds.
   first_week?: boolean;
   first_week_card?: FirstWeekCard | null;
+  // What waits on the reader on other pages (watch suggestions, …): one row
+  // each in Needs you. Optional for older API builds.
+  waiting_elsewhere?: WaitingElsewhereItem[];
   // In-flight commitments (pending follow-ups/nudges) + people we're awaiting
   // a reply from. Optional/default-empty for older API builds + test mocks.
   in_flight?: InFlightItem[];
