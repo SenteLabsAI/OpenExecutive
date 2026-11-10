@@ -253,8 +253,16 @@ def test_a_done_goal_is_left_out_of_the_reviews(monkeypatch: pytest.MonkeyPatch)
     )
     assert written == [] and store.get_goal(done).status == "done"  # type: ignore[union-attr]
 
-    # With only done goals left, the review makes no call.
+    # Marked done while the review ran: the old snapshot writes and logs nothing.
+    stale = goal_review.review_group([store.get_goal(open_goal)])  # type: ignore[list-item]
     store.update_goal(open_goal, status="done")
+    written = persist_goal_verdicts(
+        stale, [{"goal_id": open_goal, "status": "off_track", "rationale": "x"}],
+        now=now, period="2026-01-05", actor="test",
+    )
+    assert written == [] and store.get_goal(open_goal).status == "done"  # type: ignore[union-attr]
+
+    # With only done goals left, the review makes no call.
     calls.clear()
     assert asyncio.run(goal_review.run_review(now + timedelta(days=8))) == 0
     assert calls == []

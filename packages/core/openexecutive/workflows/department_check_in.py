@@ -582,7 +582,7 @@ def persist_goal_verdicts(
             continue
         prior_status = goal.status
         try:
-            _dept_store.record_goal_review(
+            written = _dept_store.record_goal_review(
                 v["goal_id"],
                 status=v["status"],
                 last_reviewed_at=now.isoformat(),
@@ -592,6 +592,9 @@ def persist_goal_verdicts(
                 "check_in: record_goal_review failed slug=%s goal_id=%s",
                 slug, v["goal_id"],
             )
+            continue
+        if not written:
+            # Marked done (or deleted) while the review ran: nothing changed.
             continue
         transitions.append({
             "goal_id": v["goal_id"],
