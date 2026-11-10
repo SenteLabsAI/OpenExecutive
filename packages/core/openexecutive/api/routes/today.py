@@ -2821,19 +2821,22 @@ def _answers(sent: list[tuple[int, str]]) -> dict[tuple[int, str], str]:
     """"Riley answered at 9:40 AM" for each (person, sent at) whose message
     was replied to (``outbound_context`` recorded beside the send, then
     consumed). One query for the whole feed; a message with no answer is
-    left out. Never raises."""
+    left out, and one that can't be named doesn't cost the others. Never
+    raises."""
     from openexecutive.memory.episodic import _get_conn, _resolve_db_path
     from openexecutive.memory.workspace_settings import get_user_timezone
     from openexecutive.people.store import get_person
 
     out: dict[tuple[int, str], str] = {}
+    window = timedelta(minutes=2)
+    when = {(pid, at): _parse_aware(at) for pid, at in sent}
+    times = [t for t in when.values() if t is not None]
+    if not times:
+        return out
     try:
-        when = {(pid, at): _parse_aware(at) for pid, at in sent}
-        times = [t for t in when.values() if t is not None]
         path = _resolve_db_path(None)
-        if not times or not path.exists():
+        if not path.exists():
             return out
-        window = timedelta(minutes=2)
         people = sorted({pid for pid, _ in when})
         with _get_conn(path) as conn:
             rows = conn.execute(
@@ -2843,25 +2846,29 @@ def _answers(sent: list[tuple[int, str]]) -> dict[tuple[int, str], str]:
                 "ORDER BY created_at",
                 (*people, (min(times) - window).isoformat(), (max(times) + window).isoformat()),
             ).fetchall()
-        replies = [(r["recipient_person_id"], _parse_aware(r["created_at"]), _parse_aware(r["consumed_at"]))
-                   for r in rows]
         zone = get_user_timezone()
-        names: dict[int, str] = {}
-        for (pid, at), at_time in when.items():
-            if at_time is None:
-                continue
-            # The message As me sent is recorded beside its log row: a later
-            # message to the same person, answered, isn't this one.
-            replied = next((c for p, made, c in replies if p == pid and made is not None and c is not None
-                            and abs(made - at_time) <= window), None)
-            if replied is None:
-                continue
+    except Exception:
+        logger.warning("today: couldn't read who answered", exc_info=True)
+        return out
+    replies = [(r["recipient_person_id"], _parse_aware(r["created_at"]), _parse_aware(r["consumed_at"]))
+               for r in rows]
+    names: dict[int, str] = {}
+    for (pid, at), at_time in when.items():
+        if at_time is None:
+            continue
+        # The message As me sent is recorded beside its log row: a later
+        # message to the same person, answered, isn't this one.
+        replied = next((c for p, made, c in replies if p == pid and made is not None and c is not None
+                        and abs(made - at_time) <= window), None)
+        if replied is None:
+            continue
+        try:
             if pid not in names:
                 person = get_person(pid)
                 names[pid] = (person.full_name or "").split()[0] if person is not None and person.full_name else "They"
             out[(pid, at)] = f"{names[pid]} answered at {replied.astimezone(zone).strftime('%I:%M %p').lstrip('0')}"
-    except Exception:
-        logger.warning("today: couldn't read who answered", exc_info=True)
+        except Exception:
+            logger.warning("today: couldn't name who answered", exc_info=True)
     return out
 
 

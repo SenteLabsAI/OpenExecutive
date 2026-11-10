@@ -3240,6 +3240,15 @@ def test_done_for_you_says_how_why_and_what_came_of_what_it_did_as_me(
 
     earlier = (_dt.now(_UTC) - _td(hours=1)).isoformat()
     assert today_route._answered(riley, earlier) == ""
+    # Many messages in one read: only the one answered gets a line.
+    sam = people_store.upsert_person(full_name="Sam Lee", email="sam@example.com", db_path=db)
+    episodic.insert_outbound_context(
+        channel="slack_dm", channel_ref="U2", outbound_text="Hi", recipient_person_id=sam,
+    )
+    just_now = _dt.now(_UTC).isoformat()
+    got = today_route._answers([(riley, just_now), (riley, earlier), (sam, just_now)])
+    assert list(got) == [(riley, just_now)]
+    assert got[(riley, just_now)].startswith("Riley answered at")
 
 
 def test_watching_next_lists_follow_ups_and_standing_jobs_and_stop_ends_one(
