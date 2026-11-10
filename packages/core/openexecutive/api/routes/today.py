@@ -1287,7 +1287,7 @@ _DECISION_STATUS_LABEL = {
     "rejected": "Rejected",
     "auto_no_response": "Expired (no response)",
     "reversed": "Reversed",
-    "executed": "Executed",
+    "executed": "Done",
     "failed": "Failed",
     "closed_externally": "Closed",
 }

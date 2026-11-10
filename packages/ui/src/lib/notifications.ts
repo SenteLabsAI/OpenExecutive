@@ -115,9 +115,9 @@ export const RIGHT_NOW_LABEL: Record<RightNowPings, string> = {
 
 /** What each Right now choice sends, from the person's side. */
 export function rightNowDescription(choice: RightNowPings): string {
-  if (choice === "off") return "Nothing. Right now on Home still changes through the day.";
-  if (choice === "everything") return "A short message whenever Right now adds something, up to 4 a day.";
-  return "A short message when Right now adds something that needs you: someone wrote to you, something is stuck or overdue, or a decision came up. Up to 4 a day.";
+  if (choice === "off") return "Nothing. Home still updates through the day.";
+  if (choice === "everything") return "A short message whenever something new shows on Home, up to 4 a day.";
+  return "A short message when something new needs you: someone wrote to you, something is stuck or overdue, or a decision came up. Up to 4 a day.";
 }
 
 export const DELIVERY_LABEL: Record<Delivery, string> = {

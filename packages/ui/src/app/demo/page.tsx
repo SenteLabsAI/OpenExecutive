@@ -640,7 +640,7 @@ export default function DemoPage() {
                                   </span>
                                   {p.is_principal && (
                                     <span className="text-[9px] uppercase tracking-wide px-1 py-px rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 whitespace-nowrap">
-                                      Principal
+                                      Owner
                                     </span>
                                   )}
                                   {p.role && (

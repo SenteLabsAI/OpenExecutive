@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
 import SettingsCard from "@/components/settings/SettingsCard";
@@ -260,7 +259,7 @@ export default function NotificationsCard() {
 
       {current.gets_briefs && current.right_now && (
         <SettingsCard
-          title="Tell me when Right now changes"
+          title="Tell me when something new comes up"
           titleId="right-now-label"
           description="A short message on the chat app you last used with the Executive. Never during quiet hours, or when things come in your briefs."
         >
@@ -292,11 +291,7 @@ export default function NotificationsCard() {
 
       {current.gets_briefs && (
         <p className="text-[15px] text-fg-muted">
-          Your morning brief and end-of-day digest still come at their usual times. They&apos;re under{" "}
-          <Link href="/settings/executive" className="font-medium text-accent underline-offset-2 hover:underline">
-            Your Executive
-          </Link>
-          .
+          Your morning brief and end-of-day digest still come at their usual times.
         </p>
       )}
     </>
