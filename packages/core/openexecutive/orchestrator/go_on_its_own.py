@@ -106,7 +106,7 @@ def _outcome(status: str) -> str:
 
     if status in (ledger.STATUS_APPROVED_UNCHANGED, ledger.STATUS_APPROVED_WITH_EDIT):
         return APPROVED
-    if status in (ledger.STATUS_REJECTED, ledger.STATUS_AUTO_NO_RESPONSE):
+    if status == ledger.STATUS_REJECTED:
         return DECLINED
     if status in ledger.OPEN_STATUSES:
         return WAITING

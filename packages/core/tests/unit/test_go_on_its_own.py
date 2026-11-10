@@ -164,6 +164,13 @@ def test_the_week_counts_what_went_and_what_waited(owner: Any) -> None:
     assert go_on_its_own.week(owner.id, as_you=True, as_me_done=False).went == 2
 
 
+def test_a_card_that_lapsed_is_not_declined(owner: Any) -> None:
+    _reply(owner.id, KENJI, reason="stranger", status=ledger.STATUS_AUTO_NO_RESPONSE)
+    week = go_on_its_own.week(owner.id, as_you=True, as_me_done=False)
+    assert (week.waited, week.declined) == (1, 0)
+    assert week.items[0].outcome == go_on_its_own.CLOSED
+
+
 # ── the route ─────────────────────────────────────────────────────────────────
 
 
