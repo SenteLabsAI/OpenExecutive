@@ -948,11 +948,11 @@ async def check_your_gmail(snap: Snapshot) -> SetupCheck:
                 return _result(
                     "your_gmail",
                     "warn",
-                    f"Connected to {owner.email}. Draft replies to my inbox: "
+                    f"Connected to {owner.email}. Draft replies to your inbox: "
                     + INBOX_STATUS_MESSAGES[watch.status],
                     link="/settings",
                 )
-            summary += " Draft replies to my inbox is on."
+            summary += " Draft replies to your inbox is on."
         return _result("your_gmail", "ok", summary, link="/settings")
     if status == "not_configured":
         return _result(

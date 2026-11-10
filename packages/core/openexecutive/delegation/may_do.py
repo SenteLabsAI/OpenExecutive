@@ -170,7 +170,7 @@ def as_you(person_id: int, *, can_have_it: bool, signing: bool, is_principal: bo
     def mail_row(row_id: str, what: str, goes_why: str) -> Row:
         if not watching:
             why = (
-                "Draft replies to my inbox is off." if drafts_on
+                "Draft replies to your inbox is off." if drafts_on
                 else "Write drafts as me is off. Replies to your inbox need it."
             )
             return Row(row_id, what, "off", "Off", why, SETTING_ACT_AS_ME)
@@ -210,7 +210,7 @@ def as_you(person_id: int, *, can_have_it: bool, signing: bool, is_principal: bo
         if not watching:
             rows.append(Row(
                 "actions", what, "waits", "Waits for you",
-                "Each one waits on a card. Draft replies to my inbox is off.", SETTING_ACT_AS_ME,
+                "Each one waits on a card. Draft replies to your inbox is off.", SETTING_ACT_AS_ME,
             ))
         elif not signing:
             rows.append(Row(

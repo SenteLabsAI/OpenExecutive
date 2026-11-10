@@ -87,7 +87,7 @@ def test_drafts_without_the_inbox_watcher_wait_for_a_tap(ids: dict[str, int]) ->
     set_enabled(pid, True, updated_by="t")
     rows = _rows(_you(pid))
     assert rows["chat_drafts"].outcome == "drafts" and rows["chat_drafts"].then == "Drafts, sent on your tap"
-    assert rows["replies"].outcome == "off" and "Draft replies to my inbox is off" in rows["replies"].why
+    assert rows["replies"].outcome == "off" and "Draft replies to your inbox is off" in rows["replies"].why
     assert rows["follow_ups"].outcome == "off"
     assert rows["actions"].outcome == "waits"
 

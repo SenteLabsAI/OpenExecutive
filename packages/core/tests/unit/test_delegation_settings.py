@@ -327,7 +327,7 @@ def test_the_setup_check_shows_the_inbox_watcher(roster: SimpleNamespace, monkey
     set_enabled(owner.id, True, updated_by="test")
     inbox.set_watch(owner.id, True, updated_by="test")
     state, summary = _check(owner, "connected", monkeypatch)
-    assert state == "ok" and summary.endswith("Draft replies to my inbox is on.")
+    assert state == "ok" and summary.endswith("Draft replies to your inbox is on.")
     inbox._update_watch(owner.id, status="rate_limited")
     state, summary = _check(owner, "connected", monkeypatch)
     assert state == "warn" and "slow down" in summary

@@ -2052,7 +2052,7 @@ export interface DelegationTeam {
   members: DelegationTeamMember[];
 }
 
-// "Draft replies to my inbox": the Executive watches your own inbox and, for
+// "Draft replies to your inbox": the Executive watches your own inbox and, for
 // mail that needs you, saves a first reply in your Gmail Drafts; each waits
 // on a card on Today (GET /delegation/replies).
 export interface InboxWatch {
@@ -2519,7 +2519,7 @@ export async function setInboxWatch(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(update),
   });
-  if (!res.ok) throw await delegationError(res, "Couldn't change Draft replies to my inbox.");
+  if (!res.ok) throw await delegationError(res, "Couldn't change Draft replies to your inbox.");
   delegationChanged();
   return res.json();
 }

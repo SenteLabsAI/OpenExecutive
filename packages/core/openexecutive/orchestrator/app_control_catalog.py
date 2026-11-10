@@ -633,7 +633,7 @@ _SETTINGS: dict[str, str] = {
     "delivery": "How messages arrive (instant or digest)",
     "urgent_through": "Let urgent things through quiet hours",
     "act_as_me": "As you",
-    "inbox_drafts": "Draft replies to my inbox",
+    "inbox_drafts": "Draft replies to your inbox",
 }
 # Turning these on lets the Executive write as the person, or (inbox
 # replies, where Approvals lets them go) send as them.
@@ -849,7 +849,7 @@ _SCREENS = (
     ("chats", "/chats", "all chats"),
     ("settings", "/settings", "Settings"),
     ("notifications", "/settings/notifications", "Settings, Notifications"),
-    ("act_as_me", "/settings/act-as-me", "Settings, As you"),
+    ("act_as_me", "/settings/act-as-me", "Delegate, As you"),
     ("memory_settings", "/settings/memory", "Settings, Memory"),
     ("people", "/people", "People"),
     ("departments", "/departments", "Departments"),

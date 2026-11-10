@@ -973,7 +973,7 @@ async def check_delegation_inbox(request: Request) -> InboxOut:
     person = _caller(request)
     person_id = _person_id(person)
     if not inbox.get_watch(person_id).enabled:
-        raise _refuse(409, "inbox_off", "Turn on Draft replies to my inbox first.")
+        raise _refuse(409, "inbox_off", "Turn on Draft replies to your inbox first.")
     if inbox.scanning(person_id):
         raise _refuse(409, "in_progress", "It's checking your inbox already.")
     with unscoped_audit_rows():

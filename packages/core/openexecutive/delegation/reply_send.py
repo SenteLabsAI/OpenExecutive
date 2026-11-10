@@ -295,7 +295,7 @@ async def _send_checked(
     if not is_enabled(person.id) or not get_watch(person.id).enabled:
         raise SendRefused(
             409, "inbox_off",
-            "Turn on As you and Draft replies to my inbox to send from here, or send it from your mailbox.",
+            "Turn on As you and Draft replies to your inbox to send from here, or send it from your mailbox.",
         )
     if _client_slot_active():
         raise SendRefused(409, "client_slot", "Sending from here is paused while a client is active. Send it from your mailbox.")
