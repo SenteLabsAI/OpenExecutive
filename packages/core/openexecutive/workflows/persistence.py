@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from openexecutive.memory.episodic import DB_PATH, _get_conn
+from openexecutive.utils.text_search import words_clause
 
 
 def _resolve(db_path: Path | None) -> Path:
@@ -303,6 +304,7 @@ def list_artifact_runs(
     *,
     visible_to: int | None,
     exclude_workflows: Collection[str] = (),
+    search: str = "",
 ) -> list[dict[str, Any]]:
     """Completed runs that produced an artifact, newest first, that
     `visible_to` may see (`run_visible_to`), leaving out the runs of
@@ -318,6 +320,10 @@ def list_artifact_runs(
     `archived` selects which slice to return: the default (False) lists only
     active artifacts (`archived_at IS NULL`); True lists only archived ones,
     mirroring `alerts.store.list_artifact_alerts`.
+
+    `search`, when set, keeps only runs whose title, workflow name (its
+    underscores read as spaces) or artifact text holds every word of it
+    (any case, any order).
     """
     if not _resolve(db_path).exists():
         return []
@@ -329,15 +335,18 @@ def list_artifact_runs(
     exclude_clause = (
         f"AND workflow_name NOT IN ({', '.join('?' * len(excluded))}) " if excluded else ""
     )
+    search_clause, search_params = words_clause(
+        ("title", "REPLACE(workflow_name, '_', ' ')", "artifact"), search
+    )
     with _get_conn(_resolve(db_path)) as conn:
         rows = conn.execute(
             "SELECT run_id, workflow_name, title, status, created_at, updated_at, "
             "archived_at, owner_person_id "
             "FROM workflow_runs "
             "WHERE artifact IS NOT NULL AND artifact != '' AND status = 'done' "
-            f"{archived_clause} AND {visible} {exclude_clause}"
+            f"{archived_clause} AND {visible} {exclude_clause}{search_clause}"
             "ORDER BY created_at DESC LIMIT ?",
-            (*params, *excluded, limit),
+            (*params, *excluded, *search_params, limit),
         ).fetchall()
     return [dict(r) for r in rows]
 

@@ -25,10 +25,11 @@ import HubTabs from "@/components/ui/HubTabs";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 
 // Routes that own their full layout and should not be wrapped by the
-// shell — sign-in, the onboarding wizard (full-screen flow), and the
+// shell — sign-in, the onboarding wizard (full-screen flow), a shared
+// document's public page (opened by people with no account), and the
 // chat home (`/`), which keeps its own top bar and debug panel but
 // renders the same `AppSidebar` as every other route.
-const EXEMPT_PREFIXES = ["/signin", "/onboard", "/api"];
+const EXEMPT_PREFIXES = ["/signin", "/onboard", "/api", "/shared"];
 const EXEMPT_EXACT = new Set(["/"]);
 
 // Human-readable labels for path segments shown in the breadcrumb.

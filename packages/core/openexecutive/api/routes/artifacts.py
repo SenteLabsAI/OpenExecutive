@@ -36,6 +36,18 @@ Endpoints:
 - POST   /artifacts/{composite_id}/archive   Soft-hide (reversible)
 - POST   /artifacts/{composite_id}/restore   Un-archive
 - DELETE /artifacts/{composite_id}           Permanently delete the underlying row
+- POST   /artifacts/{composite_id}/share     Share by link (answers the link's path)
+- DELETE /artifacts/{composite_id}/share     Stop sharing: the link stops at once
+- GET    /shared-documents/{key}             What a share link opens (public page)
+
+`GET /artifacts?q=` searches titles, sources and the documents' text within
+what the caller may see, in the view asked for (`utils.text_search`).
+
+Share by link (`orchestrator/artifact_shares.py`): the owner of a document,
+or the principal for the team's, gets an unguessable link to a read-only
+page of that one version. `GET /shared-documents/{key}` is what the UI's
+public `/shared/<key>` page reads, server to server: the title, the kind
+and the text, nothing else, and not found for anything but a live link.
 """
 from __future__ import annotations
 
@@ -47,6 +59,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
+from openexecutive.orchestrator import artifact_shares
 from openexecutive.orchestrator.artifact_formats import get_format
 from openexecutive.orchestrator.artifact_records import (
     ArtifactNotFound,
@@ -69,6 +82,7 @@ from openexecutive.orchestrator.artifact_records import (
 )
 from openexecutive.orchestrator.extensions import Change, get_collection
 from openexecutive.orchestrator.extensions import notify as notify_collection
+from openexecutive.utils.text_search import clean_search
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -123,6 +137,10 @@ class ArtifactSummary(BaseModel):
     # plain name.
     group: str = "chats"
     group_label: str = "From chats"
+    # Share by link: whether the caller may share it, and the link's path
+    # (on the app's own address) while it is shared.
+    can_share: bool = False
+    share_path: str | None = None
 
 
 class ArtifactDetail(ArtifactSummary):
@@ -134,7 +152,10 @@ class ArtifactDetail(ArtifactSummary):
 
 @router.get("/artifacts")
 async def list_artifacts(
-    request: Request, limit: int = _DEFAULT_LIMIT, archived: bool = False
+    request: Request,
+    limit: int = _DEFAULT_LIMIT,
+    archived: bool = False,
+    q: str | None = None,
 ) -> dict[str, list[ArtifactSummary]]:
     """Unified, newest-first list of the artifacts the caller may see.
 
@@ -143,24 +164,30 @@ async def list_artifacts(
     The Executive's own working notes (`_OFF_THE_PAGE`) are left out of the
     active list; they still open by id, and one archived earlier still shows
     under Archived so it can be restored or deleted.
+
+    `?q=` keeps only those whose title, source or text holds every word of
+    it, in the same view.
     """
+    viewer = _viewer(request)
     records = list_artifact_records(
         limit,
-        viewer=_viewer(request),
+        viewer=viewer,
         archived=archived,
         exclude_workflows=() if archived else _OFF_THE_PAGE,
+        search=clean_search(q),
     )
     labels: dict[str, str] = {}
-    return {"artifacts": [_summary(r, labels) for r in records]}
+    shared = artifact_shares.share_keys(r.id for r in records)
+    return {"artifacts": [_summary(r, labels, viewer, shared) for r in records]}
 
 
 @router.get("/artifacts/{composite_id}")
 async def get_artifact(composite_id: str, request: Request) -> ArtifactDetail:
     """One artifact with its displayable body, addressed by composite id."""
+    viewer = _viewer(request)
     rec = _load(composite_id, request)
-    stored = rec.stored or ""
-    body = stored if rec.format == "html" else get_format(rec.format).display(stored)
-    return ArtifactDetail(**_summary(rec, {}).model_dump(), body=body, rationale=rec.rationale)
+    summary = _summary(rec, {}, viewer, artifact_shares.share_keys([rec.id]))
+    return ArtifactDetail(**summary.model_dump(), body=_body(rec), rationale=rec.rationale)
 
 
 @router.get("/artifacts/{composite_id}/download")
@@ -230,7 +257,63 @@ async def delete_artifact(composite_id: str, request: Request) -> dict[str, str]
     # The canonical id (`alert:5`, not whatever spelling the path used) is
     # what indexing keyed the chunks on.
     await unindex_artifact(rec.id)
+    artifact_shares.forget(rec.id)
     return {"status": "deleted", "id": composite_id}
+
+
+@router.post("/artifacts/{composite_id}/share")
+async def share_artifact(composite_id: str, request: Request) -> dict[str, str]:
+    """Share a document by link. Answers the link's path on the app's own
+    address; asking again answers the same link."""
+    viewer = _viewer(request)
+    try:
+        key = artifact_shares.share(composite_id, viewer=viewer)
+    except artifact_shares.ShareRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except MalformedArtifactId as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ArtifactNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    logger.info("artifact %s shared by link by person %s", composite_id, viewer.person_id)
+    return {"status": "shared", "id": composite_id, "share_path": artifact_shares.public_path(key)}
+
+
+@router.delete("/artifacts/{composite_id}/share")
+async def stop_sharing_artifact(composite_id: str, request: Request) -> dict[str, str]:
+    """Stop sharing a document by link. The link stops working at once."""
+    viewer = _viewer(request)
+    _mutate(lambda: _stop_share(composite_id, viewer))
+    logger.info("artifact %s link stopped by person %s", composite_id, viewer.person_id)
+    return {"status": "stopped", "id": composite_id}
+
+
+class SharedDocument(BaseModel):
+    """All a share link shows: no ids, no names, no source."""
+
+    title: str
+    format: str
+    format_label: str
+    created_at: str
+    body: str
+
+
+@router.get("/shared-documents/{key}")
+async def shared_document(key: str, response: Response) -> SharedDocument:
+    """The document a share link opens, for the UI's public page. Not found
+    for anything but a live link (`artifact_shares.load_shared`)."""
+    rec = artifact_shares.load_shared(key)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    fmt = get_format(rec.format)
+    return SharedDocument(
+        title=_title(rec),
+        format=fmt.name,
+        format_label=fmt.label,
+        created_at=rec.created_at,
+        body=_body(rec),
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -272,6 +355,18 @@ async def _notify_collection(composite_id: str, request: Request, change: Change
         raise HTTPException(
             status_code=502, detail="That couldn't be done right now. Try again in a moment."
         ) from exc
+
+
+def _stop_share(composite_id: str, viewer: Viewer) -> ArtifactRecord:
+    artifact_shares.stop_share(composite_id, viewer=viewer)
+    return load_artifact(composite_id, viewer=viewer)
+
+
+def _body(rec: ArtifactRecord) -> str:
+    """What the page renders: raw (sanitized) HTML for 'html', Markdown
+    for every other format."""
+    stored = rec.stored or ""
+    return stored if rec.format == "html" else get_format(rec.format).display(stored)
 
 
 def _mutate(action: Callable[[], ArtifactRecord]) -> ArtifactRecord:
@@ -329,12 +424,19 @@ def _title(rec: ArtifactRecord) -> str:
     return title or rec.title
 
 
-def _summary(rec: ArtifactRecord, labels: dict[str, str]) -> ArtifactSummary:
+def _summary(
+    rec: ArtifactRecord,
+    labels: dict[str, str],
+    viewer: Viewer | None = None,
+    shared: dict[str, str] | None = None,
+) -> ArtifactSummary:
     fmt = get_format(rec.format)
     collection = get_collection(rec.collection)
     preview = fmt.text(rec.stored)[:_PREVIEW_CHARS] if rec.stored else ""
     collection_label = collection.label if collection is not None else None
     group, group_label = _group(rec, collection_label, labels)
+    can_share = viewer is not None and artifact_shares.may_share(rec, viewer)
+    key = (shared or {}).get(rec.id)
     return ArtifactSummary(
         id=rec.id,
         kind=rec.kind,
@@ -355,4 +457,6 @@ def _summary(rec: ArtifactRecord, labels: dict[str, str]) -> ArtifactSummary:
         collection_label=collection_label,
         group=group,
         group_label=group_label,
+        can_share=can_share,
+        share_path=artifact_shares.public_path(key) if can_share and key else None,
     )

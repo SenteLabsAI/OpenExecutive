@@ -3647,6 +3647,10 @@ export interface ArtifactSummary {
   // and its plain name.
   group: string;
   group_label: string;
+  // Share by link: whether you may share it, and the link's path on this
+  // app's address while it is shared.
+  can_share?: boolean;
+  share_path?: string | null;
 }
 
 export type ArtifactFormat = "docx" | "html" | "link" | "markdown" | "xlsx";
@@ -3672,10 +3676,14 @@ export function artifactDownloadUrl(id: string, as?: ArtifactFormat): string {
 }
 
 export async function listArtifacts(
-  opts?: { archived?: boolean }
+  opts?: { archived?: boolean; q?: string; signal?: AbortSignal }
 ): Promise<ArtifactSummary[]> {
-  const qs = opts?.archived ? "?archived=true" : "";
-  const res = await fetch(`${API_BASE}/artifacts${qs}`);
+  const params = new URLSearchParams();
+  if (opts?.archived) params.set("archived", "true");
+  const q = opts?.q?.trim();
+  if (q) params.set("q", q);
+  const qs = params.toString() ? `?${params.toString()}` : "";
+  const res = await fetch(`${API_BASE}/artifacts${qs}`, { signal: opts?.signal });
   if (!res.ok) throw new Error("Failed to list artifacts");
   const data = await res.json();
   return data.artifacts;
@@ -3708,6 +3716,35 @@ export async function deleteArtifact(id: string): Promise<void> {
     method: "DELETE",
   });
   if (!res.ok) throw new Error("Failed to delete artifact");
+}
+
+// Share by link: answers the link's path on this app's address.
+export async function shareArtifact(id: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/artifacts/${encodeURIComponent(id)}/share`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new Error(
+      typeof detail?.detail === "string" && res.status === 409
+        ? detail.detail
+        : "That couldn't be shared. Try again."
+    );
+  }
+  const data = (await res.json()) as { share_path: string };
+  return data.share_path;
+}
+
+export async function stopSharingArtifact(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/artifacts/${encodeURIComponent(id)}/share`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error("The link couldn't be stopped. Try again.");
+}
+
+// The full link to give someone, on this app's own address.
+export function shareLink(sharePath: string): string {
+  return `${window.location.origin}${sharePath}`;
 }
 
 // ---------------------------------------------------------------------------

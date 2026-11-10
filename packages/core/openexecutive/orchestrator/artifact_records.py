@@ -351,9 +351,11 @@ def list_artifacts(
     viewer: Viewer,
     archived: bool = False,
     exclude_workflows: Collection[str] = (),
+    search: str = "",
 ) -> list[ArtifactRecord]:
     """Both sources merged, newest first, capped at `limit`: only what
-    `viewer` may see, without the runs of `exclude_workflows`."""
+    `viewer` may see, without the runs of `exclude_workflows`, and with
+    `search` only those holding every word of it (title, source or text)."""
     initialize_alerts_db()
     initialize_runs_db()
     items = [
@@ -363,6 +365,7 @@ def list_artifacts(
             archived=archived,
             owner_person_id=viewer.person_id,
             include_unowned=viewer.is_principal,
+            search=search,
         )
     ]
     items.extend(
@@ -372,6 +375,7 @@ def list_artifacts(
             archived=archived,
             visible_to=viewer.person_id,
             exclude_workflows=exclude_workflows,
+            search=search,
         )
     )
     items.sort(key=lambda a: a.created_at, reverse=True)
