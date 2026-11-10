@@ -5493,10 +5493,12 @@ chat:
     not answer (memory/knowledge_gaps.py): a not_known question backed by
     half its content words in their message, whose reply's saved sources name
     no company document, from a turn not private to its person, goes on
-    knowledge_gaps; a matching question adds to one line's count; a covered
-    answer, a document added, a taught answer (a standing fact) or a dismiss
-    closes it. The principal sees the open lines from chats they may open
-    (GET /knowledge/questions) at the top of Company documents, and the
+    knowledge_gaps; a matching question is kept as another ask on one line
+    (knowledge_gap_asks); a covered answer that drew on a company document,
+    a document added, a taught answer (a standing fact) or a dismiss closes
+    it. The principal sees each open line built only from its asks in chats
+    they may open (GET /knowledge/questions), so a teammate's own chat never
+    shows through a shared line, at the top of Company documents, and the
     sidebar's Knowledge number counts them. Email and meetings are not read.
     The grader reads the signals the product recorded about each turn:
     thumbs up/down and the note (chat_messages.feedback, joined by the saved

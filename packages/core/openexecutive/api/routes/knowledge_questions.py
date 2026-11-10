@@ -7,9 +7,12 @@ tell the answer (kept as a standing fact, as on the Memory page), or dismiss
 it. Everyone else gets an empty list: the documents are the principal's to
 manage.
 
-Which lines the principal sees: those with at least one ask from a chat they
-may open, the Reflection screen's rule (``api.routes.reflection._Readable``),
-so a teammate's own chat with the Executive stays theirs.
+Which lines the principal sees, and what of them: each asking is kept on its
+own, and a line shows only through the asks from chats they may open, the
+Reflection screen's rule (``api.routes.reflection._Readable``): its wording
+(the first such ask), who asked last, where, when and how many times. So a
+teammate's own chat with the Executive stays theirs even when its question
+matches one the principal can see.
 
 Routes:
   GET  /knowledge/questions                 — ``{questions, count}``
@@ -30,7 +33,9 @@ from openexecutive.memory import knowledge_gaps
 router = APIRouter(prefix="/knowledge/questions")
 logger = logging.getLogger(__name__)
 
-ANSWER_MAX = 1000
+# A standing fact's statement holds this much (memory.facts.STATEMENT_MAX):
+# a longer answer is refused rather than cut.
+ANSWER_MAX = 500
 
 
 class QuestionOut(BaseModel):
@@ -64,22 +69,7 @@ def _principal(request: Request) -> Any | None:
     return person if person.is_principal and person.id is not None else None
 
 
-def _visible(request: Request, person_id: int) -> list[dict[str, Any]]:
-    from openexecutive.api.routes.reflection import _Readable
-
-    readable = _Readable(request, person_id)
-    out: list[dict[str, Any]] = []
-    for line in knowledge_gaps.list_open():
-        if person_id in line["askers"] or any(
-            readable({"person_id": -1, "session_id": s}) for s in line["sessions"]
-        ):
-            out.append(line)
-    return out
-
-
-def _name(person_id: int | None, principal_id: int) -> str:
-    if person_id is None:
-        return "Someone"
+def _name(person_id: int, principal_id: int) -> str:
     if person_id == principal_id:
         return "You"
     from openexecutive.api.routes.reflection import _name as person_name
@@ -87,31 +77,52 @@ def _name(person_id: int | None, principal_id: int) -> str:
     return person_name(person_id) or "Someone"
 
 
+def _shown(request: Request, principal_id: int) -> list[tuple[dict[str, Any], QuestionOut]]:
+    """Each open line the principal may see, with what they see of it: built
+    only from the asks in chats they may open (their own, or one
+    ``_Readable`` lets them read). A line with none isn't shown, so a
+    teammate's own chat never reaches them through a line it shares."""
+    from openexecutive.api.routes.reflection import _Readable
+
+    readable = _Readable(request, principal_id)
+    out: list[tuple[dict[str, Any], QuestionOut]] = []
+    for line in knowledge_gaps.list_open():
+        asks = [
+            a for a in line["asks"]
+            if a["person_id"] == principal_id
+            or readable({"person_id": -1, "session_id": a["session_id"]})
+        ]
+        if not asks:
+            continue
+        first, last = asks[0], asks[-1]
+        out.append((line, QuestionOut(
+            id=line["id"], question=first["question"],
+            asked_by=_name(last["person_id"], principal_id), place=last["place"],
+            last_asked_at=last["asked_at"], times=len(asks),
+        )))
+    out.sort(key=lambda pair: pair[1].last_asked_at, reverse=True)
+    return out
+
+
 @router.get("", response_model=QuestionsOut)
 def list_questions(request: Request) -> QuestionsOut:
     principal = _principal(request)
     if principal is None:
         return QuestionsOut(questions=[], count=0)
-    lines = _visible(request, int(principal.id))
-    questions = [
-        QuestionOut(
-            id=line["id"], question=line["question"],
-            asked_by=_name(line["person_id"], int(principal.id)),
-            place=line["place"], last_asked_at=line["last_at"], times=line["times"],
-        )
-        for line in lines
-    ]
+    questions = [shown for _, shown in _shown(request, int(principal.id))]
     return QuestionsOut(questions=questions, count=len(questions))
 
 
-def _open_line(request: Request, line_id: int) -> tuple[Any, dict[str, Any]]:
+def _open_line(request: Request, line_id: int) -> QuestionOut:
+    """The line as the principal sees it; 403 for anyone else, 404 when it
+    isn't on their list."""
     principal = _principal(request)
     if principal is None:
         raise HTTPException(status_code=403, detail="Only the owner can manage these questions")
-    line = next((x for x in _visible(request, int(principal.id)) if x["id"] == line_id), None)
-    if line is None:
+    found = next((shown for line, shown in _shown(request, int(principal.id)) if line["id"] == line_id), None)
+    if found is None:
         raise HTTPException(status_code=404, detail="That question is no longer on the list")
-    return principal, line
+    return found
 
 
 def _audit(summary: str, details: dict[str, Any]) -> None:
@@ -129,19 +140,19 @@ def answer_question(line_id: int, body: AnswerIn, request: Request) -> Questions
     the line off the list."""
     from openexecutive.memory.facts import record_fact
 
-    _, line = _open_line(request, line_id)
+    line = _open_line(request, line_id)
     answer = " ".join(body.answer.split())
     if not answer:
         raise HTTPException(status_code=422, detail="Say what the answer is")
     try:
         fact, _ = record_fact(
-            subject=line["question"], statement=answer, source_quote=answer,
+            subject=line.question, statement=answer, source_quote=answer,
             source_channel="web", recorded_by_role="principal",
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     knowledge_gaps.close(line_id, "taught")
-    _audit(f"Answered a question it couldn't answer: {line['question'][:80]}",
+    _audit(f"Answered a question it couldn't answer: {line.question[:80]}",
            {"op": "answer", "line_id": line_id, "fact_id": fact.id})
     return list_questions(request)
 
@@ -149,9 +160,9 @@ def answer_question(line_id: int, body: AnswerIn, request: Request) -> Questions
 @router.post("/{line_id}/document", response_model=QuestionsOut)
 def document_added(line_id: int, request: Request) -> QuestionsOut:
     """A document was added for the question: take the line off the list."""
-    _, line = _open_line(request, line_id)
+    line = _open_line(request, line_id)
     knowledge_gaps.close(line_id, "document")
-    _audit(f"Added a document for a question: {line['question'][:80]}",
+    _audit(f"Added a document for a question: {line.question[:80]}",
            {"op": "document", "line_id": line_id})
     return list_questions(request)
 
@@ -159,7 +170,7 @@ def document_added(line_id: int, request: Request) -> QuestionsOut:
 @router.post("/{line_id}/dismiss", response_model=QuestionsOut)
 def dismiss_question(line_id: int, request: Request) -> QuestionsOut:
     """Take the line off the list; it doesn't come back for whoever asked it."""
-    _, line = _open_line(request, line_id)
+    line = _open_line(request, line_id)
     knowledge_gaps.close(line_id, "dismissed")
-    _audit(f"Dismissed a question: {line['question'][:80]}", {"op": "dismiss", "line_id": line_id})
+    _audit(f"Dismissed a question: {line.question[:80]}", {"op": "dismiss", "line_id": line_id})
     return list_questions(request)

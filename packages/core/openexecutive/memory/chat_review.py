@@ -1283,7 +1283,7 @@ def _note_questions(
 ) -> None:
     """Keep the questions about the company it couldn't answer
     (``memory.knowledge_gaps``), and take off the list the ones a reply here
-    knew. A turn kept private to its person (it read their mail) is left out
+    answered from a company document. A turn kept private to its person (it read their mail) is left out
     either way. Never raises."""
     from openexecutive.memory import knowledge_gaps
 
@@ -1299,9 +1299,13 @@ def _note_questions(
             if rid not in found:
                 continue
             question, answer = found[rid]
+            documented = knowledge_gaps.has_company_source(sources.get(rid))
             if answer == "covered":
-                knowledge_gaps.note_answered(question, db_path=db_path)
-            elif not knowledge_gaps.has_company_source(sources.get(rid)):
+                # Only an answer a company document backed closes a line: the
+                # grader's word alone (a reply that echoed the asker) doesn't.
+                if documented:
+                    knowledge_gaps.note_answered(question, db_path=db_path)
+            elif not documented:
                 try:
                     surface = json.loads(row["surface"] or "{}")
                 except ValueError:

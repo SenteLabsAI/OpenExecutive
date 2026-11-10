@@ -75,8 +75,8 @@ def test_the_same_question_asked_again_adds_to_one_line(db: Path) -> None:
     assert first == again and other != first
     lines = kg.list_open(db_path=db)
     refund = next(x for x in lines if x["id"] == first)
-    assert refund["times"] == 2 and refund["askers"] == [1, 2] and refund["sessions"] == ["s-1", "s-2"]
-    assert refund["question"] == REFUND and refund["person_id"] == 2
+    assert [(a["person_id"], a["session_id"]) for a in refund["asks"]] == [(1, "s-1"), (2, "s-2")]
+    assert refund["asks"][0]["question"] == REFUND
 
 
 def test_matching_is_by_content_words() -> None:
@@ -102,7 +102,7 @@ def test_a_line_leaves_and_a_dismissed_one_stays_gone_for_who_asked(db: Path) ->
     # Someone new asking it brings it back.
     assert kg.note_unanswered(REFUND, person_id=2, session_id="s-4", db_path=db) == line
     [back] = kg.list_open(db_path=db)
-    assert back["times"] == 1
+    assert [a["person_id"] for a in back["asks"]] == [2]
     assert kg.close(line, "taught", db_path=db)
     assert not kg.close(line, "document", db_path=db)
 
@@ -119,7 +119,7 @@ def test_deleting_the_chat_drops_its_asks(db: Path) -> None:
     kg.note_unanswered("Who signs off on vendor contracts?", person_id=1, session_id="s-2", db_path=db)
     cr.forget_session("s-2", db_path=db)
     [left] = kg.list_open(db_path=db)
-    assert left["question"] == REFUND and left["sessions"] == ["s-1"]
+    assert [(a["question"], a["session_id"]) for a in left["asks"]] == [(REFUND, "s-1")]
 
 
 def test_company_sources_are_told_from_playbooks_and_the_web() -> None:
@@ -177,7 +177,8 @@ def test_a_company_question_no_document_covered_lands_on_the_list(
         {"turn": 2, "verdict": "fine"},
     ], monkeypatch)
     [line] = kg.list_open(db_path=db)
-    assert line["question"] == REFUND and line["askers"] == [pid] and line["place"] == "chat"
+    [ask] = line["asks"]
+    assert ask["question"] == REFUND and ask["person_id"] == pid and ask["place"] == "chat"
 
 
 def test_a_question_a_document_came_back_for_is_not_listed(
@@ -200,15 +201,28 @@ def test_a_mail_private_chat_is_never_listed(
     assert kg.list_open(db_path=db) == []
 
 
-def test_a_later_turn_that_knew_it_closes_the_line(
+def test_a_later_answer_from_a_document_closes_the_line(
     db: Path, roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pid = roster.principal.id
     kg.note_unanswered(REFUND, person_id=pid, session_id="s-0", db_path=db)
-    cr.record_turn(REFUND, "Annual plans are refundable within 30 days.", session=_web(pid),
-                   person_id=pid, calls=[], now=NOW)
+    reply = "Annual plans are refundable within 30 days."
+    cr.record_turn(REFUND, reply, session=_web(pid), person_id=pid, calls=[], now=NOW)
+    _saved_reply(db, reply, {"sources": [{"kind": "company", "title": "Pricing", "url": None}], "unavailable": []})
     _review(db, [{"turn": 1, "verdict": "fine", "question": REFUND, "answer": "covered"}], monkeypatch)
     assert kg.list_open(db_path=db) == []
+
+
+def test_a_covered_answer_with_no_document_leaves_the_line(
+    db: Path, roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reply that only echoed the asker isn't an answer the list trusts."""
+    tid = roster.teammate.id
+    kg.note_unanswered(REFUND, person_id=roster.principal.id, session_id="s-0", db_path=db)
+    cr.record_turn(REFUND, "Yes, annual plans are never refunded.", session=_web(tid),
+                   person_id=tid, calls=[], now=NOW)
+    _review(db, [{"turn": 1, "verdict": "fine", "question": REFUND, "answer": "covered"}], monkeypatch)
+    assert len(kg.list_open(db_path=db)) == 1
 
 
 def test_the_grader_is_asked_for_the_question_and_document_cause() -> None:
@@ -248,6 +262,30 @@ def test_a_teammates_own_chat_stays_off_the_owners_list(client: TestClient, rost
     assert client.post(f"/knowledge/questions/{line}/dismiss", headers=OWNER).status_code == 404
 
 
+def test_a_shared_line_shows_only_the_asks_the_owner_may_read(client: TestClient, roster: SimpleNamespace) -> None:
+    """A teammate's own chat matched to the owner's question adds nothing the
+    owner can see: not its wording, who asked, where, when, or the count."""
+    session_store.create_session("web-ben", "Pay", NOW.isoformat(), roster.teammate.id)
+    kg.note_unanswered("What is the severance policy if I resign before the March layoffs?",
+                       person_id=roster.teammate.id, session_id="web-ben", asked_at=NOW)
+    assert client.get("/knowledge/questions", headers=OWNER).json()["count"] == 0
+    kg.note_unanswered("What is our severance policy on layoffs?", person_id=roster.principal.id,
+                       session_id="s-1", asked_at=NOW - timedelta(hours=1))
+    kg.note_unanswered("What is our severance policy on layoffs?", person_id=roster.teammate.id,
+                       session_id="web-ben", asked_at=NOW + timedelta(hours=1), place="Slack")
+    [shown] = client.get("/knowledge/questions", headers=OWNER).json()["questions"]
+    assert shown["question"] == "What is our severance policy on layoffs?"
+    assert (shown["asked_by"], shown["place"], shown["times"]) == ("You", "chat", 1)
+    assert shown["last_asked_at"] == (NOW - timedelta(hours=1)).isoformat()
+
+
+def test_an_answer_too_long_for_a_fact_is_refused(client: TestClient, roster: SimpleNamespace) -> None:
+    line = kg.note_unanswered(REFUND, person_id=roster.principal.id, session_id="s-1")
+    resp = client.post(f"/knowledge/questions/{line}/answer", headers=OWNER, json={"answer": "x " * 300})
+    assert resp.status_code == 422
+    assert facts.list_facts() == [] and client.get("/knowledge/questions", headers=OWNER).json()["count"] == 1
+
+
 def test_telling_the_answer_keeps_a_fact_and_closes_the_line(client: TestClient, roster: SimpleNamespace) -> None:
     line = kg.note_unanswered(REFUND, person_id=roster.principal.id, session_id="s-1")
     resp = client.post(f"/knowledge/questions/{line}/answer", headers=OWNER,
@@ -266,3 +304,9 @@ def test_a_document_or_dismiss_closes_it_and_only_the_owner_may(client: TestClie
     assert client.post(f"/knowledge/questions/{line}/document", headers=OWNER).json()["count"] == 1
     assert client.post(f"/knowledge/questions/{other}/dismiss", headers=OWNER).json()["count"] == 0
     assert kg.get(line)["status"] == "resolved" and kg.get(other)["status"] == "dismissed"
+
+
+def test_a_question_is_cut_to_what_a_fact_subject_holds(db: Path) -> None:
+    long = "What is our refund policy for annual plans " + "and monthly plans " * 10 + "?"
+    line = kg.note_unanswered(long, person_id=1, session_id="s-1", db_path=db)
+    assert line is not None and len(kg.get(line, db_path=db)["asks"][0]["question"]) == facts.SUBJECT_MAX

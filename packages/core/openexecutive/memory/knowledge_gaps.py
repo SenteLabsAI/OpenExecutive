@@ -25,15 +25,20 @@ also when a later turn asks the same question and the reply knew it. A
 dismissed question doesn't come back for anyone who had already asked it;
 someone new asking it opens the line again.
 
-**Who sees it.** The principal, on the Knowledge page, and only the lines
-with at least one ask from a chat they may open (the Reflection screen's
-rule, ``api.routes.reflection``). Deleting a chat drops its asks
-(``forget_session``); a line with no asks left goes.
+**Who sees it.** The principal, on the Knowledge page. Each asking is kept
+on its own (who, which chat, their wording, where, when), and what the
+principal sees of a line is built only from the asks in chats they may open
+(the Reflection screen's rule, ``api.routes.reflection``): the wording, who
+asked, where, when and the count. A line with no such ask isn't shown, so
+merging never carries a teammate's own chat into the principal's view.
+Deleting a chat drops its asks (``forget_session``); a line with no asks
+left goes.
 
-Table (in the episodic DB, created on first use):
-  knowledge_gaps  id, question, match_key, status (open/resolved/dismissed),
-                  times, first_at, last_at, person_id, place, askers,
-                  sessions, dismissed_for, closed_at, closed_how
+Tables (in the episodic DB, created on first use):
+  knowledge_gaps      id, match_key, status (open/resolved/dismissed),
+                      dismissed_for, closed_at, closed_how
+  knowledge_gap_asks  id, line_id, person_id, session_id, question, place,
+                      asked_at
 """
 from __future__ import annotations
 
@@ -48,9 +53,11 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 TABLE = "knowledge_gaps"
-QUESTION_MAX = 200
+ASKS = "knowledge_gap_asks"
+# A standing fact's subject holds this much (memory.facts.SUBJECT_MAX), and
+# "Tell me the answer" keeps the question as the subject.
+QUESTION_MAX = 120
 KEEP_DAYS = 90
-SESSIONS_MAX = 20
 # Two questions are the same line when their content words overlap this much
 # (Jaccard), or when a short one's words all sit inside a longer one's.
 _SAME = 0.6
@@ -83,25 +90,30 @@ def _db(db_path: Path | None) -> Path:
 def _connect(db_path: Path | None) -> sqlite3.Connection:
     conn = sqlite3.connect(str(_db(db_path)))
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     conn.execute(
         f"CREATE TABLE IF NOT EXISTS {TABLE} ("  # noqa: S608 — constant table name
         "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "  question TEXT NOT NULL,"
         "  match_key TEXT NOT NULL,"
         "  status TEXT NOT NULL DEFAULT 'open',"
-        "  times INTEGER NOT NULL DEFAULT 1,"
-        "  first_at TEXT NOT NULL,"
-        "  last_at TEXT NOT NULL,"
-        "  person_id INTEGER,"
-        "  place TEXT NOT NULL DEFAULT 'chat',"
-        "  askers TEXT NOT NULL DEFAULT '[]',"
-        "  sessions TEXT NOT NULL DEFAULT '[]',"
         "  dismissed_for TEXT NOT NULL DEFAULT '[]',"
         "  closed_at TEXT,"
         "  closed_how TEXT"
         ")"
     )
-    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{TABLE}_status ON {TABLE} (status, last_at)")
+    conn.execute(
+        f"CREATE TABLE IF NOT EXISTS {ASKS} ("  # noqa: S608 — constant table name
+        "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        f"  line_id INTEGER NOT NULL REFERENCES {TABLE}(id) ON DELETE CASCADE,"
+        "  person_id INTEGER NOT NULL,"
+        "  session_id TEXT NOT NULL,"
+        "  question TEXT NOT NULL,"
+        "  place TEXT NOT NULL DEFAULT 'chat',"
+        "  asked_at TEXT NOT NULL"
+        ")"
+    )
+    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{ASKS}_line ON {ASKS} (line_id, asked_at)")
+    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{ASKS}_session ON {ASKS} (session_id)")
     return conn
 
 
@@ -181,9 +193,14 @@ def _load(text: Any) -> list[Any]:
 
 
 def _find(conn: sqlite3.Connection, question: str) -> sqlite3.Row | None:
-    """The newest line asking the same question, whatever its state."""
-    for row in conn.execute(f"SELECT * FROM {TABLE} ORDER BY last_at DESC, id DESC"):  # noqa: S608
-        if same_question(str(row["question"]), question):
+    """The line one of whose asks asks the same question, whatever its state;
+    the most recently asked first."""
+    rows = conn.execute(
+        f"SELECT l.*, a.question AS asked FROM {TABLE} l JOIN {ASKS} a ON a.line_id = l.id "  # noqa: S608
+        "ORDER BY a.asked_at DESC, a.id DESC"
+    ).fetchall()
+    for row in rows:
+        if same_question(str(row["asked"]), question):
             return row
     return None
 
@@ -197,8 +214,8 @@ def note_unanswered(
     asked_at: datetime | None = None,
     db_path: Path | None = None,
 ) -> int | None:
-    """Put a question it couldn't answer on the list, or add to the count of
-    the line that already asks it. Returns the line's id, or None when it was
+    """Keep one asking of a question it couldn't answer, on the line that
+    already asks it or a new one. Returns the line's id, or None when it was
     left off (dismissed for this person, or too short to match). Never raises."""
     try:
         text = " ".join(str(question or "").split())[:QUESTION_MAX]
@@ -210,30 +227,25 @@ def note_unanswered(
         try:
             row = _find(conn, text)
             if row is None:
-                cur = conn.execute(
-                    f"INSERT INTO {TABLE} (question, match_key, first_at, last_at, person_id, "  # noqa: S608
-                    "place, askers, sessions) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (text, key, when, when, int(person_id), place,
-                     json.dumps([int(person_id)]), json.dumps([str(session_id)])),
-                )
+                cur = conn.execute(f"INSERT INTO {TABLE} (match_key) VALUES (?)", (key,))  # noqa: S608
                 line_id = int(cur.lastrowid or 0)
             else:
                 line_id = int(row["id"])
                 if row["status"] == "dismissed" and int(person_id) in _load(row["dismissed_for"]):
                     return None
-                askers = _load(row["askers"])
-                if int(person_id) not in askers:
-                    askers.append(int(person_id))
-                sessions = [s for s in _load(row["sessions"]) if s != str(session_id)]
-                sessions = (sessions + [str(session_id)])[-SESSIONS_MAX:]
-                reopened = row["status"] != "open"
-                conn.execute(
-                    f"UPDATE {TABLE} SET status = 'open', times = ?, last_at = ?, person_id = ?, "  # noqa: S608
-                    "place = ?, askers = ?, sessions = ?, closed_at = NULL, closed_how = NULL "
-                    "WHERE id = ?",
-                    (1 if reopened else int(row["times"]) + 1, when, int(person_id), place,
-                     json.dumps(askers), json.dumps(sessions), line_id),
-                )
+                if row["status"] != "open":
+                    # Back on the list: counted afresh from this asking.
+                    conn.execute(f"DELETE FROM {ASKS} WHERE line_id = ?", (line_id,))  # noqa: S608
+                    conn.execute(
+                        f"UPDATE {TABLE} SET status = 'open', closed_at = NULL, closed_how = NULL "  # noqa: S608
+                        "WHERE id = ?",
+                        (line_id,),
+                    )
+            conn.execute(
+                f"INSERT INTO {ASKS} (line_id, person_id, session_id, question, place, asked_at) "  # noqa: S608
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (line_id, int(person_id), str(session_id), text, place, when),
+            )
             _prune(conn)
             conn.commit()
             return line_id
@@ -245,22 +257,25 @@ def note_unanswered(
 
 
 def note_answered(question: str, *, db_path: Path | None = None) -> int:
-    """A later turn asked the same thing and the reply knew it: the open line
-    for it leaves the list. Returns how many lines closed. Never raises."""
+    """A later turn asked the same thing and its reply drew on a company
+    document: the open line for it leaves the list. Returns how many lines
+    closed. Never raises."""
     try:
         conn = _connect(db_path)
         try:
-            closed = 0
-            for row in conn.execute(f"SELECT id, question FROM {TABLE} WHERE status = 'open'").fetchall():  # noqa: S608
-                if same_question(str(row["question"]), question):
-                    conn.execute(
-                        f"UPDATE {TABLE} SET status = 'resolved', closed_at = ?, closed_how = 'answered' "  # noqa: S608
-                        "WHERE id = ?",
-                        (_now().isoformat(), int(row["id"])),
-                    )
-                    closed += 1
+            rows = conn.execute(
+                f"SELECT DISTINCT l.id, a.question FROM {TABLE} l JOIN {ASKS} a ON a.line_id = l.id "  # noqa: S608
+                "WHERE l.status = 'open'"
+            ).fetchall()
+            ids = {int(r["id"]) for r in rows if same_question(str(r["question"]), question)}
+            for line_id in ids:
+                conn.execute(
+                    f"UPDATE {TABLE} SET status = 'resolved', closed_at = ?, closed_how = 'answered' "  # noqa: S608
+                    "WHERE id = ?",
+                    (_now().isoformat(), line_id),
+                )
             conn.commit()
-            return closed
+            return len(ids)
         finally:
             conn.close()
     except Exception:
@@ -270,43 +285,48 @@ def note_answered(question: str, *, db_path: Path | None = None) -> int:
 
 def _prune(conn: sqlite3.Connection) -> None:
     cutoff = (_now() - timedelta(days=KEEP_DAYS)).isoformat()
-    conn.execute(f"DELETE FROM {TABLE} WHERE last_at < ?", (cutoff,))  # noqa: S608
+    conn.execute(f"DELETE FROM {ASKS} WHERE asked_at < ?", (cutoff,))  # noqa: S608
+    conn.execute(f"DELETE FROM {TABLE} WHERE id NOT IN (SELECT line_id FROM {ASKS})")  # noqa: S608
 
 
-def _out(row: sqlite3.Row) -> dict[str, Any]:
-    return {
-        "id": int(row["id"]),
-        "question": str(row["question"]),
-        "status": str(row["status"]),
-        "times": int(row["times"]),
-        "first_at": str(row["first_at"]),
-        "last_at": str(row["last_at"]),
-        "person_id": int(row["person_id"]) if row["person_id"] is not None else None,
-        "place": str(row["place"] or "chat"),
-        "askers": [int(a) for a in _load(row["askers"])],
-        "sessions": [str(s) for s in _load(row["sessions"])],
-    }
+def _lines(conn: sqlite3.Connection, where: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
+    lines = conn.execute(f"SELECT * FROM {TABLE} WHERE {where} ORDER BY id", params).fetchall()  # noqa: S608
+    out: list[dict[str, Any]] = []
+    for line in lines:
+        asks = conn.execute(
+            f"SELECT * FROM {ASKS} WHERE line_id = ? ORDER BY asked_at, id",  # noqa: S608
+            (int(line["id"]),),
+        ).fetchall()
+        out.append({
+            "id": int(line["id"]),
+            "status": str(line["status"]),
+            "asks": [
+                {"person_id": int(a["person_id"]), "session_id": str(a["session_id"]),
+                 "question": str(a["question"]), "place": str(a["place"] or "chat"),
+                 "asked_at": str(a["asked_at"])}
+                for a in asks
+            ],
+        })
+    return out
 
 
 def list_open(*, db_path: Path | None = None) -> list[dict[str, Any]]:
-    """The open lines, the most recently asked first."""
+    """The open lines, each with its asks, oldest ask first. Who may see
+    which ask is the caller's to decide (``api.routes.knowledge_questions``)."""
     conn = _connect(db_path)
     try:
-        rows = conn.execute(
-            f"SELECT * FROM {TABLE} WHERE status = 'open' ORDER BY last_at DESC, id DESC"  # noqa: S608
-        ).fetchall()
+        return _lines(conn, "status = 'open'", ())
     finally:
         conn.close()
-    return [_out(r) for r in rows]
 
 
 def get(line_id: int, *, db_path: Path | None = None) -> dict[str, Any] | None:
     conn = _connect(db_path)
     try:
-        row = conn.execute(f"SELECT * FROM {TABLE} WHERE id = ?", (int(line_id),)).fetchone()  # noqa: S608
+        found = _lines(conn, "id = ?", (int(line_id),))
     finally:
         conn.close()
-    return _out(row) if row is not None else None
+    return found[0] if found else None
 
 
 def close(line_id: int, how: str, *, db_path: Path | None = None) -> bool:
@@ -318,16 +338,20 @@ def close(line_id: int, how: str, *, db_path: Path | None = None) -> bool:
     conn = _connect(db_path)
     try:
         row = conn.execute(
-            f"SELECT askers FROM {TABLE} WHERE id = ? AND status = 'open'", (int(line_id),)  # noqa: S608
+            f"SELECT id FROM {TABLE} WHERE id = ? AND status = 'open'", (int(line_id),)  # noqa: S608
         ).fetchone()
         if row is None:
             return False
-        status = "dismissed" if how == "dismissed" else "resolved"
-        dismissed_for = row["askers"] if how == "dismissed" else "[]"
+        askers = sorted({
+            int(r[0]) for r in conn.execute(
+                f"SELECT person_id FROM {ASKS} WHERE line_id = ?", (int(line_id),)  # noqa: S608
+            )
+        }) if how == "dismissed" else []
         conn.execute(
             f"UPDATE {TABLE} SET status = ?, closed_at = ?, closed_how = ?, dismissed_for = ? "  # noqa: S608
             "WHERE id = ?",
-            (status, _now().isoformat(), how, dismissed_for, int(line_id)),
+            ("dismissed" if how == "dismissed" else "resolved", _now().isoformat(), how,
+             json.dumps(askers), int(line_id)),
         )
         conn.commit()
         return True
@@ -336,8 +360,9 @@ def close(line_id: int, how: str, *, db_path: Path | None = None) -> bool:
 
 
 def forget_session(session_id: str, *, db_path: Path | None = None) -> None:
-    """Drop one chat's asks (its chat was deleted). A line with no asks left
-    goes. A DB without the table is a no-op."""
+    """Drop one chat's asks (its chat was deleted): their wording, who, where
+    and when. A line with no asks left goes. A DB without the tables is a
+    no-op."""
     from openexecutive.memory.episodic import _resolve_db_path
 
     if not _resolve_db_path(db_path).exists():
@@ -347,16 +372,8 @@ def forget_session(session_id: str, *, db_path: Path | None = None) -> None:
     except sqlite3.Error:
         return
     try:
-        for row in conn.execute(f"SELECT id, sessions FROM {TABLE}").fetchall():  # noqa: S608
-            sessions = [str(s) for s in _load(row["sessions"])]
-            if str(session_id) not in sessions:
-                continue
-            left = [s for s in sessions if s != str(session_id)]
-            if left:
-                conn.execute(f"UPDATE {TABLE} SET sessions = ? WHERE id = ?",  # noqa: S608
-                             (json.dumps(left), int(row["id"])))
-            else:
-                conn.execute(f"DELETE FROM {TABLE} WHERE id = ?", (int(row["id"]),))  # noqa: S608
+        conn.execute(f"DELETE FROM {ASKS} WHERE session_id = ?", (str(session_id),))  # noqa: S608
+        conn.execute(f"DELETE FROM {TABLE} WHERE id NOT IN (SELECT line_id FROM {ASKS})")  # noqa: S608
         conn.commit()
     except sqlite3.Error:
         logger.warning("knowledge_gaps: couldn't forget a chat", exc_info=True)

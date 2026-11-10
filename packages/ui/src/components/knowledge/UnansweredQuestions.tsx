@@ -125,7 +125,7 @@ function QuestionRow({
             value={answer}
             onChange={(e) => setAnswer(e.target.value)}
             rows={3}
-            maxLength={1000}
+            maxLength={500}
             autoFocus
             placeholder="The answer, as you would tell a colleague"
             className="w-full rounded-xl border border-line bg-surface px-3 py-2 text-[15px] text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent/40"
