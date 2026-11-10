@@ -5483,11 +5483,23 @@ chat:
     Before the fixes, the same review grades every unreviewed turn with one
     forced grade_turns call (actor chat_review_grade): fine, miss (kind
     company = a fact or preference it lacked, product = something it could
-    not do, plus a finer cause: term, fact, preference, specialist or do_it
-    for company, tool or cant for product, stored empty when missing or
+    not do, plus a finer cause: term, fact, preference, specialist, do_it
+    or document for company, tool or cant for product, stored empty when missing or
     from the other kind) or unclear, with what the person wanted instead and a 4+ word
     quote that must appear in that or a later turn, or a signal other than a
     thumbs up on the turn, else the grade is unclear.
+    The same call names, per turn, a question about the person's own company
+    and whether the reply knew it (covered / not_known). Questions it could
+    not answer (memory/knowledge_gaps.py): a not_known question backed by
+    half its content words in their message, whose reply's saved sources name
+    no company document, from a turn not private to its person, goes on
+    knowledge_gaps; a matching question from the same person is kept as
+    another ask on their line (knowledge_gap_asks); a covered answer to that person that drew on a company document,
+    a document added, a taught answer (a standing fact) or a dismiss closes
+    it. The principal sees each open line built only from its asks in chats
+    they may open (GET /knowledge/questions), so a teammate's own chat never
+    shows through a shared line, at the top of Company documents, and the
+    sidebar's Knowledge number counts them. Email and meetings are not read.
     The grader reads the signals the product recorded about each turn:
     thumbs up/down and the note (chat_messages.feedback, joined by the saved
     reply's first 120 characters, or typed or said as the whole next message
@@ -10122,7 +10134,14 @@ integrations:
     persists an `outbound_context` row: the recipient (channel +
     channel_ref), the full outbound text, the originating session id,
     and the platform message id (best-effort). Scheduler/cadence sends
-    have no `current_session`, so they intentionally write no linkage.
+    have no `current_session`, so they intentionally write no linkage,
+    with one exception: a brief, digest or other scheduler message sent by
+    email (`scheduler.runner._send_on_plan`) records a row for the
+    recipient's own lowercased address once sent
+    (`_remember_for_email_reply`, no originating session, no Attunement
+    outcome, `max_chars` 6000 so a brief keeps its items), because an
+    email reply starts a turn of its own. A chat app's reply already has
+    the message in its conversation (`record_delivery`).
     Email is covered too, but recorded one layer deeper: there is no
     `send_email` tool — the Executive emails via the raw MCP tool
     `google_workspace__send_gmail_message`, so the linkage is recorded

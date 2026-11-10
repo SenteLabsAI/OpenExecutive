@@ -9,6 +9,8 @@ import {
   getDocument,
   getSyncedDocument,
   listDocuments,
+  listUnansweredQuestions,
+  markQuestionDocumented,
   listSyncSources,
   listSyncedDocuments,
   syncSourceNow,
@@ -17,6 +19,7 @@ import {
   type SyncedDoc,
   type SyncedSourceId,
   type CompanyDoc,
+  type UnansweredQuestion,
 } from "@/lib/api";
 import {
   SOURCE_LABELS,
@@ -37,6 +40,7 @@ import Button, { buttonClass } from "@/components/ui/Button";
 import OverflowMenu, { type OverflowItem } from "@/components/ui/OverflowMenu";
 import SidePanel from "@/components/ui/SidePanel";
 import { Spinner } from "@/components/ui/Spinner";
+import UnansweredQuestions from "./UnansweredQuestions";
 
 interface CompanyPanelProps {
   /** Reports how many documents are listed, for the tab's count. */
@@ -84,6 +88,11 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Set before the first await, so two drops in one frame can't both start.
   const uploadingRef = useRef(false);
+  // Questions it could not answer, and the one whose document is being
+  // added through the file picker (it leaves the list once the upload works).
+  const [questions, setQuestions] = useState<UnansweredQuestion[]>([]);
+  const [addingFor, setAddingFor] = useState<number | null>(null);
+  const addingForRef = useRef<number | null>(null);
 
   const loadSynced = useCallback(async (ids: SyncedSourceId[]) => {
     const lists = await Promise.all(
@@ -114,6 +123,17 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
   useEffect(() => {
     loadAll();
   }, [loadAll]);
+
+  useEffect(() => {
+    listUnansweredQuestions()
+      .then((page) => setQuestions(page.questions))
+      .catch(() => {});
+  }, []);
+
+  function addDocumentFor(id: number) {
+    addingForRef.current = id;
+    fileInputRef.current?.click();
+  }
 
   const rows = useMemo(
     () => mergeDocs(uploads, synced.drive, synced.notion, synced.onedrive),
@@ -152,6 +172,9 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
     uploadingRef.current = true;
     setError(null);
     const failed: string[] = [];
+    const forQuestion = addingForRef.current;
+    addingForRef.current = null;
+    setAddingFor(forQuestion);
     for (const [i, file] of files.entries()) {
       setUploadProgress(
         files.length > 1 ? `Adding ${i + 1} of ${files.length}: ${file.name}…` : `Adding ${file.name}…`
@@ -166,6 +189,14 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
     uploadingRef.current = false;
     if (fileInputRef.current) fileInputRef.current.value = "";
     if (failed.length) setError(failed.join(" · "));
+    if (forQuestion !== null && failed.length < files.length) {
+      try {
+        setQuestions((await markQuestionDocumented(forQuestion)).questions);
+      } catch {
+        // The document is in; the question stays listed and can be dismissed.
+      }
+    }
+    setAddingFor(null);
     try {
       setUploads(await listDocuments());
     } catch {
@@ -241,6 +272,7 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
           if (!dropLandsOnPanel(e.currentTarget, e.target)) return;
           e.preventDefault();
           setDragOver(false);
+          addingForRef.current = null;
           handleFiles(Array.from(e.dataTransfer.files));
         },
       };
@@ -249,6 +281,12 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
   // isn't uploaded.
   return (
     <>
+    <UnansweredQuestions
+      questions={questions}
+      onChange={(page) => setQuestions(page.questions)}
+      onAddDocument={addDocumentFor}
+      addingFor={addingFor}
+    />
     <div
       {...dropHandlers}
       className={`space-y-4 max-w-5xl rounded-2xl transition-shadow ${
@@ -264,6 +302,11 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
         </h2>
         <div className="flex flex-wrap items-center gap-3">
           <label
+              // Adding documents from here is not for a listed question.
+              // (A click forwarded to the input bubbles here too: keep that one.)
+              onClick={(e) => {
+                if (e.target !== fileInputRef.current) addingForRef.current = null;
+              }}
               className={buttonClass(
                 "primary",
                 "md",

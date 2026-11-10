@@ -1289,21 +1289,24 @@ def insert_outbound_context(
     originating_session_id: str | None = None,
     recipient_person_id: int | None = None,
     outbound_message_id: str | None = None,
+    max_chars: int = _MAX_OUTBOUND_CONTEXT_CHARS,
     db_path: Path | None = None,
 ) -> int:
     """Record an outbound DM so a later reply from this recipient can recover
     the originating conversation's context. Returns the new row id.
 
-    ``outbound_text`` is bounded to ``_MAX_OUTBOUND_CONTEXT_CHARS``. The row is
-    created ``open``; the first matched reply consumes it.
+    ``outbound_text`` is bounded to ``max_chars`` (a DM's
+    ``_MAX_OUTBOUND_CONTEXT_CHARS`` unless the caller sends something longer
+    on purpose, like a brief). The row is created ``open``; the first matched
+    reply consumes it.
     """
     if channel not in _VALID_OUTBOUND_CHANNELS:
         raise ValueError(
             f"Unknown outbound channel {channel!r} (expected one of "
             f"{sorted(_VALID_OUTBOUND_CHANNELS)})"
         )
-    if len(outbound_text) > _MAX_OUTBOUND_CONTEXT_CHARS:
-        outbound_text = outbound_text[:_MAX_OUTBOUND_CONTEXT_CHARS]
+    if len(outbound_text) > max_chars:
+        outbound_text = outbound_text[:max_chars]
     now = datetime.now(UTC).isoformat()
     with _get_conn(_resolve_db_path(db_path)) as conn:
         cursor = conn.execute(
