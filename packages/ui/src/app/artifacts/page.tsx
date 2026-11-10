@@ -401,7 +401,7 @@ export default function ArtifactsPage() {
                   const isCollapsed = collapsed[group.key] ?? group.key === BRIEFS_GROUP;
                   // A closed briefs group still shows the newest one.
                   const capped =
-                    group.key !== CHATS_GROUP && !expanded.has(group.key);
+                    group.key.startsWith("wf:") && !expanded.has(group.key);
                   const rows = isCollapsed
                     ? group.key === BRIEFS_GROUP
                       ? group.items.slice(0, 1)
