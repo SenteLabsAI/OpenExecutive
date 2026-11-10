@@ -2331,8 +2331,9 @@ _OPEN_LOOP_TOOLS = frozenset({"create_open_loop", "assign_open_loop"})
 
 def outcome_of(tool: str, tool_input: dict[str, Any], result: str, *, mcp: bool = False) -> str:
     """What came of a step that worked, in a few words ("Sent", "Invites
-    sent", "Started"); the result's own message when it has a short one;
-    "" when there's nothing more to say. Never raises."""
+    sent", "Started"); the result's own message when it has a short one and
+    our own code wrote it (never a connected app's, which can carry someone
+    else's text); "" when there's nothing more to say. Never raises."""
     try:
         if is_mail_send(tool) or tool in _DIRECT_MESSAGE_TOOLS or tool in _BROADCAST_TOOLS:
             return "Sent"
@@ -2342,6 +2343,8 @@ def outcome_of(tool: str, tool_input: dict[str, Any], result: str, *, mcp: bool 
             return "Started"
         if tool in _OPEN_LOOP_TOOLS:
             return "Assigned"
+        if mcp:
+            return ""
         parsed = json.loads(result) if result.strip().startswith("{") else None
         if isinstance(parsed, dict):
             message = parsed.get("message") or parsed.get("summary")
@@ -2402,6 +2405,10 @@ def add_job(text: str, *, created_by: str, db_path: Path | None = None) -> Job:
         raise ValueError(f"Keep it under {JOB_TEXT_MAX} characters.")
     conn = _connect(db_path)
     try:
+        # Check and insert under one write lock, so two adds at once (a
+        # double tap, or chat and the page together) can't both get in.
+        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
         active = conn.execute(
             f"SELECT text FROM {JOBS_TABLE} WHERE stopped_at IS NULL",  # noqa: S608
         ).fetchall()

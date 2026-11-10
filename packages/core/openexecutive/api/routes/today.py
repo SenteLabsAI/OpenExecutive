@@ -2503,6 +2503,8 @@ async def _regen_briefing_narrative_locked(
                     rendered_context=context,
                     mode=mode,
                     reader=reader,
+                    # The principal's own header only, never the company one.
+                    owner_lessons=expected_scope == narrative_cache.DEFAULT_SCOPE,
                 ),
                 # 25 s for the draft, plus the rewrite's own budget.
                 timeout=25.0 + REWRITE_TIMEOUT_S,

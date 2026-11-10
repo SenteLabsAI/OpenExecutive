@@ -1581,6 +1581,8 @@ def test_what_came_of_a_step() -> None:
     assert ttl.outcome_of("run_workflow", {}, "{}") == "Started"
     assert ttl.outcome_of("update_department_goal", {}, '{"message": "Goal updated"}') == "Goal updated"
     assert ttl.outcome_of("update_department_goal", {}, "not json") == ""
+    # A connected app's own words never show: they can be someone else's text.
+    assert ttl.outcome_of("notion__update_page", {}, '{"message": "Q3 plan: cut 20%"}', mcp=True) == ""
     assert ttl.how_line("google_workspace__send_gmail_message") == "By email"
     assert ttl.how_line("create_calendar_event") == "On the calendar"
 
@@ -1645,6 +1647,26 @@ def test_a_slipping_goal_failed_workflow_overdue_task_or_ended_meeting_wakes_it(
 
 def test_standing_jobs_are_wiped_with_the_rest() -> None:
     assert ttl.JOBS_TABLE in ttl.TABLES
+
+
+def test_two_adds_at_once_make_one_standing_job(tmp_path: Path) -> None:
+    """A double tap, or chat and the page together: one job, not two."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    db = tmp_path / "jobs.db"
+    ttl.list_jobs(db_path=db)
+
+    def add() -> str:
+        try:
+            ttl.add_job("Chase late invoices", created_by=OWNER, db_path=db)
+            return "added"
+        except ValueError:
+            return "refused"
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _: add(), range(8)))
+    assert results.count("added") == 1
+    assert [j.text for j in ttl.list_jobs(db_path=db)] == ["Chase late invoices"]
 
 
 def test_it_only_watches_while_as_me_is_on(monkeypatch: pytest.MonkeyPatch, watched: None) -> None:

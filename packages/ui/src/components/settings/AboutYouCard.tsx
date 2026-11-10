@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { formatDate } from "@/components/memories/shared";
 import SettingsCard from "@/components/settings/SettingsCard";
@@ -33,7 +33,15 @@ const NOTES_SCROLL_SLACK_PX = 48;
 export default function AboutYouCard({
   title = "Your profile",
   description = "Learned from your chats and replies. Only you see this.",
-}: { title?: string; description?: string } = {}) {
+  footer,
+}: {
+  title?: string;
+  description?: string;
+  /** Shown in the same card, under what it learned: the Memory page puts
+   * "What you said" there. With a footer the card stays even when there is
+   * no profile to show. */
+  footer?: ReactNode;
+} = {}) {
   const [data, setData] = useState<PeopleMemory | null>(null);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
@@ -57,7 +65,13 @@ export default function AboutYouCard({
     };
   }, []);
 
-  if (data?.status === "disabled") return null;
+  if (data?.status === "disabled") {
+    return footer ? (
+      <SettingsCard title={title} description={description}>
+        {footer}
+      </SettingsCard>
+    ) : null;
+  }
 
   const me = data?.status === "ok" ? data.people[0] : undefined;
   const learned = me?.last_observed_at ? `Last learned ${formatDate(me.last_observed_at)}.` : null;
@@ -79,6 +93,7 @@ export default function AboutYouCard({
           {me.recent.length > 0 && <Notes item={me} />}
         </div>
       )}
+      {footer && <div className="mt-5">{footer}</div>}
     </SettingsCard>
   );
 }

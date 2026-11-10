@@ -273,6 +273,29 @@ def test_the_digest_recaps_the_owners_notes_only_when_it_is_theirs(
     assert _result(mine)["private_to_principal"] is True
 
 
+def test_the_digest_reads_the_owners_lessons_only_when_it_is_theirs(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive import providers
+    from openexecutive.briefing import grounding
+    from openexecutive.memory import lessons
+
+    provider = _Provider()
+    monkeypatch.setattr(providers, "get_provider", lambda _m: provider)
+    monkeypatch.setattr("openexecutive.agents.utility_fast.get_fast_model", lambda: "claude-test")
+
+    async def _ground(text: str, **_kw: Any) -> tuple[str, None]:
+        return text, None
+
+    monkeypatch.setattr(grounding, "ground_brief", _ground)
+    monkeypatch.setattr(lessons, "with_owner_lessons", lambda text, **_kw: text + "\nOWNER LESSONS")
+
+    asyncio.run(_digest(False))
+    assert "OWNER LESSONS" not in provider.calls[-1]["messages"][0]["content"]
+    asyncio.run(_digest(True))
+    assert "OWNER LESSONS" in provider.calls[-1]["messages"][0]["content"]
+
+
 def test_the_digest_reads_the_owners_own_chats_today_only_when_it_is_theirs(
     db: Path, roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
