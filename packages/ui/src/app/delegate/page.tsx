@@ -18,8 +18,7 @@ import {
   AS_ME_ANCHOR,
   AS_YOU_ANCHOR,
   DELEGATE_TABS,
-  REACH_LABEL,
-  reachOf,
+  asYouBadge,
   type DelegateTab,
 } from "@/lib/reach";
 import { PageSpinner } from "@/components/ui/Spinner";
@@ -29,7 +28,7 @@ import { PageSpinner } from "@/components/ui/Spinner";
 // the lead): what it does in its own name without being asked. Approvals:
 // the one level for both, and your rules. In
 // training, on either side, holds everything for you first. Each tab shows
-// where it stands (Your inbox, On, Balanced), so all three read at a glance.
+// where it stands (Your inbox, with In training while it is on; On; Balanced), so all three read at a glance.
 // What it does for you sits beside the page (to the right on a wide screen,
 // a sheet on a narrow one).
 
@@ -94,7 +93,7 @@ export default function DelegatePage() {
             current={tab}
             onPick={pickTab}
             badges={{
-              [AS_YOU_ANCHOR]: settings ? { text: REACH_LABEL[reachOf(settings)] } : null,
+              [AS_YOU_ANCHOR]: settings ? { text: asYouBadge(settings) } : null,
               // No badge while the last status read failed, rather than a stale one.
               [AS_ME_ANCHOR]:
                 !status || unknown ? null : status.paused ? { text: "Paused" } : { text: "On", dot: true },

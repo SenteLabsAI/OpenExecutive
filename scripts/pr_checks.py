@@ -142,6 +142,15 @@ GUIDE_FOR: dict[str, set[str]] = {
     "app/settings/tools/": {"custom_tools"},
     "app/settings/": {"settings", "integrations"},
     "components/settings/": {"settings", "integrations"},
+    # The Delegate tabs' cards live under components/settings/ but are
+    # described in the delegate section.
+    "components/settings/ActAsMeCard.tsx": {"delegate"},
+    "components/settings/AsMeCard.tsx": {"delegate"},
+    "components/settings/BeforeAnythingCard.tsx": {"delegate"},
+    "components/settings/GoOnItsOwnCard.tsx": {"delegate"},
+    "components/settings/ReachCard.tsx": {"delegate"},
+    "components/settings/SentCard.tsx": {"delegate"},
+    "components/settings/TrainingCard.tsx": {"delegate"},
     "components/workspace/": {"settings"},
     "components/executive/": {"settings"},
 }
