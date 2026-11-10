@@ -128,3 +128,26 @@ export function raiseTheBar(watch: {
     done: `You'll only hear about ${FLOOR_WORDS[next].replace(/^Only /, "").toLowerCase()} from this.`,
   };
 }
+
+const TITLE_MAX = 48;
+
+/** A watch the Executive named, as a title a person can read: a page's site
+ * and path ("example.com/pricing"), a ticker in capitals, or the search it
+ * runs. Its slug is built from the type and target ("page-watch-example-com-
+ * pricing"), which reads as a code name. Falls back to the slug's words. */
+export function watchTitle(signalType: string, target: string, slug: string): string {
+  const text = (target ?? "").trim().replace(/\s+/g, " ");
+  if (!text) return slug.replace(/-+/g, " ").trim();
+  let title = text;
+  if (/^https?:\/\//i.test(text)) {
+    try {
+      const url = new URL(text);
+      title = url.hostname.replace(/^www\./, "") + url.pathname.replace(/\/+$/, "");
+    } catch {
+      title = text;
+    }
+  } else if (signalType === "stock" || signalType === "edgar") {
+    title = text.toUpperCase();
+  }
+  return title.length <= TITLE_MAX ? title : `${title.slice(0, TITLE_MAX - 1).trimEnd()}…`;
+}
