@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 import Icon from "@/components/Icon";
-import { ReachCard } from "@/components/settings/ReachCard";
+import { ReachCard, WhileItLearnsSection } from "@/components/settings/ReachCard";
 import SettingsCard from "@/components/settings/SettingsCard";
+import { LearnedSection } from "@/components/settings/TrainingCard";
 import type { DelegationLoad } from "@/components/settings/useDelegation";
 import Switch from "@/components/Switch";
 import Button from "@/components/ui/Button";
@@ -39,11 +40,11 @@ import { PageSpinner } from "@/components/ui/Spinner";
 // /delegation/voice. Not offered to anyone who can't have it (the owner can,
 // and team members once the owner lets them: PUT /delegation/team).
 //
-// The As you tab, in two columns: the mailbox (with How I write under it
-// once it's connected) and the page's `children` (In training, what it's
-// learned); then How far it goes as you (with the inbox watcher's status
-// under Your inbox), Read my calendar and the page's `side` (Let team
-// members use it).
+// The As you tab, in two columns: How far it goes as you (the mailbox on its
+// first line, the inbox watcher's status under Your inbox), Read my calendar
+// and the page's `side` (Let team members use it, Say it was written with
+// AI, what it sent); then How it learns from you (How you write, who it may
+// send to on its own, While it learns).
 
 const LENGTHS = ["short", "medium", "long"] as const;
 const FORMALITIES = ["casual", "neutral", "formal"] as const;
@@ -77,19 +78,15 @@ function greetingFields(p: VoiceProfile): Record<string, string> {
 
 // The page loads the settings once (useDelegation) and every card reports
 // its change through `setSettings`, so they all show the same state.
-// `children` sit after Read my calendar. `level` is the Approvals level,
-// for the line under the picker.
+// `level` is the Approvals level, for the line under the picker.
 export default function ActAsMeCard({
   load,
   level,
-  children,
   side,
 }: {
   load: DelegationLoad;
   level: OutsideContentMode | null;
-  /** Under Your mailbox, in the first column. */
-  children?: ReactNode;
-  /** Under How far it goes as you, in the second column. */
+  /** Under Read my calendar, in the first column. */
   side?: ReactNode;
 }) {
   const { settings, state, setSettings } = load;
@@ -161,80 +158,74 @@ export default function ActAsMeCard({
 
   const pre =
     "mt-2 whitespace-pre-wrap break-all rounded-xl border border-line bg-surface px-3 py-2 text-xs text-fg font-mono";
+  // The first line of How far it goes as you: the mailbox it writes from, or
+  // how to connect one.
+  const mailboxLine = connected ? (
+    <div className="flex min-w-0 items-center gap-2 rounded-xl border border-line px-4 py-2.5 text-[15px] text-fg">
+      <span className="h-2 w-2 flex-none rounded-full bg-emerald-500" aria-hidden="true" />
+      <span className="min-w-0 break-words">
+        From your {mailbox}, <span className="font-semibold">{settings.gmail.email}</span>
+      </span>
+    </div>
+  ) : (
+    <div className="rounded-xl border border-line px-4 py-3">
+      <p className="text-[15px] text-fg">{settings.gmail.message}</p>
+      <div className="mt-3 space-y-3">
+        {settings.gmail.status === "not_configured" && (
+          <details className="group">
+            <summary className="cursor-pointer text-sm font-medium text-accent hover:underline">
+              How to connect it
+            </summary>
+            <p className="mt-2 text-sm text-fg-muted leading-relaxed">
+              For Gmail, on a computer with a browser, with the Executive&apos;s Google OAuth
+              client exported, run this and sign in as yourself, then put the file it writes
+              where the API reads it (see the Act as me section of .env.example):
+            </p>
+            <pre className={pre}>{settings.gmail.connect_command}</pre>
+            {settings.gmail.outlook_connect_command && (
+              <>
+                <p className="mt-3 text-sm text-fg-muted leading-relaxed">
+                  For Outlook, with the Executive&apos;s Microsoft 365 app exported, run this
+                  instead and sign in as yourself with the code it prints:
+                </p>
+                <pre className={pre}>{settings.gmail.outlook_connect_command}</pre>
+              </>
+            )}
+          </details>
+        )}
+        <Button variant="primary" onClick={() => void recheck()} disabled={busy}>
+          {busy ? "Checking…" : "Check again"}
+        </Button>
+      </div>
+    </div>
+  );
+
   // Two columns where the page is wide enough (the page sets the container):
-  // your mailbox (with How I write once it's connected) and what's passed
-  // in, then how far it goes, your calendar and `side`.
+  // how far it goes as you (the mailbox on its first line), your calendar and
+  // `side`; then how it learns from you.
   return (
     <div className="grid gap-4 @4xl:grid-cols-2 @4xl:items-start">
       <div className="space-y-4">
-        <SettingsCard
-          title={connected ? `Your ${mailbox}` : "Your mailbox"}
-          description={connected ? `Connected to ${settings.gmail.email}.` : settings.gmail.message}
-          action={
-            connected ? (
-              <span className="inline-flex items-center gap-2 text-sm font-medium text-fg">
-                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" aria-hidden="true" />
-                Connected
-              </span>
-            ) : undefined
+        <ReachCard
+          settings={settings}
+          onSettings={setSettings}
+          level={level}
+          mailbox={mailboxLine}
+          inbox={
+            settings.inbox?.enabled && (
+              <InboxSection
+                inbox={stoppedWaiting ? { ...settings.inbox, checking: false } : settings.inbox}
+                mailbox={mailbox}
+                onSettings={setSettings}
+                onInbox={(inbox) => {
+                  setStoppedWaiting(false);
+                  polls.current = 0;
+                  setSettings({ ...settings, inbox });
+                }}
+              />
+            )
           }
-        >
-          {!connected && (
-            <div className="space-y-3">
-              {settings.gmail.status === "not_configured" && (
-                <details className="group">
-                  <summary className="cursor-pointer text-sm font-medium text-accent hover:underline">
-                    How to connect it
-                  </summary>
-                  <p className="mt-2 text-sm text-fg-muted leading-relaxed">
-                    For Gmail, on a computer with a browser, with the Executive&apos;s Google OAuth
-                    client exported, run this and sign in as yourself, then put the file it writes
-                    where the API reads it (see the Act as me section of .env.example):
-                  </p>
-                  <pre className={pre}>{settings.gmail.connect_command}</pre>
-                  {settings.gmail.outlook_connect_command && (
-                    <>
-                      <p className="mt-3 text-sm text-fg-muted leading-relaxed">
-                        For Outlook, with the Executive&apos;s Microsoft 365 app exported, run this
-                        instead and sign in as yourself with the code it prints:
-                      </p>
-                      <pre className={pre}>{settings.gmail.outlook_connect_command}</pre>
-                    </>
-                  )}
-                </details>
-              )}
-              <Button variant="primary" onClick={() => void recheck()} disabled={busy}>
-                {busy ? "Checking…" : "Check again"}
-              </Button>
-            </div>
-          )}
-          {connected && <VoiceSection connected outlook={outlook} inCard />}
-        </SettingsCard>
-        {children}
-      </div>
-
-      <div className="space-y-4">
-        {connected || on ? (
-          <ReachCard
-            settings={settings}
-            onSettings={setSettings}
-            level={level}
-            inbox={
-              settings.inbox?.enabled && (
-                <InboxSection
-                  inbox={stoppedWaiting ? { ...settings.inbox, checking: false } : settings.inbox}
-                  mailbox={mailbox}
-                  onSettings={setSettings}
-                  onInbox={(inbox) => {
-                    setStoppedWaiting(false);
-                    polls.current = 0;
-                    setSettings({ ...settings, inbox });
-                  }}
-                />
-              )
-            }
-          />
-        ) : null}
+        />
 
         {settings.calendar && (
           <CalendarSection
@@ -246,7 +237,55 @@ export default function ActAsMeCard({
         )}
         {side}
       </div>
+
+      <HowItLearnsCard settings={settings} onSettings={setSettings} connected={connected} outlook={outlook} />
     </div>
+  );
+}
+
+// How it learns from you: everything it picked up as you, in one card. How
+// you write (the style, Describe it, Learn again, Fine-tune details), who it
+// may send to on its own (and how you write to each person), and while it
+// learns (In training, Learn from my edits). Shown once a mailbox is
+// connected, or while it still keeps something learned.
+function HowItLearnsCard({
+  settings,
+  onSettings,
+  connected,
+  outlook,
+}: {
+  settings: DelegationSettings;
+  onSettings: (next: DelegationSettings) => void;
+  connected: boolean;
+  outlook: boolean;
+}) {
+  const training = settings.training;
+  if (!connected && !(training && training.learned.length > 0)) return null;
+  return (
+    <SettingsCard title="How it learns from you" description="Everything it has picked up from you as you, in one place.">
+      <div className="space-y-5">
+        {connected && <VoiceSection connected outlook={outlook} inCard />}
+        {training && (
+          <LearnedSection
+            training={training}
+            onSettings={onSettings}
+            setting="training"
+            title="Who it may send to on its own"
+            empty="Nobody yet. Tick “on its own next time” when you send one."
+          />
+        )}
+        {training && (
+          <LearnedSection
+            training={training}
+            onSettings={onSettings}
+            setting="drafts"
+            title="How you write to each person"
+            empty="Nothing yet. Change a draft and tick “Do it like this next time”."
+          />
+        )}
+        {settings.enabled && <WhileItLearnsSection settings={settings} onSettings={onSettings} />}
+      </div>
+    </SettingsCard>
   );
 }
 
@@ -972,7 +1011,7 @@ function CardSection({
     <div className="border-t border-line pt-5">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          {title && <h3 className="text-[15px] font-semibold text-fg">{title}</h3>}
+          {title && <h3 className="text-xs font-semibold uppercase tracking-wide text-fg-subtle">{title}</h3>}
           {description && <p className="mt-1 text-sm text-fg-muted leading-relaxed">{description}</p>}
         </div>
         {action && <div className="flex-shrink-0">{action}</div>}
