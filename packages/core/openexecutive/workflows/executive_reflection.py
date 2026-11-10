@@ -911,7 +911,9 @@ class ExecutiveReflectionWorkflow(Workflow):
         # How the principal asked for things to be done (memory.lessons), so
         # what this pass starts on its own is done the way they taught it.
         # Added after the grounding scope is built: a name or figure in a
-        # lesson is no evidence for anything this pass sends.
+        # lesson is no evidence for anything this pass sends. Not gated on
+        # who reads the output, unlike the briefs: this pass runs for the
+        # principal and acts for them, and every send passes Approvals.
         from openexecutive.memory import lessons as lessons_store
 
         user_content = await asyncio.to_thread(
