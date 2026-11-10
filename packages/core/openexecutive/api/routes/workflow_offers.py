@@ -14,12 +14,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Path, Request
 
 from openexecutive.api import caller as api_caller
 from openexecutive.workflows import repeat_asks
 
 router = APIRouter()
+# SQLite's integer range: a larger id is a 422, not an overflow.
+_OFFER_ID = Path(ge=1, le=2**63 - 1)
 
 
 def _person(request: Request) -> int | None:
@@ -42,10 +44,10 @@ def _answer(request: Request, offer_id: int, *, accept: bool) -> dict[str, Any]:
 
 
 @router.post("/workflow-offers/{offer_id}/accept")
-def accept_offer(offer_id: int, request: Request) -> dict[str, Any]:
+def accept_offer(request: Request, offer_id: int = _OFFER_ID) -> dict[str, Any]:
     return _answer(request, offer_id, accept=True)
 
 
 @router.post("/workflow-offers/{offer_id}/dismiss")
-def dismiss_offer(offer_id: int, request: Request) -> dict[str, Any]:
+def dismiss_offer(request: Request, offer_id: int = _OFFER_ID) -> dict[str, Any]:
     return _answer(request, offer_id, accept=False)

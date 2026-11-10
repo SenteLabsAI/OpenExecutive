@@ -1766,9 +1766,11 @@ class Executive:
 
             # The same ask on a few different days: offer to do it on a
             # schedule (workflows.repeat_asks), under this reply and on
-            # Workflows. Their own words only; not a turn private to their
-            # mailbox, a host page's or a replay (``kept``).
-            if kept:
+            # Workflows. Only words they typed: not a turn private to their
+            # mailbox, a host page's or a replay (``kept``), nor one whose
+            # words were composed for them (``memory_text``: a card's
+            # Approve line, a hand-off, a shared chat's or attachment's).
+            if kept and memory_text is None:
                 from openexecutive.workflows.repeat_asks import note_ask
 
                 repeat_offer = note_ask(own_text, session=session, person_id=person_id, calls=turn_calls)
@@ -2338,7 +2340,7 @@ class Executive:
                             person_id=person_id, calls=turn_calls, mail=touched_mail)
 
             # Repeated asks — see stream_chat.
-            if kept:
+            if kept and memory_text is None:
                 from openexecutive.workflows.repeat_asks import note_ask
 
                 repeat_offer = note_ask(own_text, session=session, person_id=person_id, calls=turn_calls)

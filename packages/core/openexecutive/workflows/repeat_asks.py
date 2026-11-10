@@ -10,8 +10,12 @@ approves the steps there, as for any workflow they build.
 
 **What is read.** Each turn by a verified speaker (``chat_review``'s rule:
 the principal on a surface that confirms it is them, or a rostered teammate
-on their own signed-in surface): their own words only, never the reply. Not
-a turn that touched their own mailbox, a host page's turn, or a replay.
+on their own signed-in surface): only what they typed (``own_words``: no
+quoted backstory an adapter added, nothing from a turn with an attachment,
+and nothing from a turn whose words were composed for them, such as a card's
+Approve line), never the reply. Not a turn that touched their own mailbox, a
+host page's turn, or a replay. Deleting a chat deletes the asks it kept and
+any open offer it made (``forget_session``).
 
 **How a repeat is found.** No model call: the ask's content words (stop
 words dropped, plurals folded) are matched against the same person's asks
@@ -44,6 +48,7 @@ OFFERS_TABLE = "repeat_ask_offers"
 KEEP_DAYS = 42
 MIN_DAYS = 3
 SNOOZE_DAYS = 60
+ACCEPTED_KEEP_DAYS = 365
 MAX_ASKS_PER_PERSON = 400
 ASK_MAX = 300
 MIN_WORDS = 2
@@ -86,6 +91,7 @@ def _connect(db_path: Path | None) -> sqlite3.Connection:
         f"CREATE TABLE IF NOT EXISTS {ASKS_TABLE} ("  # noqa: S608 — constant table name
         "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
         "  person_id INTEGER NOT NULL,"
+        "  session_id TEXT NOT NULL DEFAULT '',"
         "  words TEXT NOT NULL,"
         "  ask TEXT NOT NULL,"
         "  created_at TEXT NOT NULL"
@@ -96,6 +102,7 @@ def _connect(db_path: Path | None) -> sqlite3.Connection:
         f"CREATE TABLE IF NOT EXISTS {OFFERS_TABLE} ("  # noqa: S608 — constant table name
         "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
         "  person_id INTEGER NOT NULL,"
+        "  session_id TEXT NOT NULL DEFAULT '',"
         "  words TEXT NOT NULL,"
         "  ask TEXT NOT NULL,"
         "  cadence TEXT NOT NULL,"
@@ -215,7 +222,12 @@ def note_ask(
     """Keep this ask, and return a new offer when it is one the person has
     made on ``MIN_DAYS`` different days. None otherwise. Never raises."""
     try:
-        words = key_words(text)
+        from openexecutive.delegation.settings import own_words
+
+        typed = own_words(text or "")
+        if typed is None:
+            return None
+        words = key_words(typed)
         if len(words) < MIN_WORDS:
             return None
         person = _verified_person(session, person_id)
@@ -224,12 +236,20 @@ def note_ask(
         pid = int(person.id)
         current = now or _now()
         tz = zone or _zone()
-        ask = " ".join((text or "").split())[:ASK_MAX]
+        ask = " ".join(typed.split())[:ASK_MAX]
+        session_id = str(getattr(session, "session_id", "") or "")
         conn = _connect(db_path)
         try:
             conn.execute(
                 f"DELETE FROM {ASKS_TABLE} WHERE created_at < ?",  # noqa: S608
                 ((current - timedelta(days=KEEP_DAYS)).isoformat(),),
+            )
+            # An answered offer is kept only as long as it holds the same
+            # offer back: Not now until its hold ends, Set it up for a year.
+            conn.execute(
+                f"DELETE FROM {OFFERS_TABLE} WHERE (status = 'dismissed' AND hold_until < ?) "  # noqa: S608
+                "OR (status = 'accepted' AND created_at < ?)",
+                (current.isoformat(), (current - timedelta(days=ACCEPTED_KEEP_DAYS)).isoformat()),
             )
             earlier = [
                 (datetime.fromisoformat(r["created_at"]), frozenset(json.loads(r["words"])))
@@ -240,8 +260,9 @@ def note_ask(
                 )
             ]
             conn.execute(
-                f"INSERT INTO {ASKS_TABLE} (person_id, words, ask, created_at) VALUES (?, ?, ?, ?)",  # noqa: S608
-                (pid, json.dumps(sorted(words)), ask, current.isoformat()),
+                f"INSERT INTO {ASKS_TABLE} (person_id, session_id, words, ask, created_at) "  # noqa: S608
+                "VALUES (?, ?, ?, ?, ?)",
+                (pid, session_id, json.dumps(sorted(words)), ask, current.isoformat()),
             )
             conn.execute(
                 f"DELETE FROM {ASKS_TABLE} WHERE person_id = ? AND id NOT IN ("  # noqa: S608
@@ -265,9 +286,9 @@ def note_ask(
             asked = sorted([*by_day.values(), current])
             cadence = timing(asked, tz)
             cur = conn.execute(
-                f"INSERT INTO {OFFERS_TABLE} (person_id, words, ask, cadence, asked_at, status, created_at) "  # noqa: S608
-                "VALUES (?, ?, ?, ?, ?, 'open', ?)",
-                (pid, json.dumps(sorted(words)), ask, cadence,
+                f"INSERT INTO {OFFERS_TABLE} (person_id, session_id, words, ask, cadence, asked_at, "  # noqa: S608
+                "status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'open', ?)",
+                (pid, session_id, json.dumps(sorted(words)), ask, cadence,
                  json.dumps([a.isoformat() for a in asked]), current.isoformat()),
             )
             conn.commit()
@@ -325,3 +346,23 @@ def answer_offer(
         return cur.rowcount > 0
     finally:
         conn.close()
+
+
+def forget_session(session_id: str, *, db_path: Path | None = None) -> None:
+    """A deleted chat takes its asks, and any open offer it made, with it.
+    Never raises."""
+    if not session_id:
+        return
+    try:
+        conn = _connect(db_path)
+        try:
+            conn.execute(f"DELETE FROM {ASKS_TABLE} WHERE session_id = ?", (session_id,))  # noqa: S608
+            conn.execute(
+                f"DELETE FROM {OFFERS_TABLE} WHERE session_id = ? AND status = 'open'",  # noqa: S608
+                (session_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("repeat_asks: couldn't forget the chat", exc_info=True)

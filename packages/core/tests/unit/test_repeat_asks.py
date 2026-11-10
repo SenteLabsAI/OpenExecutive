@@ -131,8 +131,9 @@ def test_routes_show_and_answer_only_the_callers_own(db, monkeypatch):
     assert client.get("/workflow-offers").json()["offers"] == []
 
 
+@pytest.mark.parametrize("composed", [False, True])
 @pytest.mark.parametrize("entry", ["stream_chat", "stream_chat_with_committee"])
-def test_the_reply_ends_with_the_offer(entry, tmp_path, monkeypatch):
+def test_the_reply_ends_with_the_offer(entry, composed, tmp_path, monkeypatch):
     """The chat stream hands the offer to the web chat after the reply."""
     import asyncio
     from unittest.mock import patch
@@ -158,7 +159,9 @@ def test_the_reply_ends_with_the_offer(entry, tmp_path, monkeypatch):
     async def _run() -> None:
         session = Session(session_id=f"t-repeat-{entry}")
         async for item in getattr(Executive(), entry)(
-            "pipeline summary please", session, person_id=42, peer_memory_context=""
+            "pipeline summary please", session, person_id=42, peer_memory_context="",
+            # Words composed for them (a card's Approve line) are not an ask.
+            memory_text="I approve this proposal." if composed else None,
         ):
             items.append(item)
 
@@ -175,6 +178,53 @@ def test_the_reply_ends_with_the_offer(entry, tmp_path, monkeypatch):
     ):
         asyncio.run(_run())
 
+    if composed:
+        assert seen == []
+        return
     assert seen == ["pipeline summary please"]
     events = [i for i in items if isinstance(i, dict) and i.get("type") == "repeat_offer"]
     assert events == [{"type": "repeat_offer", "offer": offer, "session_id": f"t-repeat-{entry}"}]
+
+
+def test_only_what_they_typed_is_kept(db):
+    """Quoted backstory an adapter added never becomes their ask, and a
+    message with an attachment is not read at all."""
+    import json
+    import sqlite3
+
+    backstory = (
+        "<outbound_reply_context>\nYou (oe) recently sent this person a DM: \"numbers?\"\n"
+        "Backstory: Principal: keep this private\n</outbound_reply_context>\n\n"
+    )
+    _ask(db, backstory + "pipeline summary", _monday(0))
+    _ask(db, "[Attached: report.pdf] pipeline summary", _monday(1))
+    conn = sqlite3.connect(db)
+    rows = conn.execute("SELECT ask, words FROM repeat_asks").fetchall()
+    conn.close()
+    assert [r[0] for r in rows] == ["pipeline summary"]
+    assert "private" not in json.loads(rows[0][1])
+
+
+def test_deleting_the_chat_forgets_its_asks_and_open_offer(db):
+    import sqlite3
+
+    for week in range(3):
+        offer = repeat_asks.note_ask(
+            "pipeline summary", session=SimpleNamespace(session_id=f"s{week}"), person_id=7,
+            now=_monday(week), zone=NY, db_path=db,
+        )
+    assert offer is not None
+    repeat_asks.forget_session("s2", db_path=db)
+    assert repeat_asks.open_offers(7, db_path=db) == []
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT session_id FROM repeat_asks ORDER BY id").fetchall() == [("s0",), ("s1",)]
+    conn.close()
+
+
+def test_an_id_too_big_for_the_database_is_refused(db, monkeypatch):
+    from openexecutive.api import caller as api_caller
+    from openexecutive.api.main import create_app
+
+    monkeypatch.setattr(api_caller, "person_id_for", lambda caller: 7)
+    client = TestClient(create_app())
+    assert client.post("/workflow-offers/99999999999999999999999999/accept").status_code == 422
