@@ -214,6 +214,8 @@ def test_goal_counts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
     dept_store.insert_goal("finance", period_value="Q2 2026", key_result="Test", target="T", current="C", status="on_track", db_path=db)
     dept_store.insert_goal("finance", period_value="Q2 2026", key_result="Burn", target="<$550K", current="$612K", status="at_risk", db_path=db)
+    # A finished goal is not counted.
+    dept_store.insert_goal("finance", period_value="Q2 2026", key_result="Close the books", target="T", current="", status="done", db_path=db)
 
     resp = _make_client().get("/today")
     assert resp.status_code == 200

@@ -484,6 +484,17 @@ def test_only_the_principal_marks_a_goal_done_from_chat(monkeypatch: pytest.Monk
     monkeypatch.setattr(department_tools, "_goals_created_by_turn", {})
     assert _tool(handle_update_department_goal, payload)["status"] == "ok"
     assert store.get_goal(gid).status == "done"  # type: ignore[union-attr]
+    # Nor does anyone else reopen it.
+    monkeypatch.setattr(department_tools, "_principal_asked", lambda: False)
+    reopen = _tool(handle_update_department_goal,
+                   {"goal_id": gid, "status": "on_track", "rationale": "Reopen it."})
+    assert "only the principal can reopen it" in reopen["error"]
+    assert store.get_goal(gid).status == "done"  # type: ignore[union-attr]
+    monkeypatch.setattr(department_tools, "_principal_asked", lambda: True)
+    # A finished goal doesn't block the same goal for a new period.
+    again = _tool(handle_create_goal, {"key_result": store.get_goal(gid).key_result,  # type: ignore[union-attr]
+                                       "target": "20", "rationale": "Same goal next quarter."})
+    assert again.get("status") == "ok", again
     # A new goal can't start as done.
     born_done = _tool(handle_create_goal, {"key_result": "Open a second office", "target": "1 office", "status": "done",
                                            "rationale": "They said so."})
@@ -493,6 +504,8 @@ def test_only_the_principal_marks_a_goal_done_from_chat(monkeypatch: pytest.Monk
 def test_a_review_does_not_reopen_a_goal_marked_done() -> None:
     gid = _goal(None, "Launch", status="done")
     assert store.record_goal_review(gid, status="at_risk", last_reviewed_at="2026-01-05T09:00:00+00:00") is False
+    # A stamp-only update finds the goal and leaves it as it is.
+    assert store.update_goal(gid, last_reviewed_at="2026-01-05T09:00:00+00:00") is True
     assert store.get_goal(gid).status == "done"  # type: ignore[union-attr]
 
 

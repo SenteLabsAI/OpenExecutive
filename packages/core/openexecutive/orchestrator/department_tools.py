@@ -434,6 +434,19 @@ async def handle_update_department_goal(tool_input: dict[str, Any]) -> str:
         )
     # Audit and report the goal's real department, given or not.
     slug = existing.department_slug
+    # Reopening a goal the principal closed is their call too.
+    if (
+        existing.status == "done"
+        and status_in not in (None, "done")
+        and not _principal_asked()
+    ):
+        return _bad(
+            "refused: this goal is marked done, and only the principal can "
+            "reopen it. Tell whoever asked that the principal needs to do it — "
+            "on the Goals page, or by asking in the web app or their own Slack "
+            "or Discord.",
+            department_slug=slug, goal_id=goal_id, refused=True,
+        )
 
     # ---- Persist ----
     prior_status = existing.status
@@ -742,7 +755,12 @@ async def handle_create_goal(tool_input: dict[str, Any]) -> str:
                 group = "the goals with no department"
             wanted = _norm_goal_text(key_result)
             dupe = next(
-                (g for g in siblings if _norm_goal_text(g.key_result) == wanted), None
+                # A finished goal doesn't block the same goal for a new period.
+                (
+                    g for g in siblings
+                    if g.status != "done" and _norm_goal_text(g.key_result) == wanted
+                ),
+                None,
             )
             if dupe is not None:
                 return _bad(
