@@ -25,7 +25,7 @@ import {
   type WatchlistSignalType,
 } from "@/lib/api";
 import { suggestWatchSlug } from "@/lib/watchSlug";
-import { triggerInWords } from "@/lib/watchWords";
+import { triggerInWords, watchTitle } from "@/lib/watchWords";
 import { PageSpinner } from "@/components/ui/Spinner";
 
 const fieldCls =
@@ -133,12 +133,13 @@ function SuggestionCard({
   departmentTitle?: string;
 }) {
   const stamp = policyStamp(item);
+  const name = watchTitle(item.signal_type, item.target, item.slug);
   return (
     <div className="flex min-w-0 flex-col rounded-2xl border border-amber-500/40 bg-surface-elevated p-5 shadow-sm">
       <div className="flex items-start justify-between gap-2 mb-1">
         <div className="min-w-0">
-          <div className="text-lg font-semibold text-fg truncate" title={item.slug}>
-            {humanizeSlug(item.slug)}
+          <div className="text-lg font-semibold text-fg truncate" title={item.target}>
+            {name}
           </div>
           <div className="text-sm text-fg-muted truncate" title={item.target}>
             {SIGNAL_TYPE_LABELS[item.signal_type] ?? item.signal_type} · {item.target}
@@ -169,7 +170,7 @@ function SuggestionCard({
           {busy ? "…" : "Approve"}
         </Button>
         <OverflowMenu
-          label={`Decline ${humanizeSlug(item.slug)}`}
+          label={`Decline ${name}`}
           items={declineItems("Decline", item.slug, busy, onDecline)}
         />
       </div>
@@ -192,15 +193,17 @@ function WatchCard({
   const isResearch = item.origin === "research";
   const labelId = useId();
   const href = `/watchlist/${encodeURIComponent(item.slug)}`;
+  // A watch the Executive added carries a slug it built; one you added keeps your name.
+  const name = isResearch ? watchTitle(item.signal_type, item.target, item.slug) : humanizeSlug(item.slug);
   return (
     <div className="flex min-w-0 items-start gap-3 rounded-2xl border border-line bg-surface-elevated p-5 shadow-sm">
       <Link href={href} className="min-w-0 flex-1 group">
         <div
           id={labelId}
           className="text-lg font-semibold text-fg group-hover:text-accent transition-colors truncate"
-          title={item.slug}
+          title={item.target}
         >
-          {humanizeSlug(item.slug)}
+          {name}
         </div>
         <div className="text-sm text-fg-muted mt-0.5 truncate" title={item.target}>
           {item.target}
@@ -224,7 +227,7 @@ function WatchCard({
           />
         </label>
         <OverflowMenu
-          label={`More for ${humanizeSlug(item.slug)}`}
+          label={`More for ${name}`}
           items={[
             { label: "Open details", href },
             ...(isResearch && onStopWatching

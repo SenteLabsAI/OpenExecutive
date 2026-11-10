@@ -16,7 +16,7 @@ import {
   type ProposalItem,
 } from "@/lib/api";
 
-import { Chip } from "./shared";
+import CardTopRow from "./CardTopRow";
 
 // The tag such a card carries (department_gate.DECISION_CLASS).
 export const HELD_ACTION_TAG = "decision_class:department_action";
@@ -72,13 +72,9 @@ export default function HeldActionCard({
         emphasized ? "border-accent/60 ring-1 ring-accent/25 shadow-sm" : "border-line"
       }`}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 text-base sm:text-[17px] font-semibold leading-snug text-fg break-words">
-          {proposal.headline}
-        </div>
-        <span className="flex-shrink-0">
-          <Chip tone="amber">Waiting on you</Chip>
-        </span>
+      <CardTopRow need="Needs your OK" mode="take_the_lead" at={proposal.created_at} waitingOn={proposal.waiting_on} />
+      <div className="min-w-0 text-base sm:text-[17px] font-semibold leading-snug text-fg break-words">
+        {proposal.headline}
       </div>
       {held?.reason && (
         <p className="mt-1.5 text-[15px] leading-relaxed text-fg-muted">It waited because {held.reason}.</p>
