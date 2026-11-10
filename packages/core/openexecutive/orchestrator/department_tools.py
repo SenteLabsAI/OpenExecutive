@@ -755,7 +755,12 @@ async def handle_create_goal(tool_input: dict[str, Any]) -> str:
                 group = "the goals with no department"
             wanted = _norm_goal_text(key_result)
             dupe = next(
-                (g for g in siblings if _norm_goal_text(g.key_result) == wanted), None
+                # A finished goal doesn't block the same goal for a new period.
+                (
+                    g for g in siblings
+                    if g.status != "done" and _norm_goal_text(g.key_result) == wanted
+                ),
+                None,
             )
             if dupe is not None:
                 return _bad(

@@ -491,6 +491,10 @@ def test_only_the_principal_marks_a_goal_done_from_chat(monkeypatch: pytest.Monk
     assert "only the principal can reopen it" in reopen["error"]
     assert store.get_goal(gid).status == "done"  # type: ignore[union-attr]
     monkeypatch.setattr(department_tools, "_principal_asked", lambda: True)
+    # A finished goal doesn't block the same goal for a new period.
+    again = _tool(handle_create_goal, {"key_result": store.get_goal(gid).key_result,  # type: ignore[union-attr]
+                                       "target": "20", "rationale": "Same goal next quarter."})
+    assert again.get("status") == "ok", again
     # A new goal can't start as done.
     born_done = _tool(handle_create_goal, {"key_result": "Open a second office", "target": "1 office", "status": "done",
                                            "rationale": "They said so."})
