@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_VALID_GOAL_STATUSES = ("on_track", "at_risk", "off_track")
+_VALID_GOAL_STATUSES = ("on_track", "at_risk", "off_track", "done")
 _VALID_PERIOD_TYPES = ("week", "month", "quarter", "year", "ongoing")
 
 # Field caps — the same limits the goal and department routes enforce
@@ -103,7 +103,8 @@ UPDATE_DEPARTMENT_GOAL_TOOL: dict[str, Any] = {
         "tracked Goal: 'we shipped the billing migration' (likely a "
         "current update + bump to on_track), 'lost the Acme deal' "
         "(status to at_risk or off_track), 'closed 40% of the ARR "
-        "target' (current update). Use `list_department_goals` first "
+        "target' (current update), 'the launch is finished' (status to "
+        "done, which takes the goal out of the weekly reviews). Use `list_department_goals` first "
         "if you don't already have the goal_id from earlier in the "
         "conversation. Do NOT use this to refuse and redirect to the "
         "UI — the user expects the update to just happen. Do NOT use "
@@ -398,6 +399,17 @@ async def handle_update_department_goal(tool_input: dict[str, Any]) -> str:
             department_slug=slug, goal_id=goal_id,
         )
 
+    # Marking a goal done takes it out of every review, so nothing regrades
+    # a wrong call. Only the principal makes it, as with a new goal.
+    if status_in == "done" and not _principal_asked():
+        return _bad(
+            "refused: only the principal can mark a goal done, and this request "
+            "did not come from a conversation that confirms it is them. Tell "
+            "whoever asked that the principal needs to do it — on the Goals "
+            "page, or by asking in the web app or their own Slack or Discord.",
+            department_slug=slug, goal_id=goal_id, refused=True,
+        )
+
     current_str: str | None = None
     if current_in is not None:
         try:
@@ -659,6 +671,8 @@ async def handle_create_goal(tool_input: dict[str, Any]) -> str:
             f"status must be one of {list(_VALID_GOAL_STATUSES)}; got {raw_status!r}",
             area=area,
         )
+    if raw_status == "done":
+        return _bad("a new goal can't start as done", area=area)
     status = cast("GoalStatus", raw_status)
     period_value = _optional_text(tool_input, "period_value")
     if not period_value:
@@ -736,9 +750,11 @@ async def handle_create_goal(tool_input: dict[str, Any]) -> str:
                     "call update_department_goal with that goal_id to change it",
                     department_slug=slug, goal_id=dupe.id,
                 )
-            if len(siblings) >= _MAX_GOALS_PER_AREA:
+            # Finished goals don't count toward the cap.
+            open_count = sum(1 for g in siblings if g.status != "done")
+            if open_count >= _MAX_GOALS_PER_AREA:
                 return _bad(
-                    f"refused: {len(siblings)} goals are already tracked in {group} "
+                    f"refused: {open_count} goals are already tracked in {group} "
                     f"(the most this tool adds to one group is {_MAX_GOALS_PER_AREA}). "
                     "Ask the principal which existing goal this replaces, or to "
                     "add it on the Goals page.",

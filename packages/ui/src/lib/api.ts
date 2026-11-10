@@ -4645,7 +4645,8 @@ export interface Goal {
   key_result: string;
   target: string;
   current: string;
-  status: "on_track" | "at_risk" | "off_track";
+  // "done" is a person's call; the weekly reviews leave a done goal alone.
+  status: "on_track" | "at_risk" | "off_track" | "done";
   created_at: string;
   updated_at: string;
   // When OE last graded this goal (department_check_in workflow, or

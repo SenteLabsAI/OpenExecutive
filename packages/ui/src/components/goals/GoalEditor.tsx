@@ -39,7 +39,7 @@ function isStaleReview(lastReviewedAt: string): boolean {
   return Date.now() - ts > STALE_REVIEW_MS;
 }
 
-export const GOAL_STATUS_OPTS = ["on_track", "at_risk", "off_track"] as const;
+export const GOAL_STATUS_OPTS = ["on_track", "at_risk", "off_track", "done"] as const;
 export type GoalStatus = (typeof GOAL_STATUS_OPTS)[number];
 
 // A goal's status as a dot and a word, the one status pill the goal screens
@@ -50,6 +50,7 @@ const GOAL_STATUS_DOT: Record<string, string> = {
   at_risk: "bg-amber-500",
   off_track: "bg-rose-500",
   not_checked: "bg-fg-subtle",
+  done: "bg-sky-500",
 };
 
 export function goalStatusLabel(status: string): string {
@@ -238,7 +239,7 @@ export function GoalRow({
             ) : (
               // The pill already says "not checked yet" for a goal left on
               // its default; a status someone set still notes it was never checked.
-              shown !== "not_checked" && (
+              shown !== "not_checked" && shown !== "done" && (
                 <>
                   <span aria-hidden="true">·</span>
                   <span className="italic">Never reviewed</span>
