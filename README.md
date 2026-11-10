@@ -20,7 +20,7 @@ A walkthrough of Open Executive in action — [watch on YouTube](https://youtu.b
 
 ## What It Does
 
-Developed by [sentelabs.ai](https://sentelabs.ai) Open Executive provides a single coherent executive voice backed by nine specialist AI agents:
+Developed by [Foreact Labs](https://foreactlabs.com) Open Executive provides a single coherent executive voice backed by nine specialist AI agents:
 
 - **Chief Strategy Officer** — competitive analysis, M&A, market positioning, OKRs
 - **Chief Financial Officer** — financial modeling, fundraising, unit economics, cash flow
