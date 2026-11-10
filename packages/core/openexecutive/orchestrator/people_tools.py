@@ -1158,7 +1158,13 @@ async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
         if details is not None:
             people_store.set_person_details(new_id, details, source="chat_tool")
     except Exception as exc:
-        logger.exception("upsert_person: failed")
+        if isinstance(exc, ValueError):
+            # A rule the store explains (address already on someone, bad
+            # alias, too many addresses): the reason goes back to the model
+            # and the person, so it is not a fault worth an error report.
+            logger.warning("upsert_person: refused (%s)", type(exc).__name__)
+        else:
+            logger.exception("upsert_person: failed")
         # Always invalidate — a partial write (e.g. row inserted but scopes
         # failed) must not leave the registry serving stale data.
         people_registry.invalidate()
