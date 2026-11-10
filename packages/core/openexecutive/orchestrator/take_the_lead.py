@@ -2402,6 +2402,10 @@ def add_job(text: str, *, created_by: str, db_path: Path | None = None) -> Job:
         raise ValueError(f"Keep it under {JOB_TEXT_MAX} characters.")
     conn = _connect(db_path)
     try:
+        # Check and insert under one write lock, so two adds at once (a
+        # double tap, or chat and the page together) can't both get in.
+        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
         active = conn.execute(
             f"SELECT text FROM {JOBS_TABLE} WHERE stopped_at IS NULL",  # noqa: S608
         ).fetchall()

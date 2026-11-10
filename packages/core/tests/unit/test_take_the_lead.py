@@ -1647,6 +1647,26 @@ def test_standing_jobs_are_wiped_with_the_rest() -> None:
     assert ttl.JOBS_TABLE in ttl.TABLES
 
 
+def test_two_adds_at_once_make_one_standing_job(tmp_path: Path) -> None:
+    """A double tap, or chat and the page together: one job, not two."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    db = tmp_path / "jobs.db"
+    ttl.list_jobs(db_path=db)
+
+    def add() -> str:
+        try:
+            ttl.add_job("Chase late invoices", created_by=OWNER, db_path=db)
+            return "added"
+        except ValueError:
+            return "refused"
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _: add(), range(8)))
+    assert results.count("added") == 1
+    assert [j.text for j in ttl.list_jobs(db_path=db)] == ["Chase late invoices"]
+
+
 def test_it_only_watches_while_as_me_is_on(monkeypatch: pytest.MonkeyPatch, watched: None) -> None:
     monkeypatch.setattr(ttl, "executive_on", lambda **_: False)
     assert ttl.watch(NOW) is None
