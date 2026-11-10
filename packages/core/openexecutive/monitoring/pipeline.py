@@ -228,7 +228,10 @@ _BIG_RANK = SEVERITY_RANK[AlertSeverity.HIGH.value]
 
 
 def _only_big(item: WatchlistItem) -> bool:
-    return bool((item.trigger_json or {}).get(TRIGGER_ONLY_BIG))
+    """Read ``only_big`` the way the "Tells you when" sentence does (only a
+    real ``true``), so the watch never holds back what its sentence says it
+    tells you."""
+    return (item.trigger_json or {}).get(TRIGGER_ONLY_BIG) is True
 
 
 def _graded_by_relevance(item: WatchlistItem, signal: Signal) -> bool:

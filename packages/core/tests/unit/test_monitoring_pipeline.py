@@ -383,6 +383,28 @@ def test_last_check_note_says_nothing_new_and_could_not_reach(
     assert item.last_check_note == mp.COULD_NOT_REACH
 
 
+@pytest.mark.parametrize("value", ["false", 1, "true"])
+def test_only_big_counts_only_a_real_true(
+    db: Path,
+    install_fake_source,
+    monkeypatch: pytest.MonkeyPatch,
+    value: object,
+) -> None:
+    """The "Tells you when" sentence shows "only when it is a big change" only
+    for a real true, so anything else must not hold a change back either."""
+    promoted: list[Any] = []
+    monkeypatch.setattr(
+        "openexecutive.monitoring.pipeline.schedule_evaluation",
+        lambda event: promoted.append(event),
+    )
+    _patch_settings(monkeypatch, external_monitor_enrichment_enabled=False)
+    _insert_feed(db, "loose", trigger={"only_big": value})
+    install_fake_source([_make_signal(severity=AlertSeverity.MEDIUM)])
+
+    asyncio.run(mp.run_external_monitor_scan(db_path=db))
+    assert len(promoted) == 1
+
+
 def test_watching_quietly_says_so_in_the_last_check_note(
     db: Path,
     install_fake_source,
