@@ -518,10 +518,13 @@ async def _next_weeks_top_three(body: str, period: str) -> str:
         f"WEEKLY REVIEW — {period}\n\n{body}"
         + playbook_clause(playbook, "Choose the three following this playbook"),
     )
-    # The principal's lessons that bear on the week (memory.lessons).
+    # The principal's lessons that bear on the week (memory.lessons), only
+    # when the review goes to them alone: a run a teammate starts reads none.
     from openexecutive.memory.lessons import with_owner_lessons
+    from openexecutive.workflows.morning_brief import _private_ok
 
-    user = await asyncio.to_thread(with_owner_lessons, user)
+    if _private_ok():
+        user = await asyncio.to_thread(with_owner_lessons, user)
     try:
         model = get_fast_model()
         response = await get_provider(model).messages_create(

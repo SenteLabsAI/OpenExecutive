@@ -411,12 +411,25 @@ def test_each_brief_says_when_it_is_the_owners_own() -> None:
 
 
 def test_the_weekly_review_gets_facts_and_lessons(owner: Any, provider: _Capture) -> None:
+    from openexecutive.workflows.morning_brief import PRINCIPAL_DELIVERY
     from openexecutive.workflows.weekly_review import _next_weeks_top_three
 
-    asyncio.run(_next_weeks_top_three("Northline asked for pilot pricing.", "this week"))
+    token = PRINCIPAL_DELIVERY.set(True)
+    try:
+        asyncio.run(_next_weeks_top_three("Northline asked for pilot pricing.", "this week"))
+    finally:
+        PRINCIPAL_DELIVERY.reset(token)
     text = provider.user_text()
     assert LESSON in text and FACT in text
     assert _used(owner.lesson_id) == {"brief": 1}
+
+
+def test_a_weekly_review_someone_else_starts_reads_no_lessons(owner: Any, provider: _Capture) -> None:
+    from openexecutive.workflows.weekly_review import _next_weeks_top_three
+
+    asyncio.run(_next_weeks_top_three("Northline asked for pilot pricing.", "this week"))
+    assert LESSON not in provider.user_text()
+    assert _used(owner.lesson_id) == {}
 
 
 def test_a_lesson_is_no_evidence_for_what_the_reflection_sends() -> None:
