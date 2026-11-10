@@ -231,7 +231,7 @@ def update_take_the_lead(request: Request, body: LeadUpdate) -> LeadOut:
     )
     if after != current:
         _audit(
-            f"As me as the Executive {'in training' if after.enabled and after.training else 'on' if after.enabled else 'off'}",
+            f"As me {'in training' if after.enabled and after.training else 'on' if after.enabled else 'off'}",
             {"scope": "executive", "enabled": after.enabled, "training": after.training, "ask_first": after.ask_first},
         )
     return _out(principal)
