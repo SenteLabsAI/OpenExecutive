@@ -617,6 +617,25 @@ def test_needs_check_in_runs_after_a_goal_content_edit(audit_db: AuditLogger) ->
     assert needs_check_in(_finance(), datetime.now(UTC)) is None
 
 
+def test_needs_check_in_skips_a_department_whose_goals_are_all_done() -> None:
+    goal_id = _add_goal()
+    dept_store.update_goal(goal_id, status="done")
+    reason = needs_check_in(_finance(), datetime.now(UTC))
+    assert reason is not None and "no Goals" in reason
+
+
+def test_needs_check_in_ignores_a_done_goal_edited_after_the_review(
+    audit_db: AuditLogger,
+) -> None:
+    _add_goal()
+    done_id = _add_goal()
+    _review_all(datetime.now(UTC) - timedelta(hours=1))
+    # Marking it done is an edit after the last review, but a done goal is
+    # never graded again, so it is not news.
+    dept_store.update_goal(done_id, status="done")
+    assert needs_check_in(_finance(), datetime.now(UTC)) is not None
+
+
 def test_needs_check_in_runs_after_a_department_decision(audit_db: AuditLogger) -> None:
     _add_goal()
     _review_all(datetime.now(UTC) - timedelta(hours=1))
