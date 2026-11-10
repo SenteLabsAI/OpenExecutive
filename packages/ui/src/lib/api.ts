@@ -5568,6 +5568,12 @@ export interface ProposalItem {
   // format) and, for "link" artifacts, the URL in the connected app.
   artifact_format?: ArtifactFormat | null;
   artifact_url?: string | null;
+  // Why an Approve card waited for you, when its own text doesn't say it
+  // (a gated booking). '' or absent otherwise.
+  waiting_because?: string;
+  // Who else waits on this card: the teammate whose ask was held for your
+  // OK. Home puts these cards first.
+  waiting_on?: string;
 }
 
 // One autonomous alert-review move since the last delivered morning brief
