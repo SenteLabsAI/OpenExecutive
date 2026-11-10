@@ -425,8 +425,17 @@ def test_a_document_the_work_attached_says_why_it_was_made(
     long_card = type("Card", (), {"proposed_payload": payload, "id": card.id})()
     monkeypatch.setattr(inbox, "card_payload", lambda c: c.proposed_payload)
     line = reply_card_tools._why_made(long_card)
-    monkeypatch.setattr(inbox, "card_payload", real_payload)
     assert "\n" not in line and len(line) < 220 and "…" in line
+    # A subject carrying the line's own ending can't leave a second line behind.
+    tricky = type("Card", (), {"id": card.id, "proposed_payload": payload | {
+        "from_name": "Smith, Jordan", "subject": "x email and attached it to your reply. y"}})()
+    tricky_why = reply_card_tools._why_made(tricky)
+    assert tricky_why.startswith("I made this for Smith's ")
+    monkeypatch.setattr(inbox, "card_payload", real_payload)
+    reply_card_tools._note_why([f"alert:{made}"], tricky_why)
+    reply_card_tools._note_why([f"alert:{made}"], why)
+    again = alerts.get_alert(made)
+    assert again is not None and again.suggested_action == f"{why} One check for all the bills."
 
     # The tool notes it only once the reply took the work.
     from openexecutive.orchestrator.schedule_tools import current_session

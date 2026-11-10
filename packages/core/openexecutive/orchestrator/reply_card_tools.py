@@ -128,6 +128,9 @@ async def _outside_the_thread(handles: list[str], mailbox: Any, thread_id: str) 
     return ""
 
 
+_LINE_END_RE = re.compile(r"email and attached it to your reply", re.IGNORECASE)
+
+
 def _why_made(card: Any) -> str:
     """The why on a document the work attached: whose email it was made for,
     so its own card on Home says why it is there."""
@@ -139,10 +142,12 @@ def _why_made(card: Any) -> str:
         return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
     payload = card_payload(card)
-    name = clean(str(payload.get("from_name") or "").strip().split(" ")[0], 40) or clean(
+    name = clean(str(payload.get("from_name") or "").strip().split(" ")[0].strip(",;:"), 40) or clean(
         payload.get("from_email"), 80
     )
-    subject = clean(payload.get("subject"), 80)
+    # The line's own ending can't come from the subject, so a later update
+    # strips exactly this line and no more.
+    subject = clean(_LINE_END_RE.sub(" ", str(payload.get("subject") or "")), 80)
     whose = f"{name}'s" if name else "the"
     about = f' "{subject}"' if subject else ""
     return f"I made this for {whose}{about} email and attached it to your reply."
