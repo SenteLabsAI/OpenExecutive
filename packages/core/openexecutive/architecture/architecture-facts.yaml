@@ -10122,7 +10122,14 @@ integrations:
     persists an `outbound_context` row: the recipient (channel +
     channel_ref), the full outbound text, the originating session id,
     and the platform message id (best-effort). Scheduler/cadence sends
-    have no `current_session`, so they intentionally write no linkage.
+    have no `current_session`, so they intentionally write no linkage,
+    with one exception: a brief, digest or other scheduler message sent by
+    email (`scheduler.runner._send_on_plan`) records a row for the
+    recipient's own lowercased address once sent
+    (`_remember_for_email_reply`, no originating session, no Attunement
+    outcome, `max_chars` 6000 so a brief keeps its items), because an
+    email reply starts a turn of its own. A chat app's reply already has
+    the message in its conversation (`record_delivery`).
     Email is covered too, but recorded one layer deeper: there is no
     `send_email` tool — the Executive emails via the raw MCP tool
     `google_workspace__send_gmail_message`, so the linkage is recorded
