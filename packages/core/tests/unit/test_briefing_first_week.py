@@ -394,6 +394,15 @@ def test_shared_block_lists_a_goal_with_no_area(setup: SimpleNamespace) -> None:
     assert any(k.startswith("goal:9:") for k in keys)
 
 
+def test_shared_block_leaves_out_done_goals(setup: SimpleNamespace) -> None:
+    done = _goal(8, "sales", "Ship the pricing page").model_copy(update={"status": "done"})
+    setup.departments[0].goals.append(done)
+    setup.loose_goals = [_goal(9, "", "Sign 3 pilots").model_copy(update={"status": "done"})]
+    lines, _, keys = first_week._goal_lines()
+    assert not any("pricing page" in line or "3 pilots" in line for line in lines)
+    assert not any(k.startswith(("goal:8:", "goal:9:")) for k in keys)
+
+
 def test_card_without_findings_still_asks_for_a_goal(card: SimpleNamespace) -> None:
     card.artifact = "# Executive research\n\nNo findings surfaced this run."
     out = first_week.first_week_card(NOW)

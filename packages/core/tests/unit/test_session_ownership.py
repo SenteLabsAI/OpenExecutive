@@ -288,6 +288,41 @@ def test_turn_finishing_after_its_session_was_deleted_is_not_saved(
         assert conn.execute("SELECT COUNT(*) FROM chat_messages").fetchone()[0] == 0
 
 
+def test_ask_kept_after_its_chat_was_deleted_is_forgotten(
+    client: TestClient, db: Path, people: dict[str, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A turn that keeps its ask after the chat was deleted mid-reply must
+    not leave that ask behind."""
+    from openexecutive.orchestrator import executive as exec_mod
+    from openexecutive.workflows import repeat_asks
+
+    class _DeletesThenKeepsAsk:
+        _THINKING = exec_mod.Executive._THINKING
+
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        async def stream_chat(self, **_kwargs: Any) -> AsyncIterator[str]:
+            (sid,) = _session_ids(db)
+            session_store.delete_session(sid)
+            chat_route.forget_session(sid)
+            conn = repeat_asks._connect(None)
+            conn.execute(
+                "INSERT INTO repeat_asks (person_id, session_id, words, ask, created_at) "
+                "VALUES (1, ?, '[]', 'pipeline summary', '2026-11-02T13:00:00+00:00')",
+                (sid,),
+            )
+            conn.commit()
+            conn.close()
+            yield "ok"
+
+    monkeypatch.setattr(exec_mod, "Executive", _DeletesThenKeepsAsk)
+
+    assert _chat(client, SABIN) == 200
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM repeat_asks").fetchone()[0] == 0
+
+
 def test_fresh_install_without_a_principal_keeps_working(
     client: TestClient, db: Path
 ) -> None:

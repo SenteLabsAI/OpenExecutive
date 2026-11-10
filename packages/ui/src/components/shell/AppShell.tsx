@@ -67,7 +67,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   memory: "About you",
   workspace: "Workspace",
   advanced: "Advanced",
-  tools: "Custom tools",
+  tools: "Tools I built",
   about: "About",
   guide: "User Guide",
   clients: "Client Companies",

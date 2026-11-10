@@ -124,3 +124,53 @@ export function stepApps(tools: string[]): ToolApp[] {
   }
   return out;
 }
+
+// Tools I built: a kept tool's name and what it uses, in plain words.
+
+/** "weekly_pipeline_rollup" → "Weekly pipeline rollup". The stored name stays the id. */
+export function savedToolTitle(name: string): string {
+  const words = name.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : name;
+}
+
+function savedToolPart(name: string): string {
+  const n = name.toLowerCase();
+  const cut = n.indexOf("__");
+  return cut > 0 ? n.slice(cut + 2) : n;
+}
+
+/** What one tool a kept tool calls works on: "your email", "your spreadsheets". */
+export function usesWord(name: string): string {
+  const app = toolApp(name);
+  const tool = savedToolPart(name);
+  switch (app.kind) {
+    case "email":
+      return "your email";
+    case "calendar":
+      return "your calendar";
+    case "browser":
+      return "the web";
+    case "files":
+      if (/sheet|spreadsheet|table/.test(tool)) return "your spreadsheets";
+      if (/slides|presentation/.test(tool)) return "your slides";
+      if (/doc/.test(tool)) return "your documents";
+      return "your files";
+    case "messages":
+      return app.label === "Messages" ? "your messages" : app.label;
+    default:
+      if (/sheet|spreadsheet/.test(tool)) return "your spreadsheets";
+      if (/knowledge|search_docs|company_doc/.test(tool)) return "your company documents";
+      if (app.label === "Open Executive" || app.label === "Other") return "my other tools";
+      return app.label;
+  }
+}
+
+/** "your spreadsheets, your email", each once, in the order first used. */
+export function usesWords(names: string[]): string {
+  const out: string[] = [];
+  for (const name of names) {
+    const word = usesWord(name);
+    if (!out.includes(word)) out.push(word);
+  }
+  return out.length ? out.join(", ") : "no other tools";
+}
