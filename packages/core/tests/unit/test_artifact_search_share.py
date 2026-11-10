@@ -93,6 +93,12 @@ async def test_search_matches_title_text_and_source(db: dict[str, Any]) -> None:
     assert await _ids("board engineers") == set()
 
 
+async def test_search_finds_letters_beyond_a_to_z_as_typed(db: dict[str, Any]) -> None:
+    uber = _draft(db, "a1", "Über plan", "Résumé review")
+    assert await _ids("Über") == {uber}
+    assert await _ids("Résumé") == {uber}
+
+
 async def test_search_escapes_like_wildcards(db: dict[str, Any]) -> None:
     _draft(db, "a1", "Plain", "nothing special")
     pct = _draft(db, "a2", "Margin", "Up 40% this year")

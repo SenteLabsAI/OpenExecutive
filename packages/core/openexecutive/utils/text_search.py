@@ -1,7 +1,8 @@
 """A plain word search in SQLite, shared by the lists that offer one.
 
-``words_clause`` matches rows where every word typed appears (any case, any
-order) in at least one of the given columns. Words are ``LIKE``-escaped, so a
+``words_clause`` matches rows where every word typed appears (any order;
+any case for A-Z, SQLite's ``LIKE``; other letters as typed) in at least one
+of the given columns. Words are ``LIKE``-escaped, so a
 ``%`` or ``_`` someone typed matches itself instead of anything.
 """
 from __future__ import annotations
@@ -28,7 +29,7 @@ def words_clause(columns: tuple[str, ...], text: str) -> tuple[str, list[str]]:
     only rows where each word of ``text`` is in one of ``columns``. Empty
     ``text`` is no clause. ``columns`` are SQL expressions from the caller's
     code, never from the request."""
-    words = clean_search(text).lower().split()[:MAX_SEARCH_WORDS]
+    words = clean_search(text).split()[:MAX_SEARCH_WORDS]
     if not words:
         return "", []
     parts: list[str] = []
@@ -36,7 +37,7 @@ def words_clause(columns: tuple[str, ...], text: str) -> tuple[str, list[str]]:
     for word in words:
         pattern = f"%{_escape(word)}%"
         parts.append(
-            "(" + " OR ".join(f"LOWER({c}) LIKE ? ESCAPE '\\'" for c in columns) + ")"
+            "(" + " OR ".join(f"{c} LIKE ? ESCAPE '\\'" for c in columns) + ")"
         )
         params.extend([pattern] * len(columns))
     return "AND " + " AND ".join(parts) + " ", params
