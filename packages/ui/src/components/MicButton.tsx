@@ -57,6 +57,7 @@ export default function MicButton({ disabled, onLive, onText, onError }: Props) 
   // True from the start of a recording until it stops: a recognizer that
   // ends on its own starts again only while this holds.
   const wantLiveRef = useRef(false);
+  const restartRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // What the browser heard, kept for when the written-out version fails.
   const heardRef = useRef("");
   // For leaving mid-recording: the box keeps what was heard and unlocks.
@@ -87,6 +88,8 @@ export default function MicButton({ disabled, onLive, onText, onError }: Props) 
 
   const stopRecognition = () => {
     wantLiveRef.current = false;
+    if (restartRef.current) clearTimeout(restartRef.current);
+    restartRef.current = null;
     const rec = recognitionRef.current;
     recognitionRef.current = null;
     if (!rec) return;
@@ -163,7 +166,7 @@ export default function MicButton({ disabled, onLive, onText, onError }: Props) 
         recognitionRef.current = null;
         if (failed || restarts >= 20) return;
         restarts += 1;
-        window.setTimeout(begin, Math.min(2000, 200 * restarts));
+        restartRef.current = setTimeout(begin, Math.min(2000, 200 * restarts));
       };
       recognitionRef.current = rec;
       try {
