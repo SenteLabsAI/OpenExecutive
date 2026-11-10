@@ -45,6 +45,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from collections.abc import Collection
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -301,9 +302,11 @@ def list_artifact_runs(
     archived: bool = False,
     *,
     visible_to: int | None,
+    exclude_workflows: Collection[str] = (),
 ) -> list[dict[str, Any]]:
     """Completed runs that produced an artifact, newest first, that
-    `visible_to` may see (`run_visible_to`).
+    `visible_to` may see (`run_visible_to`), leaving out the runs of
+    `exclude_workflows`.
 
     Powers the Executive Artifacts section. Mirrors `list_runs` — the heavy
     `artifact` body is intentionally excluded from the list query (fetch it
@@ -322,15 +325,19 @@ def list_artifact_runs(
         "AND archived_at IS NOT NULL" if archived else "AND archived_at IS NULL"
     )
     visible, params = _visible_clause(visible_to)
+    excluded = sorted(set(exclude_workflows))
+    exclude_clause = (
+        f"AND workflow_name NOT IN ({', '.join('?' * len(excluded))}) " if excluded else ""
+    )
     with _get_conn(_resolve(db_path)) as conn:
         rows = conn.execute(
             "SELECT run_id, workflow_name, title, status, created_at, updated_at, "
             "archived_at, owner_person_id "
             "FROM workflow_runs "
             "WHERE artifact IS NOT NULL AND artifact != '' AND status = 'done' "
-            f"{archived_clause} AND {visible} "
+            f"{archived_clause} AND {visible} {exclude_clause}"
             "ORDER BY created_at DESC LIMIT ?",
-            (*params, limit),
+            (*params, *excluded, limit),
         ).fetchall()
     return [dict(r) for r in rows]
 

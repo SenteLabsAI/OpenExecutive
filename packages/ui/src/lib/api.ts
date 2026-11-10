@@ -3614,6 +3614,10 @@ export interface ArtifactSummary {
   // (packages/core/openexecutive/orchestrator/extensions.py).
   collection?: string | null;
   collection_label?: string | null;
+  // The Documents page group ("chats" | "briefs" | "c:<name>" | "wf:<name>")
+  // and its plain name.
+  group: string;
+  group_label: string;
 }
 
 export type ArtifactFormat = "docx" | "html" | "link" | "markdown" | "xlsx";
