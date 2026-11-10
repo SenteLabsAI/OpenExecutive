@@ -417,7 +417,7 @@ def decisions_to_revisit(now: datetime) -> list[Decision]:
 # Rendering
 # --------------------------------------------------------------------------- #
 
-_STATUS_WORDS = {"on_track": "on track", "at_risk": "at risk", "off_track": "off track"}
+_STATUS_WORDS = {"on_track": "on track", "at_risk": "at risk", "off_track": "off track", "done": "done"}
 
 
 def _words(status: str | None) -> str:
