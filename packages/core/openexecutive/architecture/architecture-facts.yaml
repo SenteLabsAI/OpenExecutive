@@ -12183,6 +12183,28 @@ delegation:
     The take_the_lead_allowed table also keeps As you's allowances and
     Learn from my edits' examples (feature act_as_me, per person: see
     delegation). The older per-feature Ask first rows are no longer read.
+    Standing jobs (take_the_lead_jobs; add_job / stop_job, POST and DELETE
+    /take-the-lead/jobs, or do_in_app add_standing_job / stop_standing_job,
+    principal only, at most 20): things the owner asked it to keep doing.
+    Every leading pass reads them into its user turn (jobs_note) and gets
+    for_standing_job, which sets the job on the pass's Look so the log rows
+    after it carry job_id (job_week counts them for the tab). A job is never
+    a permission: each step goes through _gated like anything else. Why -
+    the owner asked to hand it ongoing work in plain words, with no new gate.
+    Why it looked and what came of it: _reflect binds a Look (looking) with
+    what made it look (a wake's reason from its row text, wake_reason, or
+    "Before your morning brief"); record keeps prompted_by, job_id, outcome
+    (outcome_of) and to_person_id, and Home's Done for you shows them as a
+    second line (today._lead_line, "<name> answered at" from a consumed
+    outbound_context row). More wakes: the scheduler's _maybe_watch_for_lead
+    calls take_the_lead.watch each tick (at most once a minute, only while
+    As me is on, the first check only takes stock): a goal whose status got
+    worse, a workflow run that errored (not the reflection's own), a task
+    whose due time passed, a timed meeting on the cached calendar that
+    ended; one wake for all of them. Home's Watching next (GET /today
+    watching, POST /today/watching/stop) lists the pending ad_hoc and
+    proactive_nudge follow-ups (all for the owner, only their own for a
+    teammate) and the standing jobs, with Stop on each line.
   state: |
     delegation_settings, delegation_voice, delegation_voice_history,
     delegation_drafts, delegation_inbox_watch, delegation_inbox_messages,

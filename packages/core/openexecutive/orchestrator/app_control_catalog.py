@@ -728,6 +728,36 @@ async def _check_inbox(request: Any, item_id: str, value: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Standing jobs (Delegate, As me): things the owner asked it to keep doing
+# --------------------------------------------------------------------------- #
+
+
+async def _find_jobs(request: Any) -> list[Item]:
+    from openexecutive.api.routes import take_the_lead as lead_route
+
+    out = await _call(lead_route.get_take_the_lead, request)
+    return [Item(id=str(j.id), title=j.text, detail=j.this_week) for j in out.jobs]
+
+
+async def _add_job(request: Any, item_id: str, value: str) -> str:
+    from openexecutive.api.routes import take_the_lead as lead_route
+
+    await _call(lead_route.add_job, request, lead_route.JobIn(text=value))
+    return f"Added the standing job {_q(' '.join(value.split()))}"
+
+
+async def _stop_job(request: Any, job_id: str, value: str) -> str:
+    from openexecutive.api.routes import take_the_lead as lead_route
+
+    try:
+        number = int(job_id)
+    except ValueError as exc:
+        raise Refused("That isn't one of the standing jobs.") from exc
+    await _call(lead_route.stop_job, request, number)
+    return "Stopped the standing job"
+
+
+# --------------------------------------------------------------------------- #
 # Registration
 # --------------------------------------------------------------------------- #
 
@@ -762,6 +792,8 @@ _KINDS = (
     Kind("skill", "skill", _find_skills, principal_only=True),
     Kind("setting", "setting", _find_settings),
     Kind("inbox", "inbox", _nothing, no_item=True),
+    Kind("standing_job", "standing job (something As me keeps doing)", _find_jobs, principal_only=True),
+    Kind("new_standing_job", "new standing job", _nothing, principal_only=True, no_item=True),
 )
 
 _ACTIONS = (
@@ -839,6 +871,12 @@ _ACTIONS = (
            "Change one of the person's own settings: quiet_hours (start-end or off), delivery "
            "(instant or digest), urgent_through, act_as_me, inbox_drafts (on or off)",
            _change_setting, confirm=_setting_needs_tap, value="the new value", card="Set {title} to {value}"),
+    # Standing jobs: each step for one still goes through Approvals.
+    Action("add_standing_job", "new_standing_job",
+           "Give As me a standing job, something to keep doing in its own name (use id \"new\")",
+           _add_job, confirm=True, value="what to keep doing, in the person's words",
+           card="Give As me the standing job: {value}"),
+    Action("stop_standing_job", "standing_job", "Stop a standing job", _stop_job),
     Action("check_inbox_now", "inbox", "Check the person's inbox for emails to draft replies to now (use id \"inbox\")",
            _check_inbox),
 )
@@ -850,6 +888,7 @@ _SCREENS = (
     ("settings", "/settings", "Settings"),
     ("notifications", "/settings/notifications", "Settings, Notifications"),
     ("act_as_me", "/settings/act-as-me", "Delegate, As you"),
+    ("as_me", "/delegate#as-me", "Delegate, As me"),
     ("memory_settings", "/settings/memory", "Settings, Memory"),
     ("people", "/people", "People"),
     ("departments", "/departments", "Departments"),

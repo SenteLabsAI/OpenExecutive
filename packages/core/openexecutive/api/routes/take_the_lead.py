@@ -11,6 +11,10 @@ Delegate → As me and Approvals. What it did shows in Recent activity
   DELETE /take-the-lead/rules/{id}
   POST   /take-the-lead/learned      — {key}: allow a suggested action
   DELETE /take-the-lead/learned/{id} — ask first again for an allowed one
+  POST   /take-the-lead/jobs         — {text}: a standing job, something to
+                                       keep doing (each look works it; every
+                                       step still goes through Approvals)
+  DELETE /take-the-lead/jobs/{id}    — stop a standing job
 
 What it's learned (``learned``: actions allowed in training, from a card or
 a suggestion, with any edit kept as an example, then the owner's own Act as
@@ -70,6 +74,15 @@ class SuggestedOut(BaseModel):
     approvals: int
 
 
+class JobOut(BaseModel):
+    id: int
+    text: str
+    created_at: str
+    # What it did for it in the last seven days ("6 follow-ups, 2 meetings
+    # booked"), "" when nothing yet.
+    this_week: str
+
+
 class LeadOut(BaseModel):
     enabled: bool
     # In training: everything waits for a yes unless allowed (``learned``).
@@ -83,6 +96,11 @@ class LeadOut(BaseModel):
     available: bool
     # The Executive is paused: nothing here runs until it resumes.
     paused: bool
+    # Things the owner asked it to keep doing (Standing jobs).
+    jobs: list[JobOut] = []
+    # Today: how many things it did on its own, and how many it left for a yes.
+    done_today: int = 0
+    left_today: int = 0
 
 
 class LeadUpdate(BaseModel):
@@ -97,6 +115,12 @@ class LearnIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     key: str
+
+
+class JobIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
 
 
 class RuleIn(BaseModel):
@@ -158,8 +182,11 @@ def _out(principal: Any) -> LeadOut:
             *take_the_lead.list_allowed(feature=take_the_lead.FEATURE_ACT_AS_ME, person_id=principal.id),
         ]
         suggested = take_the_lead.suggestions()
+        jobs = take_the_lead.list_jobs()
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Couldn't read the rules.") from exc
+    week = take_the_lead.job_week()
+    done_today, left_today = take_the_lead.done_today()
     return LeadOut(
         enabled=lead.enabled,
         training=lead.training,
@@ -180,6 +207,9 @@ def _out(principal: Any) -> LeadOut:
         suggested=[SuggestedOut(key=s.key, label=s.label, approvals=s.approvals) for s in suggested],
         available=_signing_available(),
         paused=_paused(),
+        jobs=[JobOut(id=j.id, text=j.text, created_at=j.created_at, this_week=week.get(j.id, "")) for j in jobs],
+        done_today=done_today,
+        left_today=left_today,
     )
 
 
@@ -312,4 +342,31 @@ def remove_learned(request: Request, allowed_id: int) -> LeadOut:
     if not take_the_lead.disallow(allowed_id, person_id=principal.id):
         raise HTTPException(status_code=404, detail="That isn't there.")
     _audit("Removed something it learned", {"scope": "executive", "allowed_id": allowed_id})
+    return _out(principal)
+
+
+@router.post("/take-the-lead/jobs", response_model=LeadOut)
+def add_job(request: Request, body: JobIn) -> LeadOut:
+    """Give it a standing job. Nothing new is allowed by it: every step it
+    takes for the job still goes through Approvals, the rules and In
+    training, so it needs no more proof than the owner's sign-in."""
+    from openexecutive.orchestrator import take_the_lead
+
+    principal = _principal(request)
+    try:
+        job = take_the_lead.add_job(body.text, created_by=f"person:{principal.id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _audit("Standing job added", {"job_id": job.id})
+    return _out(principal)
+
+
+@router.delete("/take-the-lead/jobs/{job_id}", response_model=LeadOut)
+def stop_job(request: Request, job_id: int) -> LeadOut:
+    from openexecutive.orchestrator import take_the_lead
+
+    principal = _principal(request)
+    if take_the_lead.stop_job(job_id) is None:
+        raise HTTPException(status_code=404, detail="That standing job isn't there.")
+    _audit("Standing job stopped", {"job_id": job_id})
     return _out(principal)
