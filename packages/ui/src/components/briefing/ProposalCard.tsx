@@ -289,7 +289,9 @@ export default function ProposalCard({
   // Monitoring signals show their body as "why it's on your radar" when
   // opened, and artifacts show the document.
   const description = (() => {
-    if (isMonitoring || isArtifact) return "";
+    // A document's card says why it was made, without opening Details.
+    if (isArtifact) return (proposal.suggested_action || "").trim();
+    if (isMonitoring) return "";
     const body = proposal.body.trim();
     const headline = proposal.headline.trim();
     if (!body || body === headline) return "";
@@ -313,12 +315,12 @@ export default function ProposalCard({
     proposal.headline,
   );
   // What approving commits the Executive to ("if I approve, the exec will
-  // do THIS"); for an artifact, why it's worth reading. Never for monitoring.
+  // do THIS"). Never for monitoring; a document shows its why under the title.
   const suggestedActionBlock =
-    !isMonitoring && proposal.suggested_action ? (
+    !isMonitoring && !isArtifact && proposal.suggested_action ? (
       <div className="rounded-xl border border-accent/30 bg-accent/5 px-3.5 py-2.5">
         <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-accent">
-          {isArtifact ? "Why this is worth your time" : "If you approve"}
+          If you approve
         </div>
         <p className="text-sm leading-snug text-fg whitespace-pre-wrap break-words">
           {proposal.suggested_action}

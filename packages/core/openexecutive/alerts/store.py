@@ -573,9 +573,11 @@ def update_alert_content(
     headline: str | None = None,
     body: str | None = None,
     severity: str | None = None,
+    suggested_action: str | None = None,
     db_path: Path | None = None,
 ) -> bool:
-    """Rewrite headline / body / severity in place (a ``changed`` verdict)."""
+    """Rewrite headline / body / severity / suggested_action in place (a
+    ``changed`` verdict, or a document's why once it found its use)."""
     sets: list[str] = []
     params: list[object] = []
     if headline is not None:
@@ -587,6 +589,9 @@ def update_alert_content(
     if severity is not None:
         sets.append("severity = ?")
         params.append(severity)
+    if suggested_action is not None:
+        sets.append("suggested_action = ?")
+        params.append(suggested_action)
     if not sets or not _resolve_db_path(db_path).exists():
         return False
     params.append(alert_id)
