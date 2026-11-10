@@ -4654,7 +4654,8 @@ export interface Goal {
   key_result: string;
   target: string;
   current: string;
-  status: "on_track" | "at_risk" | "off_track";
+  // "done" is a person's call; the weekly reviews leave a done goal alone.
+  status: "on_track" | "at_risk" | "off_track" | "done";
   created_at: string;
   updated_at: string;
   // When OE last graded this goal (department_check_in workflow, or
@@ -6822,6 +6823,72 @@ export async function allowLeadSuggestion(key: string): Promise<TakeTheLead> {
   if (!res.ok) throw await leadError(res, "Couldn't allow it.");
   delegationChanged();
   return res.json();
+}
+
+// Delegate → Approvals (GET /approvals/summary): the reader's last 7 days,
+// and what they approved three times unchanged that could go on its own.
+export type ApprovalsSide = "as_you" | "as_me";
+
+export interface ApprovalsWaited {
+  at: string;
+  side: ApprovalsSide;
+  label: string;
+  // Why it waited, as a sentence ('' when it didn't say).
+  why: string;
+  outcome: "approved" | "declined" | "waiting" | "closed";
+}
+
+export interface ApprovalsWeek {
+  days: number;
+  went: number;
+  waited: number;
+  approved: number;
+  declined: number;
+  because_count: number;
+  because: string;
+  items: ApprovalsWaited[];
+}
+
+export interface ApprovalsOffer {
+  key: string;
+  side: ApprovalsSide;
+  label: string;
+  approvals: number;
+  last_at: string;
+  // As you: who replies would go to on their own ('' for As me).
+  address: string;
+  name: string;
+}
+
+export interface ApprovalsSummary {
+  week: ApprovalsWeek;
+  offers: ApprovalsOffer[];
+}
+
+// Fired with the new summary after Let it go or Keep asking, so the
+// Approvals tab and the cards on Home drop the same offer.
+export const APPROVALS_OFFERS_CHANGED = "oe:approvals-offers-changed";
+
+export async function getApprovalsSummary(signal?: AbortSignal): Promise<ApprovalsSummary | null> {
+  const res = await fetch(`${API_BASE}/approvals/summary`, { signal });
+  if (res.status === 403 || res.status === 404) return null;
+  if (!res.ok) throw await leadError(res, "Couldn't load what Approvals did.");
+  return res.json();
+}
+
+export async function answerApprovalsOffer(key: string, answer: "let-go" | "keep-asking"): Promise<ApprovalsSummary> {
+  const res = await fetch(`${API_BASE}/approvals/offers/${answer}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key }),
+  });
+  if (!res.ok) throw await leadError(res, "Couldn't save that.");
+  const next: ApprovalsSummary = await res.json();
+  if (answer === "let-go") delegationChanged();
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent<ApprovalsSummary>(APPROVALS_OFFERS_CHANGED, { detail: next }));
+  }
+  return next;
 }
 
 export async function removeLeadLearned(id: number): Promise<TakeTheLead> {

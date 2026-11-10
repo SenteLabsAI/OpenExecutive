@@ -31,6 +31,7 @@ import {
   senderShort,
 } from "@/lib/replyCards";
 import FeatureName from "@/components/FeatureName";
+import GoOnItsOwnOffer from "@/components/briefing/GoOnItsOwnOffer";
 import NextTimeTick from "@/components/NextTimeTick";
 
 // Home: the replies the Executive wrote as you for mail that needs you
@@ -816,6 +817,9 @@ export function ReplyCardItem({
         </>
       )}
         </>
+      )}
+      {!unconfirmed && editing === null && (
+        <GoOnItsOwnOffer addresses={card.draft_to?.length ? card.draft_to : [card.from_email]} />
       )}
       {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
     </article>

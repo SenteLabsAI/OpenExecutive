@@ -1403,6 +1403,11 @@ routing:
     takes an optional `owner_person_id` (a non-archived team member, else
     refused). The duplicate check and the 8-goal cap apply to the goals
     with no department as one group.
+    A goal's status can also be `done`. Only a person sets it (the goal
+    editor, or `update_department_goal` in chat). A done goal is left out
+    of every review prompt (`department_check_in._render_goals`,
+    `goal_review._needs_review`), `persist_goal_verdicts` drops a verdict
+    on one, and `/today`'s `goal_count` leaves it out.
     Evals: `department_goal_update_005`, `department_goal_update_006`.
     `record_decision_outcome` (orchestrator/decision_tools.py, both modes)
     records how a past decision turned out. The weekly review lists up to

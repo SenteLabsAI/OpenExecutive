@@ -48,7 +48,7 @@ test("by status: worst first, empty statuses left out", () => {
 test("a goal nobody owns groups last; counts per status", () => {
   const groups = groupGoals([goal(1, { owner: null, ownerName: "" }), goal(2)], "owner", { viewerId: 1 });
   assert.deepEqual(groups.map((g) => g.title), ["Rufus (you)", "No owner yet"]);
-  assert.deepEqual(goalCounts(GOALS), { on_track: 2, at_risk: 1, off_track: 1, not_checked: 0 });
+  assert.deepEqual(goalCounts(GOALS), { on_track: 2, at_risk: 1, off_track: 1, not_checked: 0, done: 0 });
   assert.deepEqual(groupGoals([], "owner"), []);
 });
 
@@ -58,6 +58,19 @@ test("a goal never checked reads not checked yet, not on track", () => {
   // A status someone set stays shown, checked or not.
   assert.equal(shownStatus(goal(1, { status: "at_risk", reviewed: "" })), "at_risk");
   const goals = [...GOALS, goal(5, { reviewed: "" })];
-  assert.deepEqual(goalCounts(goals), { on_track: 2, at_risk: 1, off_track: 1, not_checked: 1 });
+  assert.deepEqual(goalCounts(goals), { on_track: 2, at_risk: 1, off_track: 1, not_checked: 1, done: 0 });
   assert.deepEqual(groupGoals(goals, "status").map((g) => g.title), ["Off track", "At risk", "Not checked yet", "On track"]);
+});
+
+test("a done goal leaves its group for Done, last under every grouping", () => {
+  const goals = [...GOALS, goal(5, { dept: "sales", deptTitle: "Sales", status: "done" }), goal(6, { status: "done", reviewed: "" })];
+  for (const by of ["owner", "department", "status"]) {
+    const groups = groupGoals(goals, by, { viewerId: 1 });
+    const last = groups[groups.length - 1];
+    assert.equal(last.title, "Done");
+    assert.deepEqual(last.goals.map((g) => g.id), [5, 6]);
+    assert.ok(groups.slice(0, -1).every((g) => g.goals.every((x) => x.status !== "done")));
+  }
+  assert.equal(shownStatus(goals[5]), "done");
+  assert.equal(goalCounts(goals).done, 2);
 });

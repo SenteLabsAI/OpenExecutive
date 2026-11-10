@@ -179,7 +179,10 @@ class WeeklyReviewWorkflow(Workflow):
         from openexecutive.departments import registry as dept_registry
 
         try:
-            states = [s for s in dept_registry.list_states() if s.goals]
+            states = [
+                s for s in dept_registry.list_states()
+                if any(g.status != "done" for g in s.goals)
+            ]
         except Exception:
             logger.exception("weekly_review: areas unreadable")
             states = []
@@ -346,7 +349,8 @@ async def _review_area(
     by_id = {v["goal_id"]: v for v in verdicts}
     goals = []
     for g in state.goals:
-        v = by_id.get(g.id)
+        # A finished goal is not graded; a verdict on one is ignored.
+        v = by_id.get(g.id) if g.status != "done" else None
         if v is None:
             goals.append(_goal_row(g, status=g.status, was=None, rationale=""))
         else:
@@ -417,7 +421,7 @@ def decisions_to_revisit(now: datetime) -> list[Decision]:
 # Rendering
 # --------------------------------------------------------------------------- #
 
-_STATUS_WORDS = {"on_track": "on track", "at_risk": "at risk", "off_track": "off track"}
+_STATUS_WORDS = {"on_track": "on track", "at_risk": "at risk", "off_track": "off track", "done": "done"}
 
 
 def _words(status: str | None) -> str:

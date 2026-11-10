@@ -1009,7 +1009,7 @@ def _build_today(
             slug=slug,
             title=title,
             authority_level=authority_level,
-            goal_count=len(goals),
+            goal_count=sum(1 for g in goals if g.status != "done"),
             at_risk_count=sum(1 for g in goals if g.status == "at_risk"),
             off_track_count=sum(1 for g in goals if g.status == "off_track"),
             awaiting_count=dept_awaiting.get(slug, 0) if slug else 0,
