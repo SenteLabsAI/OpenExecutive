@@ -484,6 +484,13 @@ def test_only_the_principal_marks_a_goal_done_from_chat(monkeypatch: pytest.Monk
     monkeypatch.setattr(department_tools, "_goals_created_by_turn", {})
     assert _tool(handle_update_department_goal, payload)["status"] == "ok"
     assert store.get_goal(gid).status == "done"  # type: ignore[union-attr]
+    # Nor does anyone else reopen it.
+    monkeypatch.setattr(department_tools, "_principal_asked", lambda: False)
+    reopen = _tool(handle_update_department_goal,
+                   {"goal_id": gid, "status": "on_track", "rationale": "Reopen it."})
+    assert "only the principal can reopen it" in reopen["error"]
+    assert store.get_goal(gid).status == "done"  # type: ignore[union-attr]
+    monkeypatch.setattr(department_tools, "_principal_asked", lambda: True)
     # A new goal can't start as done.
     born_done = _tool(handle_create_goal, {"key_result": "Open a second office", "target": "1 office", "status": "done",
                                            "rationale": "They said so."})
