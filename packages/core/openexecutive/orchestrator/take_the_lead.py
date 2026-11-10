@@ -330,6 +330,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
                 if "duplicate column" not in str(exc).lower():
                     raise
     conn.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{LOG_TABLE}_goal ON {LOG_TABLE}(goal_id, at)"  # noqa: S608
+    )
+    conn.execute(
         f"CREATE TABLE IF NOT EXISTS {JOBS_TABLE} ("  # noqa: S608
         "id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, created_by TEXT NOT NULL, "
         "created_at TEXT NOT NULL, stopped_at TEXT)"
