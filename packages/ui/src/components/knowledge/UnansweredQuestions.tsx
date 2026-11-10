@@ -100,8 +100,7 @@ function QuestionRow({
             </Button>
             <Button
               size="sm"
-              variant="ghost"
-              className="!h-10"
+              className="!h-10 !text-fg-muted"
               onClick={() => run(() => dismissUnansweredQuestion(question.id))}
               disabled={busy}
             >
