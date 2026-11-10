@@ -320,6 +320,13 @@ def test_below_hands_off_a_reply_with_a_link_amount_or_topic_waits(
     assert _check(switched_on, reply=_reply(body=body)) is None
 
 
+def test_an_email_address_in_the_signature_is_not_a_link(switched_on: Any) -> None:
+    signed = "Got it, thanks.\n\nJordan Lee\nExample Co\njordan@example.com\nmailto:help@example.co"
+    assert _check(switched_on, reply=_reply(body=signed)) is None
+    with_link = signed + "\nexample.com/start"
+    assert _check(switched_on, reply=_reply(body=with_link)) == "link"
+
+
 def test_below_hands_off_the_email_s_own_topic_holds_the_reply(switched_on: Any) -> None:
     message = _msg("m1", "t1", text="Can you approve the invoice before Friday?")
     assert _check(switched_on, message=message) == "sensitive"
