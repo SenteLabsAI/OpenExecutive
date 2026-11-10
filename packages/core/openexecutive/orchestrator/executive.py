@@ -1798,7 +1798,9 @@ class Executive:
             if kept and memory_text is None:
                 from openexecutive.workflows.repeat_asks import note_ask
 
-                repeat_offer = note_ask(own_text, session=session, person_id=person_id, calls=turn_calls)
+                repeat_offer = await asyncio.to_thread(
+                    note_ask, own_text, session=session, person_id=person_id, calls=turn_calls,
+                )
 
             # What it worked out (memory.worked_out): figures the reply worked
             # out from what the turn read, kept for this person alone (private
@@ -2366,7 +2368,9 @@ class Executive:
             if kept and memory_text is None:
                 from openexecutive.workflows.repeat_asks import note_ask
 
-                repeat_offer = note_ask(own_text, session=session, person_id=person_id, calls=turn_calls)
+                repeat_offer = await asyncio.to_thread(
+                    note_ask, own_text, session=session, person_id=person_id, calls=turn_calls,
+                )
 
             # What it worked out — see stream_chat.
             from openexecutive.memory.worked_out import schedule_worked_out_pass
