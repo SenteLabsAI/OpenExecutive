@@ -3239,7 +3239,20 @@ def test_done_for_you_says_how_why_and_what_came_of_what_it_did_as_me(
     from openexecutive.api.routes import today as today_route
 
     earlier = (_dt.now(_UTC) - _td(hours=1)).isoformat()
-    assert today_route._answered(riley, earlier) == ""
+    assert today_route._answers([(riley, earlier)]) == {}
+    # Many messages in one read: only the one answered gets a line.
+    sam = people_store.upsert_person(full_name="Sam Lee", email="sam@example.com", db_path=db)
+    episodic.insert_outbound_context(
+        channel="slack_dm", channel_ref="U2", outbound_text="Hi", recipient_person_id=sam,
+    )
+    just_now = _dt.now(_UTC).isoformat()
+    got = today_route._answers([(riley, just_now), (riley, earlier), (sam, just_now)])
+    assert list(got) == [(riley, just_now)]
+    assert got[(riley, just_now)].startswith("Riley answered at")
+    # Two sends to Riley a minute apart, one answered: one line, on the nearer send.
+    a_minute_ago = (_dt.now(_UTC) - _td(minutes=1, seconds=30)).isoformat()
+    got = today_route._answers([(riley, a_minute_ago), (riley, just_now)])
+    assert list(got) == [(riley, just_now)]
 
 
 def test_watching_next_lists_follow_ups_and_standing_jobs_and_stop_ends_one(
@@ -3295,8 +3308,15 @@ def test_watching_next_lists_follow_ups_and_standing_jobs_and_stop_ends_one(
         "stopped": True,
     }
     assert episodic.get_scheduled_action(sams).status == "cancelled"  # type: ignore[union-attr]
-    # Once is enough.
-    assert client.post("/today/watching/stop", json={"key": f"action:{sams}"}, headers=teammate).status_code == 409
+    # A second stop (another tab) still says stopped, never "went out".
+    assert client.post("/today/watching/stop", json={"key": f"action:{sams}"}, headers=teammate).json() == {
+        "stopped": True,
+    }
+    # Plumbing Watching next never lists can't be stopped from it.
+    plumbing = episodic.insert_scheduled_action(
+        run_at=soon, channel="__internal__", channel_ref="principal", intent_text="x", kind="ad_hoc",
+    )
+    assert client.post("/today/watching/stop", json={"key": f"action:{plumbing}"}, headers=owner).status_code == 404
 
     assert client.post("/today/watching/stop", json={"key": f"job:{job.id}"}, headers=owner).json() == {
         "stopped": True,
