@@ -281,7 +281,11 @@ def note_ask(
                     by_day[day] = at
             if len(by_day) + 1 < MIN_DAYS:
                 return None
+            # Check and insert under one write lock, so the same ask sent
+            # from two apps at once makes one offer, not two.
+            conn.execute("BEGIN IMMEDIATE")
             if _held(conn, pid, words, current):
+                conn.rollback()
                 return None
             asked = sorted([*by_day.values(), current])
             cadence = timing(asked, tz)

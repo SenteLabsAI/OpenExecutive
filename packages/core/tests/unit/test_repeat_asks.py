@@ -100,6 +100,17 @@ def test_open_offer_is_not_made_twice_and_not_now_holds_it(db):
     assert later is not None
 
 
+def test_the_same_third_ask_from_two_apps_at_once_makes_one_offer(db):
+    from concurrent.futures import ThreadPoolExecutor
+
+    _ask(db, "pipeline summary", _monday(0))
+    _ask(db, "pipeline summary", _monday(1))
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(lambda _: _ask(db, "pipeline summary", _monday(2)), range(4)))
+    assert sum(r is not None for r in results) == 1
+    assert len(repeat_asks.open_offers(7, db_path=db)) == 1
+
+
 def test_set_it_up_retires_the_offer_for_good(db):
     for week in range(3):
         offer = _ask(db, "pipeline summary", _monday(week))
