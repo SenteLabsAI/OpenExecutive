@@ -659,6 +659,22 @@ class DoneRow(BaseModel):
     artifact_id: str | None = None
 
 
+class WaitingElsewhereItem(BaseModel):
+    """Something waiting on the reader that lives on another page (watch
+    suggestions on the Watch list, say): one row in Home's Needs you that
+    opens that page, so Home never calls the day quiet while it waits."""
+
+    key: str
+    title: str
+    detail: str = ""
+    count: int
+    href: str
+    # The row's button: "Review", "Look".
+    action: str
+    # The newest thing in it (ISO), for the row's age.
+    at: str = ""
+
+
 class TodayResponse(BaseModel):
     departments: list[DepartmentBriefItem]
     people: list[PersonBriefItem]
@@ -735,6 +751,9 @@ class TodayResponse(BaseModel):
     # Home shows the first-week card instead of calling the day quiet.
     first_week: bool = False
     first_week_card: FirstWeekCardModel | None = None
+    # What waits on the reader on other pages (``_waiting_elsewhere``):
+    # Needs you shows one row each and the day isn't quiet while any wait.
+    waiting_elsewhere: list[WaitingElsewhereItem] = Field(default_factory=list)
 
 
 class ActivityItem(BaseModel):
@@ -2565,6 +2584,7 @@ async def get_today(request: Request, background_tasks: BackgroundTasks) -> Toda
         response.morning_brief = _morning_brief_today()
         response.calendar_next = _calendar_next(datetime.now(UTC))
         response.right_now = _right_now_rows()
+        response.waiting_elsewhere = _waiting_elsewhere()
     response.done_for_you = _done_for_you(request, caller, datetime.now(UTC))
     return response
 
@@ -2744,6 +2764,63 @@ def _right_now_rows(now: datetime | None = None) -> list[RightNowRow]:
         )
         for r in found
     ]
+
+
+# How many watch suggestions Home's row names before "and N more".
+_ELSEWHERE_NAMED = 2
+
+
+def _watch_label(target: str) -> str:
+    """A suggestion's short name: a URL's host, or the target itself."""
+    from urllib.parse import urlsplit
+
+    text = " ".join(str(target or "").split())
+    host = urlsplit(text).hostname if "://" in text else None
+    if host:
+        return host.removeprefix("www.")
+    return text if len(text) <= 40 else text[:39].rstrip() + "…"
+
+
+def _named(labels: list[str]) -> str:
+    """ "a, b and 3 more" from the first few labels."""
+    seen: list[str] = []
+    for label in labels:
+        if label and label not in seen:
+            seen.append(label)
+    if not seen:
+        return ""
+    shown = seen[:_ELSEWHERE_NAMED]
+    rest = len(labels) - len(shown)
+    if rest > 0:
+        return f"{', '.join(shown)} and {rest} more"
+    return " and ".join(shown) if len(shown) == 2 else shown[0]
+
+
+def _waiting_elsewhere() -> list[WaitingElsewhereItem]:
+    """The principal's things waiting on other pages: the Watch list's
+    suggestions waiting for a yes or no. Never raises."""
+    from openexecutive.monitoring import store as monitoring_store
+
+    items: list[WaitingElsewhereItem] = []
+    try:
+        suggestions = monitoring_store.list_pending_suggestions()
+    except Exception:
+        logger.exception("today: reading watch suggestions failed")
+        suggestions = []
+    if suggestions:
+        n = len(suggestions)
+        items.append(
+            WaitingElsewhereItem(
+                key="watch-suggestions",
+                title=f"{n} {'thing' if n == 1 else 'things'} I'd like to watch",
+                detail=_named([_watch_label(w.target) for w in suggestions]),
+                count=n,
+                href="/watchlist",
+                action="Look",
+                at=max((w.created_at or "" for w in suggestions), default=""),
+            )
+        )
+    return items
 
 
 class DismissRowRequest(BaseModel):

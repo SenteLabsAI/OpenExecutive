@@ -68,6 +68,7 @@ import { anyWorking } from "@/lib/doneForYou";
 import FirstWeekCard from "./briefing/FirstWeekCard";
 import { useGlance } from "./briefing/Glance";
 import { RightNowItem } from "./briefing/RightNow";
+import WaitingElsewhereRow from "./briefing/WaitingElsewhere";
 import { isHeldAction } from "./briefing/HeldActionCard";
 import { isLeadTraining } from "./briefing/LeadTrainingCard";
 import ProposalCard from "./briefing/ProposalCard";
@@ -484,8 +485,12 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
   const attentionRealDepts = realDepartments(attentionDepts);
   const goals = goalTotals(departments);
 
+  // What waits on other pages (watch suggestions, …): one Needs you row each.
+  const elsewhere = today?.waiting_elsewhere ?? [];
+
   const isQuiet =
     today !== null &&
+    elsewhere.length === 0 &&
     today.proposals.length === 0 &&
     replies.cards.length === 0 &&
     actionCards.cards.length === 0 &&
@@ -544,7 +549,7 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
   }, [working, refreshToday]);
   const needsYouCount =
     rightNowRows.length + mineProposals.length + replies.cards.length + inviteCards.cards.length +
-    actionCards.cards.length;
+    actionCards.cards.length + elsewhere.length;
   // Home's summary says only what its two lists hold; the rest (people,
   // departments, under way, monitoring) is one quiet line at the bottom.
   const summary: SummaryPart[] = today ? homeSummary(needsYouCount, doneRows.length) : [];
@@ -750,6 +755,15 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
         ),
       };
     }),
+    // What waits on another page: a row that opens it. Never folds into
+    // Older and isn't cleared from here; it goes when it's answered there.
+    ...elsewhere.map((item) => ({
+      key: `elsewhere-${item.key}`,
+      at: item.at || new Date().toISOString(),
+      keep: true,
+      clear: async () => {},
+      render: () => <WaitingElsewhereRow item={item} />,
+    })),
   ];
   const { current: currentQueue, older: olderQueue } = splitOlder(
     queue,
