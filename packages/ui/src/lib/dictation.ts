@@ -46,10 +46,31 @@ export interface HeardPart {
 /** The words shown while the person talks: `settled` (what the browser
  *  won't change any more, after `earlier`) and `pending` (its current
  *  guess at the latest words, which may still change). */
-export function splitHeard(earlier: string, parts: HeardPart[]): { settled: string; pending: string } {
+export function splitHeard(
+  earlier: string,
+  parts: HeardPart[],
+  cumulative = false,
+): { settled: string; pending: string } {
+  // Chrome on Android (`cumulative`) sends each piece with everything said
+  // before it ("hi", "hi there", "hi there how"), where desktop sends only
+  // the new words. There a piece that starts with the one before it
+  // replaces that one, so the words don't repeat.
+  const pieces: HeardPart[] = [];
+  for (const part of parts) {
+    const text = part.transcript.trim();
+    if (!text) continue;
+    const prev = pieces[pieces.length - 1];
+    // Android may add a comma or full stop as it revises ("hello" then
+    // "hello, how are you"), so trailing punctuation doesn't count.
+    const before = prev?.transcript.toLowerCase().replace(/[.,;:!?]+$/, "");
+    const lower = text.toLowerCase();
+    const next = lower.charAt(before?.length ?? 0);
+    if (cumulative && before && lower.startsWith(before) && (!next || /[\s.,;:!?]/.test(next))) pieces.pop();
+    pieces.push({ transcript: text, isFinal: part.isFinal });
+  }
   let settled = earlier.trim();
   let pending = "";
-  for (const part of parts) {
+  for (const part of pieces) {
     if (part.isFinal) settled = joinDictation(settled, part.transcript);
     else pending = joinDictation(pending, part.transcript);
   }
