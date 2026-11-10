@@ -12231,7 +12231,21 @@ delegation:
     Every leading pass reads them into its user turn (jobs_note) and gets
     for_standing_job, which sets the job on the pass's Look so the log rows
     after it carry job_id (job_week counts them for the tab). A job is never
-    a permission: each step goes through _gated like anything else. Why -
+    a permission: each step goes through _gated like anything else.
+    Goals the same way: with open goals, the pass's user turn lists them
+    (goals_note) and it gets for_goal, which sets goal_id on the Look so the
+    log rows after it carry goal_id (goal_rows). departments.goal_week turns
+    those rows, successful update_department_goal audit rows and
+    goal_status_review rows into the Goals page's "What I did for this goal
+    this week" (GET /goals/week, GET /goals/{id}/activity). Recorded at the
+    time, never guessed afterwards; Take the lead's steps are the owner's
+    alone. Why - Rufus asked every goal to say what was done for it.
+    Reply habits (people.reply_habits): consumed outbound_context rows give
+    each reply's channel and delay; the median reply time and the channel
+    of most quick replies are suggested on the person's page when they
+    differ enough from response_sla_hours / preferred_channel. Keep mine
+    stores the turned-down value (reply_habit_kept). Use it is a PATCH, so
+    nothing changes on its own. Why -
     the owner asked to hand it ongoing work in plain words, with no new gate.
     Why it looked and what came of it: _reflect binds a Look (looking) with
     what made it look (a wake's reason from its row text, wake_reason, or

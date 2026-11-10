@@ -724,6 +724,59 @@ def get_person_outreach(person_id: int, request: Request) -> list[OutreachStat]:
     return rows
 
 
+class ReplyHabitSuggestion(BaseModel):
+    kind: str  # "reply_time" | "channel"
+    # reply_time: whole hours; channel: email, slack, telegram or discord.
+    value: str
+    headline: str
+    evidence: str
+
+
+class ReplyHabitsOut(BaseModel):
+    suggestions: list[ReplyHabitSuggestion]
+
+
+class ReplyHabitKeep(BaseModel):
+    kind: str = Field(pattern="^(reply_time|channel)$")
+
+
+def _habits_person(person_id: int, request: Request) -> Person:
+    """Whoever may edit the person (``_require_roster_owner``), before the
+    id lookup; 404 an archived one."""
+    _require_roster_owner(request)
+    person = _visible_person(person_id, request)
+    if person.archived:
+        raise HTTPException(status_code=404, detail="Person not found")
+    return person
+
+
+@router.get("/people/{person_id}/reply-habits", response_model=ReplyHabitsOut)
+def get_person_reply_habits(person_id: int, request: Request) -> ReplyHabitsOut:
+    """A reply time and channel to suggest from how this person really
+    answered the Executive (``people.reply_habits``). Empty when there is
+    too little to go on or it matches what is set. Whoever may edit them."""
+    from openexecutive.people import reply_habits
+
+    person = _habits_person(person_id, request)
+    return ReplyHabitsOut(suggestions=[
+        ReplyHabitSuggestion(kind=s.kind, value=s.value, headline=s.headline, evidence=s.evidence)
+        for s in reply_habits.suggestions(person)
+    ])
+
+
+@router.post("/people/{person_id}/reply-habits/keep", status_code=status.HTTP_204_NO_CONTENT)
+def keep_person_reply_habit(person_id: int, body: ReplyHabitKeep, request: Request) -> Response:
+    """Keep mine: hide that suggestion until the evidence changes
+    materially. Use it is a plain ``PATCH /people/{id}``."""
+    from openexecutive.people import reply_habits
+
+    person = _habits_person(person_id, request)
+    kind: reply_habits.Kind = "channel" if body.kind == "channel" else "reply_time"
+    if not reply_habits.keep_mine(person, kind):
+        raise HTTPException(status_code=409, detail="There is nothing to keep")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 # ---------------------------------------------------------------------------
 # Working style (attunement) — how this person likes replies
 # ---------------------------------------------------------------------------

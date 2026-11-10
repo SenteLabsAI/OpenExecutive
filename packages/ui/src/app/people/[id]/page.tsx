@@ -7,6 +7,7 @@ import { type FormEvent, Fragment, type ReactNode, useCallback, useEffect, useId
 import Icon from "@/components/Icon";
 import { ChatAppPickers } from "@/components/people/ChatAppPickers";
 import { PersonContactChanges, PersonContactNote } from "@/components/people/ContactChanges";
+import ReplyHabits from "@/components/people/ReplyHabits";
 import { TeamModeSwitch } from "@/components/people/TeamModeSwitch";
 import { usePageCrumb } from "@/components/shell/PageCrumb";
 import Button from "@/components/ui/Button";
@@ -1064,6 +1065,9 @@ export default function PersonDetailPage() {
                       </li>
                     )}
                   </ul>
+                )}
+                {!editing && viewerIsPrincipal && !person.archived && !contact && (
+                  <ReplyHabits person={person} onUpdated={(p) => { setPerson(p); resetForm(p); }} />
                 )}
               </section>
 

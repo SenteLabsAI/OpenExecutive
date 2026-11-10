@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from openexecutive.departments import registry, store
@@ -434,6 +434,70 @@ def list_all_goals() -> list[GoalView]:
         )
         for v in list_goal_views()
     ]
+
+
+class GoalWeekLine(BaseModel):
+    text: str
+    at: str
+
+
+class GoalWaitingLine(BaseModel):
+    text: str
+    at: str
+    # The card on Home (``/?card=<id>``), when it can be found.
+    card_id: int | None = None
+
+
+class GoalWeekOut(BaseModel):
+    done: list[GoalWeekLine]
+    waiting: list[GoalWaitingLine]
+
+
+class GoalWeeksOut(BaseModel):
+    # Goal id (as a string, JSON keys) -> what was done for it.
+    goals: dict[str, GoalWeekOut]
+
+
+# "See everything" reads this far back.
+GOAL_ACTIVITY_DAYS = 90
+
+
+def _goal_weeks(goal_ids: list[int], request: Request, days: int) -> GoalWeeksOut:
+    """What the Executive did for each goal (``departments.goal_week``), as
+    the caller may see it: the owner sees everything, anyone else the
+    shared lines and their own."""
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+    from openexecutive.api.routes.people import caller_is_principal
+    from openexecutive.departments.goal_week import goal_week
+
+    principal = caller_is_principal(request)
+    viewer = None if principal else _resolve_caller_person_id(request)
+    weeks = goal_week(goal_ids, days=days, principal=principal, viewer=viewer)
+    return GoalWeeksOut(goals={
+        str(goal_id): GoalWeekOut(
+            done=[GoalWeekLine(text=line.text, at=line.at) for line in week.done],
+            waiting=[GoalWaitingLine(text=w.text, at=w.at, card_id=w.card_id) for w in week.waiting],
+        )
+        for goal_id, week in weeks.items()
+    })
+
+
+@router.get("/goals/week", response_model=GoalWeeksOut)
+def goals_this_week(request: Request) -> GoalWeeksOut:
+    """For every goal, what the Executive did for it in the last seven days
+    and what waits on the owner: the Goals page's "What I did for this goal
+    this week"."""
+    ids = [g.id for g in store.list_all_goals() if g.id is not None]
+    return _goal_weeks(ids, request, 7)
+
+
+@router.get("/goals/{goal_id}/activity", response_model=GoalWeekOut)
+def goal_activity(goal_id: int, request: Request) -> GoalWeekOut:
+    """Everything the Executive did for one goal in the last 90 days: the
+    Goals page's "See everything"."""
+    if store.get_goal(goal_id) is None:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    return _goal_weeks([goal_id], request, GOAL_ACTIVITY_DAYS).goals[str(goal_id)]
 
 
 def _watching_by_goal() -> dict[int, list[str]]:
