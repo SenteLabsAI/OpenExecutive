@@ -10846,6 +10846,12 @@ delegation:
     person turns it on for themselves (PUT /delegation); nobody turns it on
     for anyone else. delegation_settings holds one row per
     person; missing, unreadable or 0 is off (is_enabled never raises).
+  sends_only_settled_replies: |
+    A reply goes on its own only when it leaves the person nothing to
+    answer: an open question on its card with no answer yet holds it
+    (handle_it.leaves_questions, refusal "questions"), checked at send time
+    in reply_send.send_on_its_own, so after any work card_work did first.
+    It then waits on Home like any other card.
   turn_pin: |
     pin_turn_delegation(session, speaker_text) runs at the start of every
     chat turn (stream_chat and the committee path, beside

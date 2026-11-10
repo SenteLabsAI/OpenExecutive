@@ -38,8 +38,8 @@ test("the Now line says what happens at each step, with In training above Approv
   assert.match(reachLine("inbox", true, "trust"), /In training, every one waits/);
   assert.match(reachLine("inbox", false, "ask"), /On Careful, every one waits/);
   assert.match(reachLine("inbox", false, null), /every one waits/);
-  assert.match(reachLine("inbox", false, "outsiders"), /on Balanced sends the sure ones/);
-  assert.match(reachLine("inbox", false, "trust"), /on Hands-off sends the sure ones/);
+  assert.match(reachLine("inbox", false, "outsiders"), /^On Balanced it sends a reply itself when it is sure and the reply leaves nothing for you to answer\./);
+  assert.match(reachLine("inbox", false, "trust"), /^On Hands-off it sends a reply itself .* The rest wait on Home\./);
 });
 
 test("each Approvals level says what goes as you and as me", () => {
