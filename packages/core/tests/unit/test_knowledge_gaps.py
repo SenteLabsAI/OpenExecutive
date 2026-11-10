@@ -1,0 +1,268 @@
+"""Questions it could not answer (memory/knowledge_gaps.py, the grading in
+memory/chat_review.py, api/routes/knowledge_questions.py): which questions
+land on the list, that one question keeps one line, how a line leaves, and
+who sees it."""
+from __future__ import annotations
+
+import asyncio
+import json
+from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from openexecutive import providers
+from openexecutive.api.routes import knowledge_questions as route
+from openexecutive.audit import logger as audit_logger
+from openexecutive.audit import usage
+from openexecutive.audit.logger import AuditLogger
+from openexecutive.memory import chat_review as cr
+from openexecutive.memory import episodic, facts, session_store
+from openexecutive.memory import knowledge_gaps as kg
+from openexecutive.orchestrator.session import Session
+from openexecutive.people import registry as people_registry
+from openexecutive.people import store as people_store
+
+NOW = datetime(2026, 10, 15, 15, 0, tzinfo=UTC)
+OWNER = {"x-caller-email": "olivia@co.example"}
+TEAMMATE = {"x-caller-email": "ben@co.example"}
+REFUND = "What is our refund policy for annual plans?"
+
+
+@pytest.fixture(autouse=True)
+def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    path = tmp_path / "episodic.db"
+    monkeypatch.setattr(episodic, "DB_PATH", path)
+    monkeypatch.setattr(people_store, "DB_PATH", path)
+    episodic.initialize_db(path)
+    people_store.initialize_db(path)
+    episodic.initialize_db(session_store.DB_PATH)
+    for var in ("OE_LOCAL_LOGIN", "OE_PUBLIC_DEPLOYMENT"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("CHAT_REVIEW_ENABLED", "true")
+    monkeypatch.setattr(audit_logger, "_default_logger", AuditLogger(db_path=path))
+    monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **k: None)
+    monkeypatch.setattr(usage, "log_model_usage", lambda *a, **k: None)
+    people_registry.invalidate()
+    yield path
+    people_registry.invalidate()
+
+
+@pytest.fixture
+def roster() -> SimpleNamespace:
+    principal = people_store.upsert_person(full_name="Olivia Owner", is_principal=True, email="olivia@co.example")
+    teammate = people_store.upsert_person(full_name="Ben Teammate", email="ben@co.example")
+    people_registry.invalidate()
+    return SimpleNamespace(principal=people_store.get_person(principal), teammate=people_store.get_person(teammate))
+
+
+# --------------------------------------------------------------------------- #
+# The list itself
+# --------------------------------------------------------------------------- #
+
+
+def test_the_same_question_asked_again_adds_to_one_line(db: Path) -> None:
+    first = kg.note_unanswered(REFUND, person_id=1, session_id="s-1", asked_at=NOW, db_path=db)
+    again = kg.note_unanswered("what's the refund policy on our annual plans", person_id=2,
+                               session_id="s-2", asked_at=NOW + timedelta(hours=1), db_path=db)
+    other = kg.note_unanswered("Who signs off on vendor contracts over $10,000?", person_id=1,
+                               session_id="s-1", db_path=db)
+    assert first == again and other != first
+    lines = kg.list_open(db_path=db)
+    refund = next(x for x in lines if x["id"] == first)
+    assert refund["times"] == 2 and refund["askers"] == [1, 2] and refund["sessions"] == ["s-1", "s-2"]
+    assert refund["question"] == REFUND and refund["person_id"] == 2
+
+
+def test_matching_is_by_content_words() -> None:
+    assert kg.same_question("Who approves vendor contracts?", "who approves our vendor contracts")
+    assert not kg.same_question("Who approves vendor contracts?", "Who approves hiring plans?")
+    assert not kg.same_question("refund?", "refund?")
+
+
+def test_a_question_must_come_from_their_own_words() -> None:
+    message = "hey, quick one: what is our refund policy for annual plans? customer asking"
+    assert kg.clean_question(REFUND, message) == REFUND
+    assert kg.clean_question("What is the board meeting date?", message) == ""
+    assert kg.clean_question("Refund?", message) == ""
+
+
+def test_a_line_leaves_and_a_dismissed_one_stays_gone_for_who_asked(db: Path) -> None:
+    line = kg.note_unanswered(REFUND, person_id=1, session_id="s-1", db_path=db)
+    assert line is not None
+    assert kg.close(line, "dismissed", db_path=db)
+    assert kg.list_open(db_path=db) == []
+    assert kg.note_unanswered(REFUND, person_id=1, session_id="s-3", db_path=db) is None
+    assert kg.list_open(db_path=db) == []
+    # Someone new asking it brings it back.
+    assert kg.note_unanswered(REFUND, person_id=2, session_id="s-4", db_path=db) == line
+    [back] = kg.list_open(db_path=db)
+    assert back["times"] == 1
+    assert kg.close(line, "taught", db_path=db)
+    assert not kg.close(line, "document", db_path=db)
+
+
+def test_a_later_answer_that_knew_it_takes_it_off(db: Path) -> None:
+    kg.note_unanswered(REFUND, person_id=1, session_id="s-1", db_path=db)
+    assert kg.note_answered("refund policy for annual plans?", db_path=db) == 1
+    assert kg.list_open(db_path=db) == []
+
+
+def test_deleting_the_chat_drops_its_asks(db: Path) -> None:
+    kg.note_unanswered(REFUND, person_id=1, session_id="s-1", db_path=db)
+    kg.note_unanswered(REFUND, person_id=1, session_id="s-2", db_path=db)
+    kg.note_unanswered("Who signs off on vendor contracts?", person_id=1, session_id="s-2", db_path=db)
+    cr.forget_session("s-2", db_path=db)
+    [left] = kg.list_open(db_path=db)
+    assert left["question"] == REFUND and left["sessions"] == ["s-1"]
+
+
+def test_company_sources_are_told_from_playbooks_and_the_web() -> None:
+    assert not kg.has_company_source(None)
+    assert not kg.has_company_source({"sources": [{"kind": "knowledge"}, {"kind": "web"}]})
+    assert kg.has_company_source({"sources": [{"kind": "web"}, {"kind": "company"}]})
+    assert kg.has_company_source({"sources": [{"kind": "drive"}]})
+
+
+# --------------------------------------------------------------------------- #
+# Found by the look-back
+# --------------------------------------------------------------------------- #
+
+
+class _Provider:
+    def __init__(self, grades: list[dict[str, Any]]) -> None:
+        self.grades = grades
+
+    async def messages_create(self, **kw: Any) -> Any:
+        if (kw.get("tool_choice") or {}).get("name") == cr.GRADE_TOOL["name"]:
+            return SimpleNamespace(content=[SimpleNamespace(
+                type="tool_use", id="g0", name=cr.GRADE_TOOL["name"], input={"grades": self.grades},
+            )])
+        return SimpleNamespace(content=[SimpleNamespace(type="text", text="nothing")])
+
+
+def _web(person_id: int, session_id: str = "s-1", **kw: Any) -> Session:
+    return Session(session_id=session_id, from_web_chat=True, caller_person_id=person_id,
+                   web_caller_signed_in=True, **kw)
+
+
+def _review(db: Path, grades: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch, session_id: str = "s-1") -> None:
+    monkeypatch.setattr(providers, "get_provider", lambda _model: _Provider(grades))
+    asyncio.run(cr.run_scheduled(session_id, NOW + timedelta(hours=1), db_path=db))
+
+
+def _saved_reply(db: Path, reply: str, sources: dict[str, Any] | None, session_id: str = "s-1") -> None:
+    session_store.create_session(session_id, "Chat", NOW.isoformat(), db_path=db)
+    session_store.save_message(session_id, "assistant", reply, db_path=db,
+                               sources=json.dumps(sources) if sources is not None else None)
+
+
+def test_a_company_question_no_document_covered_lands_on_the_list(
+    db: Path, roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid = roster.principal.id
+    reply = "I don't have your refund policy on file. Most SaaS companies refund within 30 days."
+    cr.record_turn(REFUND, reply, session=_web(pid), person_id=pid, calls=[], now=NOW)
+    _saved_reply(db, reply, {"sources": [{"kind": "web", "title": "Refunds", "url": "https://x.example"}],
+                             "unavailable": []})
+    cr.record_turn("thanks, and say hi to the team", "Will do.", session=_web(pid), person_id=pid,
+                   calls=[], now=NOW + timedelta(minutes=1))
+    _review(db, [
+        {"turn": 1, "verdict": "fine", "question": REFUND, "answer": "not_known"},
+        {"turn": 2, "verdict": "fine"},
+    ], monkeypatch)
+    [line] = kg.list_open(db_path=db)
+    assert line["question"] == REFUND and line["askers"] == [pid] and line["place"] == "chat"
+
+
+def test_a_question_a_document_came_back_for_is_not_listed(
+    db: Path, roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid = roster.principal.id
+    reply = "I'm not sure, the policy doc doesn't say."
+    cr.record_turn(REFUND, reply, session=_web(pid), person_id=pid, calls=[], now=NOW)
+    _saved_reply(db, reply, {"sources": [{"kind": "company", "title": "Pricing", "url": None}], "unavailable": []})
+    _review(db, [{"turn": 1, "verdict": "fine", "question": REFUND, "answer": "not_known"}], monkeypatch)
+    assert kg.list_open(db_path=db) == []
+
+
+def test_a_mail_private_chat_is_never_listed(
+    db: Path, roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid = roster.principal.id
+    cr.record_turn(REFUND, "I don't know.", session=_web(pid), person_id=pid, calls=[], mail=True, now=NOW)
+    _review(db, [{"turn": 1, "verdict": "fine", "question": REFUND, "answer": "not_known"}], monkeypatch)
+    assert kg.list_open(db_path=db) == []
+
+
+def test_a_later_turn_that_knew_it_closes_the_line(
+    db: Path, roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid = roster.principal.id
+    kg.note_unanswered(REFUND, person_id=pid, session_id="s-0", db_path=db)
+    cr.record_turn(REFUND, "Annual plans are refundable within 30 days.", session=_web(pid),
+                   person_id=pid, calls=[], now=NOW)
+    _review(db, [{"turn": 1, "verdict": "fine", "question": REFUND, "answer": "covered"}], monkeypatch)
+    assert kg.list_open(db_path=db) == []
+
+
+def test_the_grader_is_asked_for_the_question_and_document_cause() -> None:
+    item = cr.GRADE_TOOL["input_schema"]["properties"]["grades"]["items"]["properties"]
+    assert item["answer"]["enum"] == ["covered", "not_known"]
+    assert "document" in item["cause"]["enum"] and "document" in cr.CAUSES["company"]
+
+
+# --------------------------------------------------------------------------- #
+# The Knowledge page's routes
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def client() -> TestClient:
+    app = FastAPI()
+    app.include_router(route.router)
+    return TestClient(app)
+
+
+def test_the_owner_sees_the_list_and_a_teammate_nothing(client: TestClient, roster: SimpleNamespace) -> None:
+    kg.note_unanswered(REFUND, person_id=roster.principal.id, session_id="s-1")
+    session_store.create_session("slack:channel:C7:ts1", "Pricing", NOW.isoformat(), roster.teammate.id)
+    kg.note_unanswered("Who signs off on vendor contracts?", person_id=roster.teammate.id,
+                       session_id="slack:channel:C7:ts1", place="Slack")
+    page = client.get("/knowledge/questions", headers=OWNER).json()
+    assert page["count"] == 2
+    assert {(q["asked_by"], q["place"]) for q in page["questions"]} == {("You", "chat"), ("Ben Teammate", "Slack")}
+    assert client.get("/knowledge/questions", headers=TEAMMATE).json() == {"questions": [], "count": 0}
+    assert client.get("/knowledge/questions").json()["count"] == 0
+
+
+def test_a_teammates_own_chat_stays_off_the_owners_list(client: TestClient, roster: SimpleNamespace) -> None:
+    session_store.create_session("web-ben", "Pay", NOW.isoformat(), roster.teammate.id)
+    line = kg.note_unanswered("What is my salary band?", person_id=roster.teammate.id, session_id="web-ben")
+    assert client.get("/knowledge/questions", headers=OWNER).json()["count"] == 0
+    assert client.post(f"/knowledge/questions/{line}/dismiss", headers=OWNER).status_code == 404
+
+
+def test_telling_the_answer_keeps_a_fact_and_closes_the_line(client: TestClient, roster: SimpleNamespace) -> None:
+    line = kg.note_unanswered(REFUND, person_id=roster.principal.id, session_id="s-1")
+    resp = client.post(f"/knowledge/questions/{line}/answer", headers=OWNER,
+                       json={"answer": "Annual plans are refundable within 30 days."})
+    assert resp.status_code == 200 and resp.json()["count"] == 0
+    [fact] = facts.list_facts()
+    assert fact.subject == REFUND and fact.statement == "Annual plans are refundable within 30 days."
+    assert client.post(f"/knowledge/questions/{line}/answer", headers=OWNER,
+                       json={"answer": "again"}).status_code == 404
+
+
+def test_a_document_or_dismiss_closes_it_and_only_the_owner_may(client: TestClient, roster: SimpleNamespace) -> None:
+    line = kg.note_unanswered(REFUND, person_id=roster.principal.id, session_id="s-1")
+    other = kg.note_unanswered("Who signs off on vendor contracts?", person_id=roster.principal.id, session_id="s-1")
+    assert client.post(f"/knowledge/questions/{line}/document", headers=TEAMMATE).status_code == 403
+    assert client.post(f"/knowledge/questions/{line}/document", headers=OWNER).json()["count"] == 1
+    assert client.post(f"/knowledge/questions/{other}/dismiss", headers=OWNER).json()["count"] == 0
+    assert kg.get(line)["status"] == "resolved" and kg.get(other)["status"] == "dismissed"

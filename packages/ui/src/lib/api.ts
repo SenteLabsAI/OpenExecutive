@@ -3766,6 +3766,57 @@ export async function getReviewStats(): Promise<ReviewStats> {
   return res.json();
 }
 
+// Questions it could not answer (knowledge_questions route): what people
+// asked about the company that no document covered. Owner only; anyone else
+// gets an empty list.
+export interface UnansweredQuestion {
+  id: number;
+  question: string;
+  /** "You", or the name of who asked it last. */
+  asked_by: string;
+  /** "chat", or the chat app it was asked in. */
+  place: string;
+  last_asked_at: string;
+  times: number;
+}
+
+export interface UnansweredQuestions {
+  questions: UnansweredQuestion[];
+  count: number;
+}
+
+export async function listUnansweredQuestions(): Promise<UnansweredQuestions> {
+  const res = await fetch(`${API_BASE}/knowledge/questions`);
+  if (!res.ok) throw new Error("Failed to load the questions");
+  return res.json();
+}
+
+async function closeUnansweredQuestion(
+  id: number,
+  action: "answer" | "document" | "dismiss",
+  body?: unknown
+): Promise<UnansweredQuestions> {
+  const res = await fetch(`${API_BASE}/knowledge/questions/${id}/${action}`, {
+    method: "POST",
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, "Couldn't update the question"));
+  return res.json();
+}
+
+export function answerUnansweredQuestion(id: number, answer: string): Promise<UnansweredQuestions> {
+  return closeUnansweredQuestion(id, "answer", { answer });
+}
+
+export function markQuestionDocumented(id: number): Promise<UnansweredQuestions> {
+  return closeUnansweredQuestion(id, "document");
+}
+
+export function dismissUnansweredQuestion(id: number): Promise<UnansweredQuestions> {
+  return closeUnansweredQuestion(id, "dismiss");
+}
+
 export async function patchReviewItem(itemId: string, patch: ReviewItemPatch): Promise<ReviewItem> {
   const res = await fetch(`${API_BASE}/review/items/${encodeURIComponent(itemId)}`, {
     method: "PATCH",

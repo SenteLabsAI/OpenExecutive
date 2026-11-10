@@ -16,7 +16,7 @@ import {
   NEW_CHAT_DESCRIPTION,
   SETTINGS_NAV_ITEM,
 } from "@/components/shell/navConfig";
-import { getReviewStats, listMemoryChanges } from "@/lib/api";
+import { getReviewStats, listMemoryChanges, listUnansweredQuestions } from "@/lib/api";
 import { MEMORY_VISITED_EVENT, readLastVisit, writeLastVisit } from "@/lib/memoryChanges";
 
 /**
@@ -62,13 +62,19 @@ export default function AppSidebar({
   const { mode, role, hasDepartments } = useWorkspace();
   const [reviewBadge, setReviewBadge] = useState(0);
 
-  // Knowledge base badge: items waiting in its review queue. Refetched on
-  // navigation so approving items clears the badge once you move on, rather
-  // than only on a full reload.
+  // Knowledge badge: items waiting in its review queue plus the questions it
+  // could not answer. Refetched on navigation so approving an item or
+  // answering a question clears it once you move on, rather than only on a
+  // full reload. Either count failing leaves it out.
   useEffect(() => {
-    getReviewStats()
-      .then((s) => setReviewBadge(s.pending + s.needs_revision))
-      .catch(() => {});
+    Promise.all([
+      getReviewStats()
+        .then((s) => s.pending + s.needs_revision)
+        .catch(() => 0),
+      listUnansweredQuestions()
+        .then((q) => q.count)
+        .catch(() => 0),
+    ]).then(([review, questions]) => setReviewBadge(review + questions));
   }, [pathname]);
 
   const memoryNews = useMemoryNews(pathname);
