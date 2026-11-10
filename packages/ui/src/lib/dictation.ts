@@ -36,3 +36,28 @@ export function clock(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
+
+/** One piece of what the browser's own speech recognition heard so far. */
+export interface HeardPart {
+  transcript: string;
+  isFinal: boolean;
+}
+
+/** The words shown while the person talks: `settled` (what the browser
+ *  won't change any more, after `earlier`) and `pending` (its current
+ *  guess at the latest words, which may still change). */
+export function splitHeard(earlier: string, parts: HeardPart[]): { settled: string; pending: string } {
+  let settled = earlier.trim();
+  let pending = "";
+  for (const part of parts) {
+    if (part.isFinal) settled = joinDictation(settled, part.transcript);
+    else pending = joinDictation(pending, part.transcript);
+  }
+  return { settled, pending };
+}
+
+/** The two short tones: rising when the mic starts, falling when it stops. */
+export const MIC_TONES: Record<"start" | "stop", readonly [number, number]> = {
+  start: [660, 880],
+  stop: [880, 660],
+};
