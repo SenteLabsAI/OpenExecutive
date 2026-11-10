@@ -260,7 +260,7 @@ async def _send_checked(
         # to tie it to them.
         stored = handle_it.get(person.id)
         if getattr(instance, "gate_mode", "") != "auto_execute" or not stored.enabled:
-            raise SendRefused(409, "handle_it_off", "Handle it for me is off for this reply.")
+            raise SendRefused(409, "handle_it_off", "Sending on its own is off for this reply.")
         if handle_it.approvals_hold():
             raise SendRefused(409, "level", handle_it.REASONS["level"])
         # In training, only people they allowed (one removed since the card
@@ -295,7 +295,7 @@ async def _send_checked(
     if not is_enabled(person.id) or not get_watch(person.id).enabled:
         raise SendRefused(
             409, "inbox_off",
-            "Turn on Act as me and Draft replies to my inbox to send from here, or send it from your mailbox.",
+            "Turn on As you and Draft replies to my inbox to send from here, or send it from your mailbox.",
         )
     if _client_slot_active():
         raise SendRefused(409, "client_slot", "Sending from here is paused while a client is active. Send it from your mailbox.")
@@ -603,7 +603,7 @@ async def send_for_workflow(person: Any, client: Any, *, draft_id: str, recipien
     if person is None or person.id is None or not person.email or not can_delegate(person):
         raise SendRefused(403, "not_yours", _NOT_YOURS)
     if not is_enabled(person.id):
-        raise SendRefused(409, "act_as_me_off", "Act as me is off.")
+        raise SendRefused(409, "act_as_me_off", "As you is off.")
     if not handle_it.signing_ok():
         raise SendRefused(409, "caller_signing_required", handle_it.REASONS["signing_off"])
     if _client_slot_active():
@@ -695,7 +695,7 @@ async def _send_chat_draft(
     email = normalize_email(person.email)
     _check_caller(caller, email)
     if not is_enabled(person.id):
-        raise SendRefused(409, "act_as_me_off", "Turn on Act as me to send from here, or send it from your mailbox.")
+        raise SendRefused(409, "act_as_me_off", "Turn on As you to send from here, or send it from your mailbox.")
     if _client_slot_active():
         raise SendRefused(409, "client_slot", "Sending from here is paused while a client is active. Send it from your mailbox.")
     if row.sent_message_id:

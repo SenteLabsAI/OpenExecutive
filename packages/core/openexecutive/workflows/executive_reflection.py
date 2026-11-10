@@ -81,7 +81,7 @@ _LEAD_TOKENS = 4000
 _LEAD_RESULT_CHARS = 4000
 # Added to the user turn (never the cached system prompt) while it leads.
 _LEAD_NOTE = (
-    "\n\nTake the lead is on: act on what you find instead of only reporting "
+    "\n\nAs me is on: act on what you find instead of only reporting "
     "it. Message people, book, start workflows, and when a task needs "
     "something you don't have here (a spreadsheet to track something, a "
     "document, a record in another system), call search_tools to find what "
@@ -517,7 +517,7 @@ def _with_lead_tools(
             return tools, handlers, False
         gateway = get_active_gateway()
     except Exception:
-        logger.warning("reflection: couldn't check Take the lead — no gateway tools", exc_info=True)
+        logger.warning("reflection: couldn't check As me — no gateway tools", exc_info=True)
         return tools, handlers, False
     if gateway is None:
         return tools, handlers, True

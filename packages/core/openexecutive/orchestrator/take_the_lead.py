@@ -1283,7 +1283,7 @@ def learned_note(*, db_path: Path | None = None) -> str:
     parts: list[str] = []
     if lead.training:
         parts.append(
-            "\n\nTake the lead is in training: whatever you do waits for a yes on its own card, "
+            "\n\nAs me is in training: whatever you do waits for a yes on its own card, "
             "except what the owner has allowed. Still act as you would; each action becomes a card."
         )
     if examples:
@@ -2003,7 +2003,7 @@ def wake(reason: str, *, now: datetime | None = None) -> int | None:
             run_at=(current + WAKE_AFTER).isoformat(),
             channel="__internal__",
             channel_ref="principal",
-            intent_text=f"Take the lead: look over what's new ({reason[:80]}).",
+            intent_text=f"As me: look over what's new ({reason[:80]}).",
             kind=TAKE_THE_LEAD_WAKE_KIND,
         )
         # Only once it's scheduled: a failed insert mustn't hold off the next wake.

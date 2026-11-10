@@ -155,7 +155,7 @@ export function InviteCardItem({
         <>
           <p className="mt-3 text-sm text-fg-muted">
             Your calendar sign-in can read your calendar but not answer invites. Connect it again under Read my
-            calendar in Delegate → Act as me, then answer here. Until then, answer it in your calendar.
+            calendar in Delegate → As you, then answer here. Until then, answer it in your calendar.
           </p>
           {card.connect_command && (
             <code className="mt-2 block overflow-x-auto rounded-lg bg-surface px-2 py-1 text-[13px] text-fg-muted">

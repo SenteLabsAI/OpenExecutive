@@ -646,7 +646,7 @@ async def _run_lead(
     try:
         result = await take_the_lead.carry_out(payload, by_principal=by_principal)
     except Exception as exc:
-        logger.exception("decisions/approve: Take the lead action %d failed", instance.id)
+        logger.exception("decisions/approve: As me action %d failed", instance.id)
         finish_execution(instance.id, STATUS_FAILED, final_payload={**payload, "error": type(exc).__name__})
         take_the_lead.resolved(instance.id, "failed")
         _clear_decision_alert(instance.id, "dismissed")
@@ -670,7 +670,7 @@ async def _run_lead(
         except take_the_lead.RuleError:
             # It's done; only the learning failed (the list filled up since
             # the check above). Say so in the log rather than fail a sent card.
-            logger.warning("decisions/approve: Take the lead action %d done but not allowed", instance.id)
+            logger.warning("decisions/approve: As me action %d done but not allowed", instance.id)
             return _refresh(instance.id)
         _audit_allowed(str(grant.get("label") or ""), instance.id, bool(changed))
     return _refresh(instance.id)

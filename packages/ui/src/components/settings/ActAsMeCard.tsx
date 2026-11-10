@@ -128,7 +128,7 @@ export default function ActAsMeCard({
     return (
       <SettingsCard>
         <p className="text-[15px] text-fg-muted leading-relaxed">
-          Act as me isn&apos;t available to you here. The owner of this Open Executive can turn it
+          As you isn&apos;t available to you here. The owner of this Open Executive can turn it
           on for team members.
         </p>
       </SettingsCard>
@@ -283,7 +283,7 @@ export function TeamSection({
       description={
         team.enabled
           ? "On: each team member can connect their own Gmail or Outlook and turn it on for themselves. Their mail, drafts and replies stay theirs alone. You see only who uses it and how much."
-          : "Off: only you can use Act as me."
+          : "Off: only you can use As you."
       }
       action={
         <Switch
@@ -378,7 +378,7 @@ function InboxSection({
             className="mt-0.5 h-5 w-5 flex-shrink-0 accent-indigo-500"
           />
           <span>
-            <span className="block text-[15px] font-semibold text-fg">Also save inbox replies in my {mailbox} Drafts</span>
+            <span className="block text-[15px] font-semibold text-fg">Also save inbox replies in your {mailbox} Drafts</span>
             <span className="mt-0.5 block text-sm text-fg-muted leading-snug">
               {inDrafts
                 ? `Each reply is in your ${mailbox} Drafts too, so you can open it there.`
@@ -426,7 +426,7 @@ function CalendarSection({
 
   return (
     <SettingsCard
-      title="Read my calendar"
+      title="Read your calendar"
       titleId="act-as-me-calendar-label"
       description={
         on
@@ -518,7 +518,7 @@ export function VoiceSection({
 
   if (loadFailed) {
     return (
-      <Card title="How I write">
+      <Card title="How you write">
         <p className="text-sm text-fg-muted">Couldn&apos;t load how you write.</p>
       </Card>
     );
@@ -666,7 +666,7 @@ export function VoiceSection({
         </div>
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <Button variant="primary" disabled={busy || !description.trim()} onClick={() => void writeStyle()}>
-            {busy ? "Writing your style…" : "Write my style"}
+            {busy ? "Writing your style…" : "Save this style"}
           </Button>
           <Button variant="ghost" disabled={busy} onClick={() => setMode("view")}>
             Cancel
@@ -709,7 +709,7 @@ export function VoiceSection({
 
   return (
     <Card
-      title="How I write"
+      title="How you write"
       description={
         hasStyle
           ? "Drafts written as you follow this."
@@ -743,7 +743,7 @@ export function VoiceSection({
         </Button>
         {!profile.locked && (
           <Button disabled={busy || !connected} onClick={() => void run(learnVoiceProfile)}>
-            {busy ? "Working…" : learned ? "Learn again from my sent mail" : "Learn from my sent mail"}
+            {busy ? "Working…" : learned ? "Learn again from your sent mail" : "Learn from your sent mail"}
           </Button>
         )}
       </div>

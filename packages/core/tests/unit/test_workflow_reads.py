@@ -156,7 +156,7 @@ def test_not_without_act_as_me(people) -> None:
 
     out = _search(mailbox, creator=owner_id, run_owner=owner_id)
 
-    assert "Act as me" in out["error"] and mailbox.searched == []
+    assert "As you" in out["error"] and mailbox.searched == []
 
 
 def test_not_when_the_workflow_reaches_outside(on, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -205,7 +205,7 @@ STATUS_MESSAGES: dict[str, str] = {
     "checking": "Checking your inbox now.",
     "daily_limit": "On, but today's limit of drafts is reached. It carries on tomorrow.",
     "backlog_full": "On, but 25 replies are already waiting for you. Send or dismiss some first.",
-    "act_as_me_off": "Paused: Act as me is off.",
+    "act_as_me_off": "Paused: As you is off.",
     "client_slot": "Paused while a client is active.",
     "rate_limited": "Your mail service asked it to slow down. It tries again shortly.",
     "error": "Couldn't reach your mailbox. It tries again shortly.",

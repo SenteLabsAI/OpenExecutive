@@ -162,7 +162,7 @@ def test_refused_with_the_fallback_when_act_as_me_is_off(people, composed) -> No
 
     result = _run(INPUT, mailbox, creator=owner_id)
 
-    assert "Act as me" in result["error"] and "Executive's own email" in result["error"]
+    assert "As you" in result["error"] and "Executive's own email" in result["error"]
     assert mailbox.drafts == [] and composed == []
 
 

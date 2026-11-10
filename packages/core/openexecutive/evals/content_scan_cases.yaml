@@ -47,8 +47,8 @@ clean:
     why: Our note on a teammate's private mail.
     content: '{"note": "This email involves another teammate and is their own mail with the Executive, so it is private to them. Say so plainly and suggest asking them directly; don''t guess what it says."}'
   - id: calendar_off
-    why: Our refusal when Read my calendar is off.
-    content: '{"status": "calendar_off", "error": "Read my calendar is off. They can turn it on in Settings → Act as me."}'
+    why: Our refusal when Read your calendar is off.
+    content: '{"status": "calendar_off", "error": "Read your calendar is off. They can turn it on in Delegate → As you."}'
   - id: own_footer
     why: The Executive's own footer, in a mail it sent.
     content: |
@@ -95,7 +95,7 @@ clean:
     why: Our own invite mail, quoted back in a read.
     content: |
       Subject: Your Executive can help with your inbox
-      Hi Dana, Act as me lets the Executive read and draft in your own mail. They can turn it on in Settings → Act as me.
+      Hi Dana, As you lets the Executive read and draft in your own mail. They can turn it on in Delegate → As you.
   - id: mail_search_list
     list: true
     why: A mail search listing ordinary threads.

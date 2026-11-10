@@ -8,7 +8,7 @@ from openexecutive.prompts.executive_persona import DELEGATION_ADDENDUM
 
 def test_off_is_byte_identical_to_the_default() -> None:
     assert build_system_blocks() == build_system_blocks(delegation=False)
-    assert "Act as Me" not in build_system_blocks()[0]["text"]
+    assert "Writing as Someone (As you)" not in build_system_blocks()[0]["text"]
 
 
 def test_on_appends_the_constant_after_the_untouched_identity_addendum() -> None:

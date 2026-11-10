@@ -227,7 +227,7 @@ MY_CALENDAR_TOOL: dict[str, Any] = {
         "time zone: title, start, end, location, organizer, attendees and their "
         "own answer. Use it when they ask about their day, their week, a meeting "
         "or when they are free. Their own calendar, not yours (your calendar "
-        "tools are your own account's). Works only while they have Read my "
+        "tools are your own account's). Works only while they have Read your "
         "calendar on. Read-only."
     ),
     "input_schema": {

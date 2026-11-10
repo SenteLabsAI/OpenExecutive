@@ -78,9 +78,9 @@ export function newlyAdded(changes: ContactChange[]): Set<number> {
 
 /** Why the switch can't do anything yet, or null. */
 export function keeperBlocked(status: string): string | null {
-  if (status === "act_as_me_off") return "It starts once Act as me is on.";
+  if (status === "act_as_me_off") return "It starts once As you is on.";
   if (["no_email", "not_configured", "needs_reconnect", "mismatch", "shared_mailbox"].includes(status)) {
-    return "It starts once your own mailbox is connected in Act as me.";
+    return "It starts once your own mailbox is connected in As you.";
   }
   return null;
 }

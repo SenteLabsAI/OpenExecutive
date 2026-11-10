@@ -231,7 +231,7 @@ def update_take_the_lead(request: Request, body: LeadUpdate) -> LeadOut:
     )
     if after != current:
         _audit(
-            f"Take the lead as the Executive {'in training' if after.enabled and after.training else 'on' if after.enabled else 'off'}",
+            f"As me as the Executive {'in training' if after.enabled and after.training else 'on' if after.enabled else 'off'}",
             {"scope": "executive", "enabled": after.enabled, "training": after.training, "ask_first": after.ask_first},
         )
     return _out(principal)
@@ -257,7 +257,7 @@ def add_company_rule(request: Request, body: RuleIn) -> LeadOut:
     except take_the_lead.RuleError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     _audit(
-        "Added a Take the lead rule",
+        "Added an As me rule",
         {"scope": "company", "kind": rule.kind, "value": rule.value, "effect": rule.effect},
     )
     return _out(principal)
@@ -275,7 +275,7 @@ def delete_company_rule(request: Request, rule_id: int) -> LeadOut:
         )
     if not take_the_lead.delete_rule(rule_id, take_the_lead.SCOPE_COMPANY):
         raise HTTPException(status_code=404, detail="That rule isn't there.")
-    _audit("Removed a Take the lead rule", {"scope": "company", "rule_id": rule_id})
+    _audit("Removed an As me rule", {"scope": "company", "rule_id": rule_id})
     return _out(principal)
 
 

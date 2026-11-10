@@ -68,7 +68,7 @@ export function clearSetupMemory(): void {
 
 /** What reading your own mailbox does, in the one wording every screen uses:
  * Handle it for me can send, so "never sends" would be untrue. */
-export const OWN_MAILBOX_SENDS = "Drafts replies as you. Sends only if you turn on Handle it for me.";
+export const OWN_MAILBOX_SENDS = "Drafts replies as you. Sends on its own only where Approvals lets it.";
 
 const FIRST_QUESTION_MAX = 160;
 

@@ -298,7 +298,7 @@ async def edit(
         if getattr(instance, "gate_mode", "") == "auto_execute":
             raise SendRefused(409, "already_handled", "This reply is being sent on its own right now.")
         if not is_enabled(person.id):
-            raise SendRefused(409, "inbox_off", "Turn on Act as me to change this reply here.")
+            raise SendRefused(409, "inbox_off", "Turn on As you to change this reply here.")
         recipients = recipients_for(payload, everyone) if everyone is not None else None
         if recipients is not None:
             words = str(payload.get("draft_body") or "")

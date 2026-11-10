@@ -1,4 +1,4 @@
-// A named feature (Take the lead, Act as me, ...) set as a brand label: the
+// A named feature (As me, As you, ...) set as a brand label: the
 // display face in a pill with the feature's own color and glyph, the same on
 // every screen. Use it where the name is a title or a tag; a name inside a
 // sentence stays plain text. Sizes in em, so it scales with the heading or
@@ -10,12 +10,12 @@ export type Feature = "take_the_lead" | "act_as_me" | "handle_it" | "history" | 
 
 const FEATURES: Record<Feature, { name: string; tone: string; glyph: ReactNode }> = {
   take_the_lead: {
-    name: "Take the lead",
+    name: "As me",
     tone: "bg-orange-100 text-orange-700 dark:bg-orange-500/15 dark:text-orange-300",
     glyph: <path d="M3 8h9M8.5 4l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />,
   },
   act_as_me: {
-    name: "Act as me",
+    name: "As you",
     tone: "bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300",
     glyph: (
       <path
@@ -28,14 +28,19 @@ const FEATURES: Record<Feature, { name: string; tone: string; glyph: ReactNode }
       />
     ),
   },
+  // What it sent as you on its own: the same As you tag as a draft.
   handle_it: {
-    name: "Handle it for me",
-    tone: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300",
+    name: "As you",
+    tone: "bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300",
     glyph: (
-      <g fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-        <circle cx="8" cy="8" r="6" />
-        <path d="M5.3 8.2l1.9 1.9 3.6-3.8" />
-      </g>
+      <path
+        d="M2.5 11.5c1.5-4 3-6 4-5s-1.5 4.5 0 4.5 2-3 3.5-3 1 2.5 3.5 1.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     ),
   },
   history: {

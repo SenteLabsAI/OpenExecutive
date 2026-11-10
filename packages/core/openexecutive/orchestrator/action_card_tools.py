@@ -129,7 +129,7 @@ def _ai_app_speaker(session: Any) -> tuple[Any, Any] | str:
         )
     if not can_delegate(person) or not is_enabled(person.id):
         return _error(
-            "Cards need Act as me on for them, and it is off. Tell the person to do "
+            "Cards need As you on for them, and it is off. Tell the person to do "
             "it in Open Executive itself. Do not retry."
         )
     return person, pinned
@@ -208,7 +208,7 @@ async def handle_propose_actions(tool_input: dict[str, Any]) -> str:
                     for r in results
                 ],
                 "note": (
-                    "Their settings (Handle it for me) let these go without a tap, so they were carried out now. "
+                    "Their settings (Approvals) let these go without a tap, so they were carried out now. "
                     "Tell them what happened."
                 ),
             })

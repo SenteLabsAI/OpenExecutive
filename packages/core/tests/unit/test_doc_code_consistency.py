@@ -188,7 +188,7 @@ def test_act_as_me_send_claim_and_code_agree() -> None:
     doc_says_draft_only = "ONE send method, send_draft" in _delegation_facts()["gmail_client"]
     endpoints = re.findall(r"/(?:messages|drafts)/send\b", Path(gmail.__file__).read_text())
     assert doc_says_draft_only and endpoints == ["/drafts/send"], (
-        "What Act as me can send disagrees between delegation/gmail.py and "
+        "What As you can send disagrees between delegation/gmail.py and "
         "architecture-facts.yaml (delegation.gmail_client). Update both."
     )
 

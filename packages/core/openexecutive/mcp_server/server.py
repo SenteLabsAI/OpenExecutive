@@ -101,7 +101,7 @@ _INSTRUCTIONS = (
     "or changes anything, except `ask_executive` when this server allows it to "
     "act: then it makes changes inside Open Executive and leaves messages and "
     "meetings on cards the person approves (or that go on their own under "
-    "their Handle it for me)."
+    "their Approvals)."
 )
 
 # The request header that asks for a turn that may act (``may_act``).

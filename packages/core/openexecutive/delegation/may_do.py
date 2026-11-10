@@ -132,7 +132,7 @@ def as_you(person_id: int, *, can_have_it: bool, signing: bool, is_principal: bo
     if not can_have_it:
         return Section(
             SECTION_AS_YOU, title, available=False,
-            unavailable="Act as me isn't available to you here. The owner of this Open Executive can turn it on "
+            unavailable="As you isn't available to you here. The owner of this Open Executive can turn it on "
             "for team members.",
         )
 
@@ -280,7 +280,7 @@ def _lead_in_training() -> bool:
     try:
         return take_the_lead.get(take_the_lead.SCOPE_EXECUTIVE).training
     except Exception:
-        logger.warning("may_do: couldn't read Take the lead's In training", exc_info=True)
+        logger.warning("may_do: couldn't read As me's In training", exc_info=True)
         return False
 
 

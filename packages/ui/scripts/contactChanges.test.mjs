@@ -66,7 +66,7 @@ test("the card keeps suggestions and what wasn't cleared", () => {
 test("the switch says what it waits on", () => {
   assert.equal(keeperBlocked("ok"), null);
   assert.equal(keeperBlocked(""), null);
-  assert.match(keeperBlocked("act_as_me_off"), /Act as me/);
+  assert.match(keeperBlocked("act_as_me_off"), /As you/);
   assert.match(keeperBlocked("needs_reconnect"), /mailbox/);
 });
 

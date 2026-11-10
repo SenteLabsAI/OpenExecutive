@@ -43,10 +43,10 @@ logger = logging.getLogger(__name__)
 MAX_DAYS = 31
 
 NOT_GRANTED = (
-    "Your saved sign-in doesn't include your calendar. Add it under Read my calendar "
-    "in Delegate → As you, then turn Read my calendar on."
+    "Your saved sign-in doesn't include your calendar. Add it under Read your calendar "
+    "in Delegate → As you, then turn Read your calendar on."
 )
-OFF = "Read my calendar is off. They can turn it on in Settings → Act as me."
+OFF = "Read your calendar is off. They can turn it on in Delegate → As you."
 
 
 def _db(db_path: Path | None) -> Path:

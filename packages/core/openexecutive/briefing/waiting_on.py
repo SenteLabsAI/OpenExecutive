@@ -237,7 +237,7 @@ def _usable() -> bool:
         ):
             return False
     except Exception:
-        logger.exception("waiting_on: checking Act as me failed")
+        logger.exception("waiting_on: checking As you failed")
         return False
     return True
 

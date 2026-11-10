@@ -225,7 +225,7 @@ export function ReachCard({
   const stops = (to: ReachStep): string =>
     to === "when_asked"
       ? "It stops drafting replies to your inbox, and nothing more goes on its own as you."
-      : "It stops writing anything as you, and turns Read my calendar off too.";
+      : "It stops writing anything as you, and turns Read your calendar off too.";
 
   return (
     <SettingsCard title="How far it goes as you" titleId="reach-label">
