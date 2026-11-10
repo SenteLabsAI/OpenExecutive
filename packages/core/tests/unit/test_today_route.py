@@ -3304,8 +3304,15 @@ def test_watching_next_lists_follow_ups_and_standing_jobs_and_stop_ends_one(
         "stopped": True,
     }
     assert episodic.get_scheduled_action(sams).status == "cancelled"  # type: ignore[union-attr]
-    # Once is enough.
-    assert client.post("/today/watching/stop", json={"key": f"action:{sams}"}, headers=teammate).status_code == 409
+    # A second stop (another tab) still says stopped, never "went out".
+    assert client.post("/today/watching/stop", json={"key": f"action:{sams}"}, headers=teammate).json() == {
+        "stopped": True,
+    }
+    # Plumbing Watching next never lists can't be stopped from it.
+    plumbing = episodic.insert_scheduled_action(
+        run_at=soon, channel="__internal__", channel_ref="principal", intent_text="x", kind="ad_hoc",
+    )
+    assert client.post("/today/watching/stop", json={"key": f"action:{plumbing}"}, headers=owner).status_code == 404
 
     assert client.post("/today/watching/stop", json={"key": f"job:{job.id}"}, headers=owner).json() == {
         "stopped": True,

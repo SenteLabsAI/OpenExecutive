@@ -3133,11 +3133,19 @@ async def stop_watching(body: StopWatchingRequest, request: Request) -> dict[str
         raise HTTPException(status_code=404, detail="That isn't there any more.")
     action = get_scheduled_action(item_id)
     if (
-        action is None or action.kind not in _WATCHING_KINDS
+        action is None or action.kind not in _WATCHING_KINDS or action.channel == "__internal__"
         or (not owner and (caller is None or action.created_by_person_id != caller))
     ):
         raise HTTPException(status_code=404, detail="That isn't there any more.")
-    if cancel_scheduled_action(item_id) != "cancelled":
+    result = cancel_scheduled_action(item_id)
+    if result == "not_found":
+        raise HTTPException(status_code=404, detail="That isn't there any more.")
+    if result != "cancelled":
+        # Stopped already (another tab) is a stop that worked; anything else
+        # ran or is running.
+        current = get_scheduled_action(item_id)
+        if current is not None and current.status == "cancelled":
+            return {"stopped": True}
         raise HTTPException(status_code=409, detail="It already went out.")
     audit_log(
         "scheduled_action_cancelled",
