@@ -5116,7 +5116,7 @@ scheduler:
     (`departments.authority.gate_action`), which can `execute`
     (auto_execute: dispatch), `propose` (route to an approver via alert,
     not dispatched; deferred to the approver's next available window when
-    they are outside it) or `escalate` (an urgent "[ESCALATION]" alert to
+    they are outside it) or `escalate` (an urgent "Urgent:" alert to
     the approver right away, never deferred, and NOT dispatched — the row
     is marked done and the card's "If you approve: … right away" line is
     what sends it). Because that card is the action's only trace, it is
