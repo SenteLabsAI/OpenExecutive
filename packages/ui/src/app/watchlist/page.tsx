@@ -141,8 +141,8 @@ function SuggestionCard({
           <div className="text-lg font-semibold text-fg truncate" title={item.target}>
             {name}
           </div>
-          <div className="text-sm text-fg-muted truncate">
-            {SIGNAL_TYPE_LABELS[item.signal_type] ?? item.signal_type}
+          <div className="text-sm text-fg-muted truncate" title={item.target}>
+            {SIGNAL_TYPE_LABELS[item.signal_type] ?? item.signal_type} · {item.target}
           </div>
         </div>
         <span className="flex-shrink-0 rounded-full bg-amber-500/15 px-2.5 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-300">
@@ -206,7 +206,7 @@ function WatchCard({
           {name}
         </div>
         <div className="text-sm text-fg-muted mt-0.5 truncate" title={item.target}>
-          {isResearch ? (SIGNAL_TYPE_LABELS[item.signal_type] ?? item.signal_type) : item.target}
+          {item.target}
         </div>
         <div className="text-sm text-fg-subtle mt-1.5">
           {item.last_fired_at
