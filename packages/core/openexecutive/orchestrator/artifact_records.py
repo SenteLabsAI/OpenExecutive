@@ -25,7 +25,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import re
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -346,10 +346,14 @@ def load_artifact(composite_id: str, *, viewer: Viewer) -> ArtifactRecord:
 
 
 def list_artifacts(
-    limit: int, *, viewer: Viewer, archived: bool = False
+    limit: int,
+    *,
+    viewer: Viewer,
+    archived: bool = False,
+    exclude_workflows: Collection[str] = (),
 ) -> list[ArtifactRecord]:
     """Both sources merged, newest first, capped at `limit`: only what
-    `viewer` may see."""
+    `viewer` may see, without the runs of `exclude_workflows`."""
     initialize_alerts_db()
     initialize_runs_db()
     items = [
@@ -364,7 +368,10 @@ def list_artifacts(
     items.extend(
         _record_from_run(r, with_body=False)
         for r in list_artifact_runs(
-            limit=limit, archived=archived, visible_to=viewer.person_id
+            limit=limit,
+            archived=archived,
+            visible_to=viewer.person_id,
+            exclude_workflows=exclude_workflows,
         )
     )
     items.sort(key=lambda a: a.created_at, reverse=True)

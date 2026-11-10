@@ -581,7 +581,7 @@ async def _execute_action(
                 card_id = escalate_via_alert(
                     action.department,
                     decision.assignee_person_id,
-                    summary=f"[ESCALATION] {action.intent_text[:140]}",
+                    summary=f"Urgent: {action.intent_text[:140]}",
                     body=action.intent_text,
                     suggested_action=_proposed_action_phrase(urgent=True),
                     action_key="|".join((

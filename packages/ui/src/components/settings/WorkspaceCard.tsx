@@ -169,7 +169,7 @@ export default function WorkspaceCard() {
           onChange={(e) => void save({ timezone: e.target.value || null })}
           className={select}
         >
-          <option value="">Follow server default</option>
+          <option value="">Use the default</option>
           {browserZone && (
             <optgroup label="Suggested">
               <option value={browserZone}>{browserZone} (this browser)</option>

@@ -22,19 +22,33 @@ export interface GroupOpts {
   unit?: "department" | "area";
 }
 
-const STATUS_ORDER: Goal["status"][] = ["off_track", "at_risk", "on_track"];
-const STATUS_TITLE: Record<Goal["status"], string> = {
+// What a goal's pill says. A goal starts "on track" by default, so one the
+// weekly check (or a chat update) has never looked at would claim a verdict
+// nobody gave: it reads "not checked yet" until its first review.
+export type ShownStatus = Goal["status"] | "not_checked";
+
+export function shownStatus(goal: Pick<Goal, "status" | "last_reviewed_at">): ShownStatus {
+  return goal.status === "on_track" && !goal.last_reviewed_at ? "not_checked" : goal.status;
+}
+
+/** Worst first; a goal nobody has checked sits above the ones known on track. */
+export const STATUS_ORDER: ShownStatus[] = ["off_track", "at_risk", "not_checked", "on_track"];
+const STATUS_TITLE: Record<ShownStatus, string> = {
   off_track: "Off track",
   at_risk: "At risk",
+  not_checked: "Not checked yet",
   on_track: "On track",
 };
 
 const byId = (a: GoalView, b: GoalView) => (a.id ?? 0) - (b.id ?? 0);
 
-/** Goals per status. */
-export function goalCounts(goals: GoalView[]): Record<Goal["status"], number> {
-  const counts: Record<Goal["status"], number> = { on_track: 0, at_risk: 0, off_track: 0 };
-  for (const g of goals) if (g.status in counts) counts[g.status] += 1;
+/** Goals per shown status. */
+export function goalCounts(goals: Pick<Goal, "status" | "last_reviewed_at">[]): Record<ShownStatus, number> {
+  const counts: Record<ShownStatus, number> = { on_track: 0, at_risk: 0, off_track: 0, not_checked: 0 };
+  for (const g of goals) {
+    const s = shownStatus(g);
+    if (s in counts) counts[s] += 1;
+  }
   return counts;
 }
 
@@ -57,13 +71,14 @@ export function groupGoals(goals: GoalView[], by: GoalGrouping, opts: GroupOpts 
       const none = `No ${opts.unit ?? "department"}`;
       add(g.department_slug ? `dept:${g.department_slug}` : "dept:none", g.department_title || none, g);
     } else {
-      add(`status:${g.status}`, STATUS_TITLE[g.status] ?? g.status, g);
+      const s = shownStatus(g);
+      add(`status:${s}`, STATUS_TITLE[s] ?? s, g);
     }
   }
   const groups = [...buckets.values()];
   for (const group of groups) group.goals.sort(byId);
   const rank = (group: GoalGroup): [number, string] => {
-    if (by === "status") return [STATUS_ORDER.indexOf(group.goals[0].status), ""];
+    if (by === "status") return [STATUS_ORDER.indexOf(shownStatus(group.goals[0])), ""];
     if (group.key.endsWith(":none")) return [2, ""];
     if (by === "owner" && group.goals[0].owner_id === opts.viewerId && opts.viewerId != null) return [0, ""];
     return [1, group.title.toLowerCase()];

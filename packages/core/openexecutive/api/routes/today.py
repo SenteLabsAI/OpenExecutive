@@ -89,6 +89,9 @@ class DepartmentBriefItem(BaseModel):
     at_risk_count: int
     off_track_count: int
     awaiting_count: int
+    # Goals still on their "on track" default that no review has looked at:
+    # the UI says "not checked yet" for them instead of "on track". Additive.
+    unchecked_count: int = 0
     # The off-track/at-risk goals themselves (worst first), capped, so the card
     # is insightful at rest. Empty for healthy/inactive departments. Additive —
     # defaults to empty so older clients and test mocks keep working.
@@ -942,6 +945,9 @@ def _build_today(
             at_risk_count=sum(1 for g in goals if g.status == "at_risk"),
             off_track_count=sum(1 for g in goals if g.status == "off_track"),
             awaiting_count=dept_awaiting.get(slug, 0) if slug else 0,
+            unchecked_count=sum(
+                1 for g in goals if g.status == "on_track" and not g.last_reviewed_at
+            ),
             attention_goals=[
                 GoalBrief(
                     key_result=g.key_result,
@@ -1287,7 +1293,7 @@ _DECISION_STATUS_LABEL = {
     "rejected": "Rejected",
     "auto_no_response": "Expired (no response)",
     "reversed": "Reversed",
-    "executed": "Executed",
+    "executed": "Done",
     "failed": "Failed",
     "closed_externally": "Closed",
 }
