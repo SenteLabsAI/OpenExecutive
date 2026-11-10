@@ -2825,8 +2825,12 @@ def _answered(person_id: int, sent_at: str) -> str:
         with _get_conn(path) as conn:
             row = conn.execute(
                 "SELECT consumed_at FROM outbound_context WHERE recipient_person_id = ? "
-                "AND created_at >= ? AND consumed_at IS NOT NULL ORDER BY created_at LIMIT 1",
-                (person_id, (sent - timedelta(minutes=2)).isoformat()),
+                "AND created_at >= ? AND created_at <= ? AND consumed_at IS NOT NULL "
+                "ORDER BY created_at LIMIT 1",
+                # The message As me sent is recorded beside its log row: a
+                # later message to the same person, answered, isn't this one.
+                (person_id, (sent - timedelta(minutes=2)).isoformat(),
+                 (sent + timedelta(minutes=2)).isoformat()),
             ).fetchone()
         replied = _parse_aware(row["consumed_at"]) if row is not None else None
         if replied is None:

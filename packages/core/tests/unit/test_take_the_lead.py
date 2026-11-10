@@ -1661,3 +1661,23 @@ def test_a_standing_job_from_chat_waits_for_a_tap() -> None:
     action = app_control.CATALOG.actions["add_standing_job"]
     assert action.confirm and action.card is not None
     assert not app_control.CATALOG.actions["stop_standing_job"].confirm
+
+
+def test_a_failed_check_is_looked_at_again(monkeypatch: pytest.MonkeyPatch, watched: None) -> None:
+    """A check that raises leaves the watermark, so nothing it missed is lost."""
+    from datetime import timedelta
+
+    monkeypatch.setattr(ttl, "executive_on", lambda **_: True)
+    monkeypatch.setattr(ttl, "_goal_statuses", lambda: {})
+    monkeypatch.setattr(ttl, "_overdue_tasks", lambda since, now: [])
+    monkeypatch.setattr(ttl, "_ended_meetings", lambda since, now: [])
+    monkeypatch.setattr(ttl, "_failed_runs", lambda since: [])
+    assert ttl.watch(NOW) is None
+    stocked = ttl._WATCHED.at
+
+    def boom(since: Any) -> list[str]:
+        raise RuntimeError("locked")
+
+    monkeypatch.setattr(ttl, "_failed_runs", boom)
+    assert ttl.watch(NOW + timedelta(minutes=2)) is None
+    assert ttl._WATCHED.at == stocked

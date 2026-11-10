@@ -3229,6 +3229,15 @@ def test_done_for_you_says_how_why_and_what_came_of_what_it_did_as_me(
     # The team's feed never carries the line.
     feed = client.get("/today/activity", headers={"x-caller-email": "jordan@example.com"}).json()["items"]
     assert all("lead_line" not in i for i in feed)
+    # An answer to a later message isn't credited to an earlier one.
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+
+    from openexecutive.api.routes import today as today_route
+
+    earlier = (_dt.now(_UTC) - _td(hours=1)).isoformat()
+    assert today_route._answered(riley, earlier) == ""
 
 
 def test_watching_next_lists_follow_ups_and_standing_jobs_and_stop_ends_one(

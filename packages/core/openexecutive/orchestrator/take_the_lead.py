@@ -2598,13 +2598,16 @@ def watch(now: datetime | None = None) -> str | None:
         return None
     since = _WATCHED.at
     reasons: list[str] = []
+    # A check that fails leaves the watermark (and the goal snapshot) where
+    # it was, so what it would have seen is seen on the next check.
+    complete = True
     try:
-        goals = _goal_statuses()
+        goals: dict[int, tuple[str, str]] | None = _goal_statuses()
     except Exception:
         logger.warning("take_the_lead: couldn't read the goals", exc_info=True)
-        goals = {}
+        goals, complete = None, False
     if since is not None:
-        for goal_id, (status, _) in goals.items():
+        for goal_id, (status, _) in (goals or {}).items():
             before = _WATCHED.goals.get(goal_id)
             if before is not None and _GOAL_RANK.get(status, 0) > _GOAL_RANK.get(before, 0):
                 reasons.append("a goal slipped")
@@ -2620,8 +2623,11 @@ def watch(now: datetime | None = None) -> str | None:
                 reasons += [label for _ in check()]
             except Exception:
                 logger.warning("take_the_lead: a watch check failed", exc_info=True)
-    _WATCHED.at = current
-    _WATCHED.goals = {goal_id: status for goal_id, (status, _) in goals.items()}
+                complete = False
+    if complete or since is None:
+        _WATCHED.at = current
+    if goals is not None:
+        _WATCHED.goals = {goal_id: status for goal_id, (status, _) in goals.items()}
     if not reasons:
         return None
     reason = reasons[0] if len(reasons) == 1 else f"{reasons[0]} (and {len(reasons) - 1} more)"
