@@ -136,3 +136,16 @@ def test_a_row_not_written_by_the_executive_or_with_an_odd_status_is_not_a_line(
     _update(gid, from_status="on_track", to_status="on_track", new_current="x" * 500)
     lines = [line.text for line in goal_week.goal_week([gid], principal=True)[gid].done]
     assert lines == [f"Set it to {'x' * goal_week.CURRENT_MAX}."]
+
+
+def test_a_busy_goal_does_not_crowd_out_the_others(db: Path) -> None:
+    busy, quiet = _goal(), _goal("Qualify a second cell source")
+    with ttl.looking(ttl.DAILY_LOOK):
+        ttl.focus_goal(quiet)
+        ttl.record(scope=ttl.SCOPE_EXECUTIVE, source="lead", tool="message_person", summary="Message Dana", status="done")
+        ttl.focus_goal(busy)
+        for i in range(5):
+            ttl.record(scope=ttl.SCOPE_EXECUTIVE, source="lead", tool="message_person", summary=f"Step {i}", status="done")
+    rows = ttl.goal_rows([busy, quiet], limit=3)
+    assert sum(r.goal_id == busy for r in rows) == 3
+    assert [r.summary for r in rows if r.goal_id == quiet] == ["Message Dana"]

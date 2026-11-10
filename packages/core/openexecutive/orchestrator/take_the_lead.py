@@ -2388,10 +2388,11 @@ def goals_note() -> str:
 
 
 def goal_rows(
-    goal_ids: list[int], *, days: int = 7, limit: int = 200, db_path: Path | None = None,
+    goal_ids: list[int], *, days: int = 7, limit: int = 50, db_path: Path | None = None,
 ) -> list[Done]:
     """What it did (or is waiting to do) for these goals in the last
-    ``days``, newest first. Never raises."""
+    ``days``, newest first, at most ``limit`` per goal (so a busy goal
+    can't crowd out the rest). Never raises."""
     if not goal_ids:
         return []
     since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
@@ -2400,8 +2401,9 @@ def goal_rows(
         try:
             marks = ",".join("?" * len(goal_ids))
             rows = conn.execute(
-                f"SELECT * FROM {LOG_TABLE} WHERE goal_id IN ({marks}) AND at >= ? "  # noqa: S608
-                "ORDER BY at DESC, id DESC LIMIT ?",
+                "SELECT * FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY goal_id ORDER BY at DESC, id DESC) AS n "
+                f"FROM {LOG_TABLE} WHERE goal_id IN ({marks}) AND at >= ?) "  # noqa: S608
+                "WHERE n <= ? ORDER BY at DESC, id DESC",
                 (*goal_ids, since, limit),
             ).fetchall()
         finally:
@@ -2409,7 +2411,7 @@ def goal_rows(
     except Exception:
         logger.warning("take_the_lead: couldn't read what it did for the goals", exc_info=True)
         return []
-    return [Done(**dict(r)) for r in rows]
+    return [Done(**{k: r[k] for k in r.keys() if k != "n"}) for r in rows]
 
 
 def _one_line(text: str | None, limit: int) -> str:
