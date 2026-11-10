@@ -488,7 +488,13 @@ def _mark_waiting(items: list[ProposalItem]) -> None:
         return
     for p in held:
         inst = instances.get(p.decision_instance_id or 0)
-        if inst is None:
+        # Only the decision's own card: its class and approver match. A card
+        # whose tags merely name a decision never reads that decision.
+        if (
+            inst is None
+            or inst.decision_class != department_gate.DECISION_CLASS
+            or inst.approver_person_id != p.routed_to_person_id
+        ):
             continue
         try:
             payload = json.loads(inst.proposed_payload_json or "{}")

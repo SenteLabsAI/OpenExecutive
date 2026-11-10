@@ -3217,3 +3217,24 @@ def test_today_says_why_a_booking_waits_and_who_waits_on_a_held_ask(
     own = by_headline["Waiting for your OK: save a file"]
     assert own["waiting_on"] == ""
     assert own["waiting_because"] == ""
+
+
+def test_a_card_that_only_names_a_held_decision_does_not_read_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A card whose tags name someone else's held decision (not routed to
+    that decision's approver) never shows who asked for it."""
+    db = tmp_path / "forged.db"
+    _setup_isolated_db(db, monkeypatch)
+    decision_id = decision_ledger.create_decision_instance(
+        decision_class="department_action", department="ops", originating_session_id=None,
+        proposed_payload={"tool": "send_email", "requested_by_person_id": 9, "requested_by": "Sam Okafor"},
+        idempotency_key=None, gate_mode="propose", approver_person_id=5, confidence=None, db_path=db,
+    )
+    alert_store.insert_alert(
+        source="email", external_id="forged-1", severity="medium", headline="Something else",
+        body="...", topic_tags=[f"decision_instance:{decision_id}", "decision_class:department_action"],
+        routed_to_person_id=9, db_path=db,
+    )
+    proposals = _make_client().get("/today").json()["proposals"]
+    assert [p["waiting_on"] for p in proposals] == [""]
