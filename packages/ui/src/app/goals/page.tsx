@@ -11,14 +11,17 @@ import {
   type DepartmentOption,
   type OwnerOption,
 } from "@/components/goals/GoalEditor";
+import GoalWeek from "@/components/goals/GoalWeek";
 import Button from "@/components/ui/Button";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import {
   getPeopleViewer,
   listDepartments,
+  listGoalWeeks,
   listGoals,
   listPeople,
   type GoalView,
+  type GoalWeek as GoalWeekData,
 } from "@/lib/api";
 import { STATUS_ORDER, goalCounts, groupGoals, type GoalGrouping } from "@/lib/goalGroups";
 import { PageSpinner } from "@/components/ui/Spinner";
@@ -55,6 +58,9 @@ export default function GoalsPage() {
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [grouping, setGrouping] = useState<GoalGrouping>("owner");
+  // What was done for each goal this week, by goal id; null while loading.
+  // A failed read shows every goal as "Nothing this week." rather than an error.
+  const [weeks, setWeeks] = useState<Record<string, GoalWeekData> | null>(null);
   const { mode } = useWorkspace();
   const solo = mode === "solo";
   const unit = solo ? "area" : "department";
@@ -67,9 +73,15 @@ export default function GoalsPage() {
   const fail = useCallback((e: unknown) => {
     setError(e instanceof Error ? e.message : "Failed to load goals");
   }, []);
+  const loadWeeks = useCallback(() => {
+    listGoalWeeks()
+      .then(setWeeks)
+      .catch(() => setWeeks({}));
+  }, []);
   const reload = useCallback(() => {
     load().then(apply).catch(fail);
-  }, [apply, fail]);
+    loadWeeks();
+  }, [apply, fail, loadWeeks]);
 
   useEffect(() => {
     load()
@@ -79,6 +91,7 @@ export default function GoalsPage() {
         if (new URLSearchParams(window.location.search).get("add") === "1") setAdding(true);
       })
       .catch(fail);
+    loadWeeks();
     // The owner pickers and "(you)": best effort, the page works without them.
     listPeople()
       .then((ps) =>
@@ -88,7 +101,7 @@ export default function GoalsPage() {
     getPeopleViewer()
       .then((v) => setViewerId(v.person_id))
       .catch(() => {});
-  }, [apply, fail]);
+  }, [apply, fail, loadWeeks]);
 
   // Grouping by department only means something once one exists.
   const groupings: GoalGrouping[] = departments.length > 0 ? ["owner", "department", "status"] : ["owner", "status"];
@@ -208,6 +221,14 @@ export default function GoalsPage() {
                         departmentLabel={solo ? "Area" : "Department"}
                         onSaved={() => reload()}
                         onDeleted={(id) => setGoals((gs) => (gs ?? []).filter((g) => g.id !== id))}
+                        footer={
+                          goal.id != null ? (
+                            <GoalWeek
+                              goalId={goal.id}
+                              week={weeks === null ? undefined : (weeks[String(goal.id)] ?? { done: [], waiting: [] })}
+                            />
+                          ) : undefined
+                        }
                       />
                     ))}
                   </div>
