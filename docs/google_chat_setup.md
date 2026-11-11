@@ -157,6 +157,8 @@ Files sent in a message (PDFs, Word, spreadsheets, text, images; up to 5 per mes
 
 Someone on **People** (matched by the Google account email on Google's signed event) is treated as signed in, as in Slack: the Executive knows it's them, and your Approvals level decides what runs. In a direct message between them and the app alone they also get what is private to them, as in the web chat (Act as me, Apps, their open items). A space, or a two-person DM the app was added to, never gets those, because others can read it, and there the Executive treats the conversation as shared: owner-only tools stay off, and under your Approvals level its actions wait for approval. Anyone not on People is still answered, but as an unknown sender: anything they ask the Executive to send or change waits for approval.
 
+In that direct message, what the Executive leaves for approval (a meeting to book, a card of actions, a change to a workflow) comes as a message with **Approve** and **Skip** buttons under its reply. A tap goes to the same webhook URL, so the app needs no extra setup beyond its interactive features being on. The card shows "Working on it…" and then the outcome. In a space the cards stay on Today.
+
 ---
 
 ## Troubleshooting

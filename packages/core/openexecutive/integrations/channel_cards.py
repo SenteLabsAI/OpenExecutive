@@ -19,6 +19,14 @@ Where a tap proves who made it, the same bar as a verified speaker there
   over HTTP), and it counts only from the user whose DM with the bot it is.
 - Discord: a DM. The tap comes over the bot's own gateway connection, and
   counts only from the user whose DM with the bot it is.
+- Google Chat: a DM between the Chat app and one person alone
+  (``singleUserBotDm``). The tap comes to the webhook with Google's token,
+  counts only from a human on People in such a DM, and only once Chat
+  itself, read as the app, confirms the message, the space and its one
+  person (``google_chat.verify_tap``), since the token isn't bound to the
+  event's body. Not yet sent cards
+  that wait outside any chat (``chat_for``): the app has no stored DM to reach
+  them in.
 
 Anywhere else no card is shown and the Executive is told the card is on Today.
 
@@ -42,7 +50,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # A button's data (Telegram callback_data, a Slack button value, a Discord
-# custom_id): "card:<decision id>:a" (Approve), ":s" (Skip) or ":n"
+# custom_id, a Google Chat button's action parameter): "card:<decision id>:a" (Approve), ":s" (Skip) or ":n"
 # (Approve, and on its own next time: the In training tick, shown only on
 # a card that can teach, ``allow_label``).
 _PREFIX = "card"
@@ -88,19 +96,29 @@ def telegram_proves_taps() -> bool:
 
 
 def _dm_proves_taps(channel: str) -> bool:
-    """Whether a Slack or Discord DM here can show cards with buttons."""
+    """Whether a Slack, Discord or Google Chat DM here can show cards with
+    buttons."""
     from openexecutive.config import get_settings
 
     s = get_settings()
     if channel == "slack":
         return bool(s.slack_bot_token and s.slack_card_buttons)
+    if channel == "google_chat":
+        # The Chat app's webhook: its token says Google sent the event, and
+        # a tap counts only once Chat itself confirms it
+        # (``google_chat.verify_tap``).
+        return bool(s.google_chat_project_number and (
+            s.google_chat_service_account_file or s.google_chat_service_account_email
+        ))
     return bool(s.discord_bot_token)
 
 
 def shows_cards(session: Any) -> bool:
     """Whether this turn's chat shows its cards with buttons: a private
     Telegram chat with someone on the roster, on a webhook only Telegram can
-    call, or a Slack or Discord DM with someone on the roster. Fails closed."""
+    call, a Slack or Discord DM with someone on the roster, or a Google Chat
+    DM between the app and someone on the roster alone (the adapter marks
+    only that one private). Fails closed."""
     channel = str(getattr(session, "origin_channel", "") or "") if session is not None else ""
     if getattr(session, "caller_person_id", None) is None:
         return False
@@ -108,7 +126,7 @@ def shows_cards(session: Any) -> bool:
         if channel == "telegram":
             ref = str(getattr(session, "origin_channel_ref", "") or "")
             return ref.isdigit() and telegram_proves_taps()
-        if channel in ("slack", "discord"):
+        if channel in ("slack", "discord", "google_chat"):
             from openexecutive.delegation.settings import private_conversation
 
             return private_conversation(session) and _dm_proves_taps(channel)

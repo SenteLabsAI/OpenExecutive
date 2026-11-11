@@ -50,6 +50,27 @@ def test_slack_and_discord_dms_show_cards(monkeypatch: pytest.MonkeyPatch) -> No
     assert not channel_cards.shows_cards(_dm("slack", "slack:dm:U1"))
 
 
+def test_a_google_chat_dm_with_the_app_alone_shows_cards(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only the DM the adapter marks private (the app and its person alone,
+    verified): a space or a two-person DM is read by others too."""
+    monkeypatch.setenv("GOOGLE_CHAT_PROJECT_NUMBER", "123456789012")
+    monkeypatch.setenv("GOOGLE_CHAT_SERVICE_ACCOUNT_FILE", "/fake/key.json")
+
+    def gchat(*, private: bool, verified: bool = True, person_id: int | None = 1) -> Session:
+        session = _dm("google_chat", "google_chat:spaces/DM1", person_id)
+        session.speaker_verified = verified
+        session.private_chat = private
+        return session
+
+    assert channel_cards.shows_cards(gchat(private=True))
+    assert not channel_cards.shows_cards(gchat(private=False))
+    assert not channel_cards.shows_cards(gchat(private=True, verified=False))
+    assert not channel_cards.shows_cards(gchat(private=True, person_id=None))
+    # Not set up: no webhook to take the tap.
+    monkeypatch.delenv("GOOGLE_CHAT_PROJECT_NUMBER")
+    assert not channel_cards.shows_cards(gchat(private=True))
+
+
 class FakeSlack:
     def __init__(self, dm: str = "D1") -> None:
         self.dm = dm
