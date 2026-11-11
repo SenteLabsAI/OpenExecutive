@@ -9,6 +9,21 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.7.2](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.7.1...v0.7.2) (2026-11-11)
+
+
+### Added
+
+* **integrations:** treat a Google Chat sender on People as signed in ([#805](https://github.com/SenteLabsAI/OpenExecutive/issues/805)) ([c2a4e41](https://github.com/SenteLabsAI/OpenExecutive/commit/c2a4e41dff98b67dc1baf25eb4f9f1813f516d2b))
+
+
+### Fixed
+
+* **chat:** log a timed-out suggestion call as a warning ([#798](https://github.com/SenteLabsAI/OpenExecutive/issues/798)) ([e87b0ff](https://github.com/SenteLabsAI/OpenExecutive/commit/e87b0ffa85e62c78fc155ebcf45b5530633109f6))
+* **chat:** put held steps on one Approve card and keep draft files ([#803](https://github.com/SenteLabsAI/OpenExecutive/issues/803)) ([80d3889](https://github.com/SenteLabsAI/OpenExecutive/commit/80d3889f7e16f893db0c9d479503765fce915f8a))
+* **ui:** stop forwarding the browser's accept-encoding to the API ([#804](https://github.com/SenteLabsAI/OpenExecutive/issues/804)) ([21b6e50](https://github.com/SenteLabsAI/OpenExecutive/commit/21b6e507356a60956f5447dd272ba0f64908367f))
+* **ui:** stop the chat mic repeating words and sounds on Android ([#800](https://github.com/SenteLabsAI/OpenExecutive/issues/800)) ([6c75c17](https://github.com/SenteLabsAI/OpenExecutive/commit/6c75c177bba80924b76663051230646b33e0859c))
+
 ## [0.7.1](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.7.0...v0.7.1) (2026-11-10)
 
 
