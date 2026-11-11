@@ -107,6 +107,10 @@ async function proxy(req: NextRequest, params: { path: string[] }): Promise<Resp
     if (
       lower === "host" ||
       lower === "connection" ||
+      // fetch picks its own coding and decodes it. A browser's (zstd) can
+      // come back in a coding fetch doesn't decode, and Next drops the
+      // answer's content-encoding, so the page would get compressed bytes.
+      lower === "accept-encoding" ||
       lower === "cookie" ||
       // Next.js copies a session cookie the middleware refreshed onto the
       // request it passes on; the API has no use for the session token.
