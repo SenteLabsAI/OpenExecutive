@@ -890,7 +890,7 @@ def test_a_tap_is_decided_only_once_chat_confirms_it(
     """The tapper is the person on People with the event's email, and only
     when Chat itself confirms the message, the space and its one person. The
     card is rewritten from Chat's own words, with the outcome under them;
-    a tap that isn't confirmed decides and rewrites nothing."""
+    a tap that isn't confirmed decides nothing, and its card says so."""
     from openexecutive.integrations import channel_cards
 
     resolved: list[tuple] = []
@@ -921,8 +921,11 @@ def test_a_tap_is_decided_only_once_chat_confirms_it(
     assert checked == ([("spaces/DM1", "spaces/DM1/messages/C1", "card:12:a", "users/111", "/k.json", None)]
                        if person else [])
     assert resolved == ([(12, person, True, False)] if decided else [])
-    assert updated == ([("spaces/DM1/messages/C1", "Meeting to book\n\nApproved.", "/k.json", None)]
-                       if decided else [])
+    assert updated == [(
+        "spaces/DM1/messages/C1",
+        "Meeting to book\n\nApproved." if decided else gc_module._UNCONFIRMED,
+        "/k.json", None,
+    )]
     [row] = rows
     assert row["google_user"] == "users/111" and row["space_name"] == "spaces/DM1"
     assert row.get("rejected", False) is (not decided)
@@ -975,6 +978,20 @@ def test_chat_itself_confirms_a_tap(
         patch("googleapiclient.discovery.build", return_value=_FakeChat(message, space, members)),
     ):
         assert gc_module.verify_tap("spaces/DM1", message_name, "card:12:a", "users/111", None) == expected
+
+
+def test_an_unconfirmed_tap_elsewhere_rewrites_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A message outside the event's space is never touched."""
+    updated: list[tuple] = []
+    monkeypatch.setattr("openexecutive.people.store.find_person_by_email", lambda _e, **_k: SimpleNamespace(id=3))
+    monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **k: None)
+    monkeypatch.setattr(gc_module, "verify_tap", lambda *a: None)
+    monkeypatch.setattr(gc_module, "update_card", lambda *a: updated.append(a))
+    asyncio.run(gc_module._decide_tap(
+        data="card:12:a", space_name="spaces/DM1", message_name="spaces/OTHER/messages/C1",
+        sender_email="pat@acme.com", user_name="users/111", service_account_file=None, service_account_email=None,
+    ))
+    assert updated == []
 
 
 def test_a_check_chat_cant_answer_is_a_no() -> None:

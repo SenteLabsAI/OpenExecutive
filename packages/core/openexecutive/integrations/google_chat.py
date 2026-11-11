@@ -129,6 +129,8 @@ _CARD_FUNCTION = "oe_card"
 _CARD_PARAM = "card"
 # What a card's message says while its tap is being decided.
 _WORKING = "Working on it…"
+# What it says when a tap couldn't be confirmed (``verify_tap``).
+_UNCONFIRMED = "That tap couldn't be checked, so nothing was done. The card is still waiting on Today."
 
 
 def _card_buttons(decision_id: int, labels: tuple[str, ...]) -> list[dict[str, Any]]:
@@ -309,7 +311,6 @@ async def _decide_tap(
             verify_tap, space_name, message_name, data, user_name, service_account_file, service_account_email,
         )
     if person is None or person.id is None or confirmed is None:
-        line = "This card is no longer there."
         logger.warning("Google Chat: a tap on card %d was refused (%s)", decision_id,
                        "not on People" if person is None or person.id is None else "Chat didn't confirm it")
         await asyncio.to_thread(
@@ -320,8 +321,17 @@ async def _decide_tap(
             details={"channel": "google_chat", "decision_id": decision_id, "rejected": True,
                      "person_id": getattr(person, "id", None), **where},
         )
-        # Nothing is rewritten for a tap Chat didn't confirm: its message
-        # may not be ours.
+        # The webhook already took the buttons off, so the card says the tap
+        # didn't count rather than "Working on it…" for ever (a Chat API
+        # error lands here too). Only a fixed line, nothing from the event or
+        # the card: an unconfirmed tap's message may not be this card's.
+        if message_name.startswith(f"{space_name}/messages/"):
+            try:
+                await asyncio.to_thread(
+                    update_card, message_name, _UNCONFIRMED, service_account_file, service_account_email,
+                )
+            except Exception:
+                logger.exception("Google Chat: couldn't update card %d after a refused tap", decision_id)
         return
     # The card's words as Chat has them, not as the event said.
     shown = confirmed
