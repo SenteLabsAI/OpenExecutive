@@ -151,7 +151,7 @@ def _normalize_tool_name(name: str) -> str:
 
 # Microsoft 365 write tools whose arguments can carry a recipient — the whole
 # send / reply / forward / draft surface, in normalized (underscore) form.
-# Names track @softeria/ms-365-mcp-server 0.154.2 `dist/endpoints.json`
+# Names track @softeria/ms-365-mcp-server 0.183.0 `dist/endpoints.json`
 # (the README drifts; endpoints.json is authoritative). Drafts and
 # `update_mail_message` are gated too: a draft carries recipients that
 # `send_draft_message` later sends, and an update can PATCH `toRecipients` onto
@@ -286,9 +286,10 @@ def _top_level_values(arguments: dict[str, Any], norm: str) -> list[Any]:
     """Values of every top-level key that normalizes to ``norm``."""
     return [v for k, v in arguments.items() if isinstance(k, str) and _norm_key(k) == norm]
 
-# ms-365-mcp-server registers its account tools whatever `--enabled-tools`
-# says, so the launcher's allow-list cannot remove them and the deny globs in
-# mcp_servers.json.example only help an operator who copied them. A chat turn
+# ms-365-mcp-server up to 0.154.2 registered its account tools whatever
+# `--enabled-tools` said; 0.183.0 filters them like any other tool, but a later
+# version or an operator's own allow-list can bring them back, and the deny
+# globs in mcp_servers.json.example only help an operator who copied them. A chat turn
 # that can call these could sign the Executive out (wiping the seeded token),
 # switch the mailbox every later call acts as, or start a device-code sign-in
 # for an account someone else controls. Setup is the launcher's `--login`, so
@@ -3911,8 +3912,7 @@ class MCPGateway:
                 reason=(
                     f"{tool_name} is not available: the Microsoft 365 sign-in is "
                     "managed by the operator (ms365-mcp-launch.sh --login), not "
-                    "from chat. verify-login and list-accounts still report the "
-                    "signed-in account."
+                    "from chat."
                 ),
             )
         if isinstance(tool_name, str) and tool_name.startswith(_GW_PREFIX):

@@ -9355,7 +9355,7 @@ integrations:
 
     Microsoft 365 hosting (the Outlook twin of the block above): the
     microsoft_365 server is @softeria/ms-365-mcp-server, a Node package,
-    pinned (0.154.2) and installed in a throwaway `node:20-bookworm-slim`
+    pinned (0.183.0) and installed in a throwaway `node:20-bookworm-slim`
     build stage with `--omit=optional` (skips keytar, the native OS-keychain
     binding); only the node binary and the installed package are copied into
     the python API image (docker/Dockerfile; libstdc++6 added for the node

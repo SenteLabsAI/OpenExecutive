@@ -1,6 +1,6 @@
 """Microsoft 365 backend: Outlook mail + calendar via ms-365-mcp-server.
 
-Tool names and argument shapes track @softeria/ms-365-mcp-server 0.154.2
+Tool names and argument shapes track @softeria/ms-365-mcp-server 0.183.0
 (pinned in docker/Dockerfile) as registered over MCP with
 ``--preset mail,calendar``; re-verify on a bump. Notably:
 

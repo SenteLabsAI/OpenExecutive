@@ -1,6 +1,6 @@
 """Microsoft 365 workspace backend: exact tool arguments and response parsing.
 
-Argument names follow ms-365-mcp-server 0.154.2 as registered over MCP
+Argument names follow ms-365-mcp-server 0.183.0 as registered over MCP
 (camelCase path params, ``$``-less OData options, ``body.Message`` /
 ``body.Comment`` action parameters); responses are Graph JSON as text or
 ``{"error": …}`` / ``{"success": true}``.

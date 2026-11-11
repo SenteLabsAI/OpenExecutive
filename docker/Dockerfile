@@ -10,7 +10,7 @@
 # version — bump them together.
 FROM node:20-bookworm-slim AS ms365-build
 RUN npm install -g --omit=optional --no-audit --no-fund \
-    "@softeria/ms-365-mcp-server@0.154.2"
+    "@softeria/ms-365-mcp-server@0.183.0"
 
 # Python job sandbox (workflows/python_job.py): Pyodide (Python in
 # WebAssembly) run by Deno, which grants it read access to /opt/pysandbox only:
