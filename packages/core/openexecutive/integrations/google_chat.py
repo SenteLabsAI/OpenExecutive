@@ -130,9 +130,9 @@ _CARD_PARAM = "card"
 # What a card's message says while its tap is being decided.
 _WORKING = "Working on it…"
 # What it says when a tap couldn't be confirmed (``verify_tap``).
+_UNCONFIRMED = "That tap couldn't be checked, so nothing was done. The card is still waiting on Today."
 # How long the webhook waits on Chat to confirm a tap (Chat waits 30s).
 _TAP_CHECK_S = 20.0
-_UNCONFIRMED = "That tap couldn't be checked, so nothing was done. The card is still waiting on Today."
 
 
 def _card_buttons(decision_id: int, labels: tuple[str, ...]) -> list[dict[str, Any]]:
@@ -404,7 +404,17 @@ async def _take_tap(body: dict[str, Any], background_tasks: BackgroundTasks, set
             data, space_name, message_name, str(user.get("email") or ""), user_name, sa_file, sa_email,
         ), timeout=_TAP_CHECK_S)
     except TimeoutError:
+        from openexecutive.audit import log_event as audit_log
+
         logger.warning("Google Chat: checking a tap took too long; it is refused")
+        await asyncio.to_thread(
+            audit_log,
+            "integration_inbound",
+            "Rejected: Google Chat tap (Chat didn't confirm it in time)",
+            actor="google_chat",
+            details={"channel": "google_chat", "rejected": True, "timed_out": True, "space_name": space_name,
+                     "message_name": message_name, "google_user": user_name},
+        )
         confirmed = None
     if confirmed is None:
         return {"actionResponse": {"type": "UPDATE_MESSAGE"}, "text": _UNCONFIRMED, "cardsV2": []}

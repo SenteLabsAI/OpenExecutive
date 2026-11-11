@@ -918,8 +918,12 @@ def test_a_check_that_outlasts_chats_wait_is_a_no(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(gc_module, "_TAP_CHECK_S", 0.01)
     monkeypatch.setattr(gc_module, "_confirm_tap", slow)
     monkeypatch.setattr(gc_module, "_decide_tap", lambda **_kw: pytest.fail("decided after Chat stopped waiting"))
+    rows: list[dict] = []
+    monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **k: rows.append(k.get("details") or {}))
     resp = client.post("/webhook/google-chat", json=_tap_event(), headers={"Authorization": "Bearer t"})
     assert resp.json()["text"] == gc_module._UNCONFIRMED
+    [row] = rows
+    assert row["rejected"] is True and row["timed_out"] is True and row["google_user"] == "users/111"
 
 
 def test_a_confirmed_tap_is_decided_and_its_card_rewritten(monkeypatch: pytest.MonkeyPatch) -> None:
