@@ -90,7 +90,17 @@ def test_google_chat_app_id_comes_from_a_bot_mention() -> None:
     assert reply_context.google_chat_app_id(two_bots) == ""
 
 
-def test_google_chat_webhook_labels_a_quote_of_the_app_in_a_dm(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("alone", "label"),
+    [(True, "your earlier message"), (False, "an earlier message")],
+    ids=["dm-with-the-app", "two-peoples-dm"],
+)
+def test_google_chat_webhook_labels_a_quote_of_the_app_in_a_dm(
+    monkeypatch: pytest.MonkeyPatch, alone: bool, label: str
+) -> None:
+    """In a DM between the app and the sender alone a quote of anyone else is
+    the app's. A two-person DM the app was added to has a third writer, so an
+    unknown quoted sender stays "an earlier message"."""
     from unittest.mock import AsyncMock, patch
 
     from fastapi import FastAPI
@@ -109,7 +119,7 @@ def test_google_chat_webhook_labels_a_quote_of_the_app_in_a_dm(monkeypatch: pyte
     app.include_router(google_chat.router)
     body = {
         "type": "MESSAGE",
-        "space": {"name": "spaces/D", "type": "DM"},
+        "space": {"name": "spaces/D", "type": "DM", "singleUserBotDm": alone},
         "user": {"displayName": "Dana", "email": "dana@example.com"},
         "message": {**_gchat({"sender": "users/app1", "text": "Maya wants to send the lease."}),
                     "thread": {"name": "spaces/D/threads/T"}},
@@ -121,7 +131,7 @@ def test_google_chat_webhook_labels_a_quote_of_the_app_in_a_dm(monkeypatch: pyte
         response = TestClient(app).post("/webhook/google-chat", json=body, headers={"Authorization": "Bearer x"})
     assert response.status_code == 200
     assert process.await_args.kwargs["reply_context"] == (
-        "(Replying to your earlier message:)\n> Maya wants to send the lease."
+        f"(Replying to {label}:)\n> Maya wants to send the lease."
     )
 
 
