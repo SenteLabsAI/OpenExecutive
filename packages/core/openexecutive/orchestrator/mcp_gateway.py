@@ -3844,11 +3844,13 @@ class MCPGateway:
         # Hands-off, a send or invite to someone they'd have to OK comes to
         # them as an Approve card instead of a refusal.
         relaxed = levels.relaxed()
-        refused = None if relaxed else outside_reach_refusal(
+        # A call built in code (attaching Drive files to a draft) isn't the
+        # model's: it is never checked here, so it never waits on a card.
+        code_built = _code_built_admits(tool_input)
+        refused = None if relaxed or code_built else outside_reach_refusal(
             str(tool_input.get("name") or "call_tool")[:200], tool_input, tool_name="call_tool"
         )
-        code_built = _code_built_admits(tool_input)
-        if refused is not None and not code_built:
+        if refused is not None:
             return refused
         # A turn another AI app asked over Open Executive's MCP server runs
         # gateway reads only (schedule_tools.MCP_CLIENT_MCP_TOOLS), whether or

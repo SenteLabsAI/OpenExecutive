@@ -420,6 +420,60 @@ def test_update_draft_text_keeps_every_header_and_only_the_version_it_saw() -> N
     assert msg["In-Reply-To"] == "<p1@x.example>"
 
 
+def test_update_draft_text_keeps_the_draft_s_files() -> None:
+    from email import message_from_bytes, policy
+
+    from openexecutive.delegation.gmail import build_raw
+
+    raw = build_raw(EMAIL, DraftSpec(
+        to=["kyle@northpeak.example"], subject="Tax bills", body="Here are the bills.",
+        attachments=[("Lot 1.pdf", "application/pdf", b"%PDF-1"), ("Lot 2.pdf", "application/pdf", b"%PDF-2")],
+    ))
+    google = FakeGoogle()
+    puts: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/drafts/d1") and request.method == "GET":
+            return httpx.Response(200, json={"id": "d1", "message": {"id": "m9", "raw": raw}})
+        if request.url.path.endswith("/drafts/d1") and request.method == "PUT":
+            puts.append(json.loads(request.content))
+            return httpx.Response(200, json={"id": "d1", "message": {"id": "m10"}})
+        return FakeGoogle.handler(google, request)
+
+    client = DelegateGmail(EMAIL, credential=_cred(), transport=httpx.MockTransport(handler))
+    assert asyncio.run(client.update_draft_text("d1", "m9", "Here are the bills, Kyle.")) == "m10"
+    msg = message_from_bytes(base64.urlsafe_b64decode(puts[0]["message"]["raw"]), policy=policy.default)
+    files = [(p.get_filename(), p.get_payload(decode=True)) for p in msg.iter_attachments()]
+    assert files == [("Lot 1.pdf", b"%PDF-1"), ("Lot 2.pdf", b"%PDF-2")]
+    body = msg.get_body(preferencelist=("plain",))
+    assert body is not None and body.get_content().strip() == "Here are the bills, Kyle."
+
+
+def test_update_draft_text_leaves_a_draft_with_an_inline_picture() -> None:
+    from email.message import EmailMessage
+
+    from openexecutive.delegation.gmail import DraftChanged
+
+    msg = EmailMessage()
+    msg["To"] = "kyle@northpeak.example"
+    msg.set_content("Hi")
+    msg.add_attachment(b"png", maintype="image", subtype="png", filename="logo.png", disposition="inline")
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
+
+    google = FakeGoogle()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/drafts/d1"):
+            assert request.method == "GET"
+            return httpx.Response(200, json={"id": "d1", "message": {"id": "m9", "raw": raw}})
+        return FakeGoogle.handler(google, request)
+
+    client = DelegateGmail(EMAIL, credential=_cred(), transport=httpx.MockTransport(handler))
+    with pytest.raises(DraftChanged) as err:
+        asyncio.run(client.update_draft_text("d1", "m9", "Hello"))
+    assert err.value.reason == "not_plain"
+
+
 @pytest.mark.parametrize(("response", "maybe_done"), [
     (httpx.Response(500, json={}), True),
     (httpx.Response(503, json={}), True),

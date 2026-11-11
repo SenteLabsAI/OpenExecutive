@@ -83,10 +83,11 @@ def _refusal(session: Session) -> str:
         oc.end_turn(state)
 
 
-def test_a_web_refusal_points_at_the_buttons() -> None:
-    assert "tap Approve" in _refusal(Session(from_web_chat=True))
+def test_a_refusal_points_at_no_buttons() -> None:
+    """A step that waits is an Approve card (orchestrator.levels): a refusal
+    no longer sends the person to a "Go ahead" button."""
+    assert "tap Approve" not in _refusal(Session(from_web_chat=True))
     assert "tap Approve" not in _refusal(Session())
-    assert "tap Approve" not in _refusal(Session(from_web_chat=True, shared_chat=True))
 
 
 def test_mail_from_outside_people_gets_no_buttons() -> None:
@@ -172,12 +173,15 @@ def test_approve_sends_a_go() -> None:
     assert oc.GO_RE.match("Go ahead")
 
 
-def test_a_web_mail_lockdown_refusal_points_at_the_buttons() -> None:
+def test_a_mail_lockdown_refusal_holds_nothing_for_a_go() -> None:
+    """A step the lockdown stops waits on an Approve card, or is refused:
+    nothing is remembered for a "Go ahead" (orchestrator.levels)."""
     from openexecutive.delegation.lockdown import mail_touched_withheld_error
 
     state = oc.begin_turn(Session(from_web_chat=True), user_message="sort my inbox")
     try:
-        assert "tap Approve" in mail_touched_withheld_error("run_script")
+        assert "tap Approve" not in mail_touched_withheld_error("run_script")
+        assert state.held == []
     finally:
         oc.end_turn(state)
 

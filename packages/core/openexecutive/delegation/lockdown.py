@@ -437,37 +437,72 @@ def mail_turn_withholds(
 
 
 def outside_reach_refusal(label: str, tool_input: Any = None, tool_name: str = "") -> str | None:
-    """For a handler that can reach an outside address: the refusal when this
-    turn read the owner's mail, or read anything from outside the team and
-    ``outside_content.outside_withholds`` the call, else None. ``tool_name`` and ``tool_input``
+    """For a handler that can reach an outside address: None when the call
+    may run, else what it returns instead. A call this turn may not make
+    for what it read (its owner's own mail, ``mail_turn_withholds``, or
+    anything from outside the team that ``outside_content.outside_withholds``
+    the call) waits on an Approve card for the owner when the card can carry
+    it out exactly (``orchestrator.levels``), as any held step does; only a
+    call no card can carry gets the refusal. ``tool_name`` and ``tool_input``
     (for ``call_tool``) narrow it to what ``mail_touched_withholds`` refuses;
     by default ``label`` is the tool. Never raises; fails closed."""
     name = tool_name or label
-    try:
-        if mail_turn_withholds(name, tool_input):
-            return mail_touched_withheld_error(label)
-    except Exception:
-        return mail_touched_withheld_error(label)
-    # The same holds, with contact writes and gateway writes added, once the
-    # turn has read anything from outside the team (outside_content).
-    from openexecutive.orchestrator import outside_content
+    reason = outside_reach_reason(name, tool_input)
+    if reason is None:
+        return None
+    from openexecutive.orchestrator import levels, outside_content
+
+    mail = reason in (levels.OWN_MAIL, levels.MAIL_FLAGGED)
+    error = mail_touched_withheld_error(label) if mail else outside_content.outside_withheld_error(label)
+    return _card_or(error, name, tool_input, reason)
+
+
+def outside_reach_reason(name: str, tool_input: Any = None) -> str | None:
+    """Why this turn may not make the call ``name`` (an
+    ``orchestrator.levels`` reason), or None when it may. Only looks: it
+    holds nothing and remembers nothing. Never raises; fails closed."""
+    from openexecutive.orchestrator import levels, outside_content
 
     try:
+        if mail_turn_withholds(name, tool_input):
+            return levels.mail_reason()
+    except Exception:
+        return levels.OWN_MAIL
+    # The same holds, with contact writes and gateway writes added, once the
+    # turn has read anything from outside the team (outside_content).
+    try:
         if outside_content.read_outside() and outside_content.outside_withholds(name, tool_input):
-            return outside_content.outside_withheld_error(label)
+            return levels.STRANGER if outside_content.answers_off_team_mail() else levels.OUTSIDE
         return None
     except Exception:
-        return outside_content.outside_withheld_error(label)
+        return levels.OUTSIDE
+
+
+def _card_or(error: str, name: str, tool_input: Any, reason: str) -> str:
+    """The exact call on an Approve card (``levels.card_or``) when a card can
+    carry it out: a connected app's call by its tool and arguments, or a
+    skill with its input. Else ``error``."""
+    from openexecutive.orchestrator import levels
+
+    try:
+        if name == "call_tool":
+            named = tool_input.get("name") if isinstance(tool_input, dict) else None
+            arguments = tool_input.get("arguments") if isinstance(tool_input, dict) else None
+            if isinstance(arguments, str):
+                arguments = json.loads(arguments)
+            if isinstance(named, str) and named and isinstance(arguments, dict | None):
+                return levels.card_or(error, named, dict(arguments or {}), reason=reason, mcp=True)
+            return error
+        if isinstance(tool_input, dict) and levels.carriable(name, mcp=False):
+            return levels.card_or(error, name, dict(tool_input), reason=reason, mcp=False)
+    except Exception:
+        return error
+    return error
 
 
 def mail_touched_withheld_error(label: str) -> str:
     """The JSON error tool_result for a refused call (``label`` is the tool,
     or for call_tool the tool it asked for)."""
-    from openexecutive.orchestrator import outside_content
 
     why = CONTACT_REFUSAL if label == "upsert_person" else REFUSAL
-    # Remembered for their next message, so their go runs it before a read.
-    outside_content.note_held(label)
-    if why is REFUSAL:
-        why += outside_content.approve_hint()
     return json.dumps({"error": f"{label} was not run. {why}"})

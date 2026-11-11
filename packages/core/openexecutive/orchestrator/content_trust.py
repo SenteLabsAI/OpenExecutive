@@ -131,6 +131,29 @@ def _scrub(text: str) -> str:
     return _TAG_NAME_RE.sub("untrusted-content", kept)
 
 
+# ``wrap_untrusted``'s own tags, as stored or after ``no_tags`` turned their
+# brackets into ‹ ›, and the author they name (``unwrapped``).
+_WRAP_OPEN_RE = re.compile(r"[<‹]untrusted[_-]content\b[^>›\n]*[>›]")
+_WRAP_AUTHOR_RE = re.compile(r'author="([^"\n]+)"')
+_WRAP_CLOSE_RE = re.compile(r"[<‹]/untrusted[_-]content[>›]")
+
+
+def unwrapped(text: str) -> str:
+    """``text`` (a stored chat message) with each ``wrap_untrusted`` block's
+    tags and notice replaced by a plain label naming who wrote it: our own
+    words, which read out of context (an excerpt that cuts the block, a check
+    of an old chat) as text trying to give orders. What was quoted stays as
+    it was."""
+    out = str(text or "").replace(f"{UNTRUSTED_NOTICE}\n---\n", "").replace(UNTRUSTED_NOTICE, "")
+
+    def label(match: re.Match[str]) -> str:
+        author = _WRAP_AUTHOR_RE.search(match.group(0))
+        return f"[quoted from {author.group(1)}:" if author else "[quoted:"
+
+    out = _WRAP_OPEN_RE.sub(label, out)
+    return _WRAP_CLOSE_RE.sub("]", out)
+
+
 def wrap_untrusted(
     text: str,
     *,

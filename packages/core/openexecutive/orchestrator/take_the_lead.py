@@ -2150,16 +2150,40 @@ async def carry_out(payload: dict[str, Any], *, by_principal: bool) -> str:
                 gateway = get_active_gateway()
                 if gateway is None:
                     raise RuntimeError("The connection to the mail and calendar tools isn't running.")
-                result = await gateway.call_tool({"name": tool, "arguments": tool_input})
+
+                async def run(step: dict[str, Any]) -> Any:
+                    return await gateway.call_tool({"name": tool, "arguments": step})
             else:
                 from openexecutive.orchestrator.executive import _ALL_SKILL_HANDLERS
 
                 allowed = tool in _ALL_SKILL_HANDLERS and (tool in ACTING_TOOLS or payload.get("held") is True)
                 if not allowed:
                     raise RuntimeError(f"{tool} can't be done from here.")
-                result = await _ALL_SKILL_HANDLERS[tool](tool_input)
+
+                async def run(step: dict[str, Any]) -> Any:
+                    return await _ALL_SKILL_HANDLERS[tool](step)
+
+            steps = payload.get("steps")
+            if not (isinstance(steps, list) and len(steps) > 1 and all(isinstance(x, dict) for x in steps)):
+                result = await run(dict(tool_input or {}))
+            else:
+                # One card for several calls of one tool (levels.hold_many):
+                # each in order, and the result says how many went through.
+                results = [_as_text(await run(step)) for step in steps]
+                failed = [r for r in results if result_failed(r)]
+                result = (
+                    json.dumps({
+                        "error": f"{len(failed)} of {len(results)} didn't go through. The first: {failed[0][:300]}",
+                        "done": len(results) - len(failed),
+                    })
+                    if failed else json.dumps({"done": len(results), "results": [r[:300] for r in results]})
+                )
     finally:
         current_session.reset(token)
+    return _as_text(result)
+
+
+def _as_text(result: Any) -> str:
     return result if isinstance(result, str) else json.dumps(result, default=str)
 
 

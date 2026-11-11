@@ -3020,8 +3020,9 @@ class Executive:
                 for tu in [*skill_tool_uses, *mcp_tool_uses, *script_tool_uses]
                 if tu["id"] in gate_reasons
             }
+            mail_why = levels.mail_reason() if mail_touched_uses else levels.OWN_MAIL
             for tu in mail_touched_uses:
-                noticed.setdefault(tu["id"], (tu, levels.OWN_MAIL))
+                noticed.setdefault(tu["id"], (tu, mail_why))
             for tu in outside_uses:
                 noticed.setdefault(tu["id"], (tu, levels.STRANGER if stranger else levels.OUTSIDE))
             held_uses = [
@@ -3126,6 +3127,7 @@ class Executive:
 
             event_cursor = len(debug_collector._events) if debug_collector else 0
             session_id = getattr(current_session.get(), "session_id", None)
+            to_card: dict[tuple[str, bool, str], list[tuple[dict[str, Any], str, dict[str, Any]]]] = {}
             for tu, reason in held_uses:
                 # Never dropped: the exact step goes on an Approve card for
                 # the owner, or the model is told why it didn't run.
@@ -3167,19 +3169,27 @@ class Executive:
                     },
                     private=private_turn or bool(
                         pinned_delegation is not None and pinned_delegation.touched_mail
-                    ) or reason in (levels.OWN_MAIL, levels.PRIVATE),
+                    ) or reason in (levels.OWN_MAIL, levels.MAIL_FLAGGED, levels.PRIVATE),
                 )
                 if not can_card:
                     results_by_id[tu["id"]] = levels.not_carriable_error(label, reason)
                     continue
+                to_card.setdefault((held_tool, held_mcp, reason), []).append((tu, label, held_input))
+            # Steps of one kind held together (fourteen renames in a round)
+            # go on one card, so one Approve does them all.
+            for (held_tool, held_mcp, reason), group in to_card.items():
                 held_result = await asyncio.to_thread(
-                    levels.hold, held_tool, held_input, mcp=held_mcp, reason=reason,
-                    session=current_session.get(),
+                    levels.hold, held_tool, group[0][2],
+                    mcp=held_mcp, reason=reason, session=current_session.get(),
+                ) if len(group) == 1 else await asyncio.to_thread(
+                    levels.hold_many, held_tool, [held_input for _, _, held_input in group],
+                    mcp=held_mcp, reason=reason, session=current_session.get(),
                 )
-                results_by_id[tu["id"]] = held_result
+                for tu, _, _ in group:
+                    results_by_id[tu["id"]] = held_result
                 # The card shows under this reply (the web chat) and goes to
                 # the chat app the turn came from (Executive.chat's cards).
-                held_chip = levels.waiting_chip(held_result, label=label, iteration=iteration)
+                held_chip = levels.waiting_chip(held_result, label=group[0][1], iteration=iteration)
                 if held_chip is not None:
                     yield held_chip
             for tu in withheld_uses:
@@ -3586,7 +3596,7 @@ class Executive:
                     elif pinned_delegation is not None and mail_turn_withholds(
                         probe_name, probe_input, pinned=pinned_delegation
                     ):
-                        script_reason = levels.OWN_MAIL
+                        script_reason = levels.mail_reason()
                     if (
                         script_reason is not None
                         and levels.decide(script_reason, mode=turn_level) == levels.CARD

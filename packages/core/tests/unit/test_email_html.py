@@ -155,15 +155,18 @@ def test_a_gmail_draft_with_its_own_formatting_or_files_is_left_alone() -> None:
     composed["To"] = "dana@x.example"
     composed.set_content("Hi Dana")
     composed.add_alternative("<div dir='ltr'><b>Hi</b> Dana</div>", subtype="html")
+    client, puts = _gmail_with_draft(base64.urlsafe_b64encode(composed.as_bytes()).decode())
+    with pytest.raises(DraftChanged) as err:
+        asyncio.run(client.update_draft_text("d1", "m9", "Hi"))
+    assert err.value.reason == "not_plain" and not puts
+    # Our own table with files: the words change and the files stay.
     with_files = build_raw("me@x.example", DraftSpec(
         to=["dana@x.example"], subject="Bills", body=TABLE_BODY,
         attachments=[("bill.pdf", "application/pdf", b"%PDF-1.4")],
     ))
-    for raw in (base64.urlsafe_b64encode(composed.as_bytes()).decode(), with_files):
-        client, puts = _gmail_with_draft(raw)
-        with pytest.raises(DraftChanged) as err:
-            asyncio.run(client.update_draft_text("d1", "m9", "Hi"))
-        assert err.value.reason == "not_plain" and not puts
+    client, puts = _gmail_with_draft(with_files)
+    asyncio.run(client.update_draft_text("d1", "m9", "Hi"))
+    assert len(puts) == 1
 
 
 def test_an_outlook_table_draft_can_be_edited_and_a_rich_one_cannot() -> None:

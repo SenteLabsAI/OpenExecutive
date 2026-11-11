@@ -466,33 +466,6 @@ def step_words(label: str) -> str:
     return "A step"
 
 
-# Added to a web chat refusal: the reply gets the buttons, so the person taps
-# rather than types.
-WEB_APPROVE_HINT = (
-    " On this screen your reply gets Approve and Not now buttons for it: tell "
-    "them to tap Approve when they're ready, not to say go."
-)
-
-
-def approve_hint() -> str:
-    """``WEB_APPROVE_HINT`` on a web chat turn whose holds the person can
-    approve; else empty."""
-    state = current()
-    if state is None or not state.web or state.shared or SENDER in state.sources:
-        return ""
-    return WEB_APPROVE_HINT
-
-
-def note_held(label: str) -> None:
-    """Remember that the turn in progress refused ``label`` for what it read,
-    for the conversation's next turn. Not on a turn answering mail from
-    someone not in People: no next message of theirs approves anything."""
-    state = current()
-    if state is None or SENDER in state.sources or not label:
-        return
-    state.held.append(str(label)[:200])
-
-
 def _reads(tool_name: str, tool_input: Any) -> bool:
     """Whether a call reads: outside content (``source_of``) or the speaker's
     own mail."""
@@ -1611,9 +1584,6 @@ def outside_withheld_error(label: str) -> str:
         why = CONTACT_REFUSAL
     else:
         why = REFUSAL
-    note_held(label)
-    if why is REFUSAL:
-        why += approve_hint()
     return json.dumps({"error": f"{label} was not run. {why}"})
 
 

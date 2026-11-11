@@ -688,11 +688,20 @@ def test_update_draft_text_can_change_who_it_goes_to() -> None:
     assert sent["ccRecipients"] == [{"emailAddress": {"address": "ben@x.example"}}]
 
 
+def test_update_draft_text_keeps_a_draft_s_files() -> None:
+    """Outlook keeps attached files apart from the body: new words leave them on."""
+    graph = FakeGraph()
+    graph.messages["d1"] = _msg("d1", isDraft=True, hasAttachments=True)
+    asyncio.run(graph.client().update_draft_text("d1", ol.draft_version("d1", "ck1"), "Hi"))
+    patch = next(r for r in graph.graph_calls() if r.method == "PATCH")
+    assert set(json.loads(patch.content)) == {"body"}
+
+
 @pytest.mark.parametrize("fields", [
-    {"hasAttachments": True},
     {"body": {"contentType": "html", "content": "<p>Hi</p>"}},
+    {"hasAttachments": True, "body": {"contentType": "html", "content": "<p>Hi</p>"}},
 ])
-def test_update_draft_text_leaves_a_draft_with_files_or_formatting(fields: dict[str, Any]) -> None:
+def test_update_draft_text_leaves_a_draft_with_formatting(fields: dict[str, Any]) -> None:
     from openexecutive.delegation.gmail import DraftChanged
 
     graph = FakeGraph()

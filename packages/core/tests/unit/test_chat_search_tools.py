@@ -258,3 +258,17 @@ def test_a_call_it_was_not_offered_is_an_unknown_tool(roster: SimpleNamespace) -
     provider = _loop(_web(roster.principal, shared_chat=True), [ToolUseBlock("tu1", cs.SEARCH_PAST_CHATS, {})])
     results = provider.calls[1]["messages"][-1]["content"]
     assert results[0]["content"] == f"Unknown tool: {cs.SEARCH_PAST_CHATS}"
+
+
+def test_a_hit_quoting_a_file_carries_no_block_labels_of_ours(roster: SimpleNamespace) -> None:
+    """A file quoted in an old chat comes back labelled by name, without the
+    notice our block put above it: cut by the excerpt, those words read to
+    the content check as text giving orders."""
+    from openexecutive.orchestrator.content_trust import UNTRUSTED_NOTICE, wrap_untrusted
+
+    quoted = wrap_untrusted("Maple Court tax bill, due 12/31", source="attachment", author="scan_001.pdf")
+    _chat("a", roster.principal, ("user", f"Here are the Maple scans {quoted}"))
+    [hit] = session_store.search_past_messages(roster.principal, "maple tax")
+    assert "[quoted from scan_001.pdf:" in hit["excerpt"]
+    assert "untrusted" not in hit["excerpt"] and UNTRUSTED_NOTICE[:40] not in hit["excerpt"]
+    assert "Maple Court tax bill, due 12/31" in hit["excerpt"]

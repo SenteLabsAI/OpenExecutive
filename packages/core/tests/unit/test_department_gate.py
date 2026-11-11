@@ -504,3 +504,56 @@ def test_a_teammates_chat_turn_goes_through_the_gate(
     assert json.loads(results["tu-slack"])["status"] == "waiting_for_approval"
     assert "waiting_for_approval" in results["tu-mail"]
     assert len(alerts_store.list_alerts(limit=10)) == 2
+
+
+# ── several calls held together ───────────────────────────────────────────────
+
+
+def _rename(n: int) -> dict[str, Any]:
+    return {"file_id": f"f{n}", "name": f"2026 Tax - Lot {n}.pdf"}
+
+
+def test_calls_held_together_are_one_card(team: dict[str, Person]) -> None:
+    """Fourteen renames in one round: one card that lists them all."""
+    from openexecutive.orchestrator.department_gate import Verdict
+
+    verdict = Verdict(run=False, approver_person_id=team["owner"].id, reason="it read your own mail first")
+    steps = [_rename(n) for n in range(1, 4)]
+    decision_id = gate.hold(
+        team["owner"], "google_workspace__update_drive_file", steps[0], verdict,
+        mcp=True, held=True, more=steps[1:],
+    )
+    instance = ledger.get_decision_instance(decision_id)
+    assert instance is not None
+    payload = json.loads(instance.proposed_payload_json)
+    assert payload["steps"] == steps and payload["input"] == steps[0]
+    assert payload["fields"] == [] and "2 more like it" in payload["summary"]
+    [card] = alerts_store.list_alerts(limit=10)
+    assert all(f"Lot {n}" in card.body for n in range(1, 4))
+    # The same calls still waiting are that card, not a new one.
+    assert gate.hold(
+        team["owner"], "google_workspace__update_drive_file", steps[0], verdict,
+        mcp=True, held=True, more=steps[1:],
+    ) == decision_id
+
+
+def test_one_tap_carries_out_each_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import mcp_gateway
+
+    calls: list[dict[str, Any]] = []
+
+    class Gateway:
+        async def call_tool(self, tool_input: dict[str, Any]) -> str:
+            calls.append(tool_input)
+            if tool_input["arguments"]["file_id"] == "f3":
+                return json.dumps({"error": "no such file"})
+            return "Renamed."
+
+    monkeypatch.setattr(mcp_gateway, "get_active_gateway", lambda: Gateway())
+    steps = [_rename(n) for n in range(1, 3)]
+    payload = {"tool": "google_workspace__update_drive_file", "input": steps[0], "mcp": True,
+               "held": True, "steps": steps}
+    done = json.loads(asyncio.run(ttl.carry_out(payload, by_principal=True)))
+    assert done["done"] == 2 and [c["arguments"] for c in calls] == steps
+    failed = asyncio.run(ttl.carry_out({**payload, "steps": [*steps, _rename(3)]}, by_principal=True))
+    assert ttl.result_failed(failed) and "1 of 3" in json.loads(failed)["error"]

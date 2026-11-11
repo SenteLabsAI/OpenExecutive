@@ -51,6 +51,8 @@ export interface ChatDraftState {
   cc: string[];
   subject: string;
   body: string;
+  // The names of the files attached to it (an older backend sends none).
+  files?: string[];
   // After a change: the sentences that are new, and a line on what changed.
   changed_sentences: string[];
   note: string;

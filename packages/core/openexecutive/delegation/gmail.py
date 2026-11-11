@@ -846,6 +846,28 @@ def _plain_or_ours(msg: EmailMessage) -> bool:
     return isinstance(html_part, EmailMessage) and is_ours(str(html_part.get_content()))
 
 
+def _attached_files(msg: EmailMessage) -> list[EmailMessage] | None:
+    """The files attached to ``msg`` when it is words (``_plain_or_ours``)
+    plus attached files, the shape ``build_raw`` saves: rewriting its words
+    keeps these. [] for words alone; None for anything else (an inline
+    picture, a nested message, mail-app formatting), whose words aren't
+    rewritten here."""
+    if _plain_or_ours(msg):
+        return []
+    if msg.get_content_type() != "multipart/mixed":
+        return None
+    parts = list(msg.iter_parts())
+    if len(parts) < 2 or not isinstance(parts[0], EmailMessage) or not _plain_or_ours(parts[0]):
+        return None
+    files = parts[1:]
+    if any(
+        not isinstance(p, EmailMessage) or p.is_multipart() or p.get_content_disposition() != "attachment"
+        for p in files
+    ):
+        return None
+    return [p for p in files if isinstance(p, EmailMessage)]
+
+
 def build_raw(sender: str, spec: DraftSpec) -> str:
     """The draft as a base64url RFC 2822 message (Gmail's ``raw``)."""
     msg = EmailMessage()
@@ -1336,7 +1358,8 @@ class DelegateGmail:
         and ``cc`` instead. Returns its new version (the
         message id Gmail gives the edited draft). Raises ``GmailNotFound``
         when it is gone and ``DraftChanged`` when it changed meanwhile or is
-        more than plain text. Nothing is sent."""
+        more than words and attached files (``_attached_files``): its files
+        stay on it. Nothing is sent."""
         if not valid_id(draft_id):
             raise GmailError("invalid draft id")
         async with self._client() as client:
@@ -1354,13 +1377,22 @@ class DelegateGmail:
                 msg = message_from_bytes(_b64decode(raw), policy=policy.default)
             except (ValueError, TypeError) as exc:
                 raise GmailError("gmail returned an unreadable draft") from exc
-            if not isinstance(msg, EmailMessage) or not _plain_or_ours(msg):
+            files = _attached_files(msg) if isinstance(msg, EmailMessage) else None
+            if not isinstance(msg, EmailMessage) or files is None:
                 raise DraftChanged("not_plain")
             msg.clear_content()
             msg.set_content(text)
             markup = body_html(text)
             if markup is not None:
                 msg.add_alternative(markup, subtype="html")
+            # Its files go back on as they were: only the words change.
+            for part in files:
+                file_bytes = part.get_payload(decode=True)
+                msg.add_attachment(
+                    file_bytes if isinstance(file_bytes, bytes) else b"",
+                    maintype=part.get_content_maintype(), subtype=part.get_content_subtype(),
+                    filename=part.get_filename() or "attachment",
+                )
             if to is not None:
                 del msg["To"]
                 del msg["Cc"]

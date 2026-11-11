@@ -209,3 +209,34 @@ def test_the_owners_own_ai_app_follows_their_level(monkeypatch: pytest.MonkeyPat
     assert outside_mode.for_turn(read_only) == outside_mode.OUTSIDERS
     monkeypatch.setattr(people_tools, "is_principal_on_verified_surface", lambda _s: False)
     assert outside_mode.for_turn(own) == outside_mode.OUTSIDERS
+
+
+def test_hold_many_is_one_card_for_them_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import department_gate
+
+    seen: dict[str, Any] = {}
+
+    def fake_hold(requester: Any, tool: str, tool_input: dict[str, Any], verdict: Any, **kw: Any) -> int:
+        seen.update(input=tool_input, more=kw.get("more"))
+        return 7
+
+    monkeypatch.setattr(department_gate, "hold", fake_hold)
+    steps = [{"file_id": f"f{n}"} for n in range(3)]
+    with set_session(Session(from_web_chat=True)):
+        result = json.loads(levels.hold_many("google_workspace__update_drive_file", steps, mcp=True,
+                                             reason=levels.OWN_MAIL))
+    assert result["decision_instance_id"] == 7 and "one tap does them all" in result["message"]
+    assert seen == {"input": steps[0], "more": steps[1:]}
+
+
+def test_the_card_says_when_a_mail_read_was_flagged() -> None:
+    from openexecutive.orchestrator import outside_content
+
+    state = outside_content.begin_turn(Session(), user_message="redo the draft")
+    try:
+        assert levels.mail_reason() == levels.OWN_MAIL
+        state.flags.append((outside_content.MAIL, ("forward_or_share",), ""))
+        assert levels.mail_reason() == levels.MAIL_FLAGGED
+        assert "instructions" in levels._WHY[levels.MAIL_FLAGGED]
+    finally:
+        outside_content.end_turn(state)
