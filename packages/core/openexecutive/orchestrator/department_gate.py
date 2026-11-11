@@ -284,7 +284,7 @@ def hold(
         "fields": [] if more else take_the_lead.editable_fields(tool, tool_input, mcp=mcp),
         # Everything the call says, in full: the card shows this before it
         # can be approved, since the summary keeps only the start.
-        "details": [field for step in steps for field in card_details.plain(tool, step)],
+        "details": card_details.plain_steps(tool, steps),
         **({"held": True} if held else {}),
         **({"steps": steps} if more else {}),
     }

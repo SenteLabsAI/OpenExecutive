@@ -131,27 +131,33 @@ def _scrub(text: str) -> str:
     return _TAG_NAME_RE.sub("untrusted-content", kept)
 
 
-# ``wrap_untrusted``'s own tags, as stored or after ``no_tags`` turned their
-# brackets into ‹ ›, and the author they name (``unwrapped``).
-_WRAP_OPEN_RE = re.compile(r"[<‹]untrusted[_-]content\b[^>›\n]*[>›]")
+# ``wrap_untrusted``'s own blocks, as stored or after ``no_tags`` turned their
+# brackets into ‹ ›, and the author they name (``unwrapped``). Only the
+# underscore name is ours: ``_scrub`` renames any form of it a quoted text
+# carries, so these never match a tag someone else wrote.
+_WRAP_BLOCK_RE = re.compile(
+    r"[<‹]" + UNTRUSTED_TAG + r"\b([^>›\n]*)[>›](.*?)(?:[<‹]/" + UNTRUSTED_TAG + r"[>›]|\Z)",
+    re.DOTALL,
+)
 _WRAP_AUTHOR_RE = re.compile(r'author="([^"\n]+)"')
-_WRAP_CLOSE_RE = re.compile(r"[<‹]/untrusted[_-]content[>›]")
+_QUOTE_MARKS_RE = re.compile(r"[«»]")
 
 
 def unwrapped(text: str) -> str:
     """``text`` (a stored chat message) with each ``wrap_untrusted`` block's
     tags and notice replaced by a plain label naming who wrote it: our own
     words, which read out of context (an excerpt that cuts the block, a check
-    of an old chat) as text trying to give orders. What was quoted stays as
-    it was."""
-    out = str(text or "").replace(f"{UNTRUSTED_NOTICE}\n---\n", "").replace(UNTRUSTED_NOTICE, "")
+    of an old chat) as text trying to give orders. The quote is set off by
+    « », which the quoted text loses, so it can't end its own quote early."""
 
     def label(match: re.Match[str]) -> str:
-        author = _WRAP_AUTHOR_RE.search(match.group(0))
-        return f"[quoted from {author.group(1)}:" if author else "[quoted:"
+        author = _WRAP_AUTHOR_RE.search(match.group(1))
+        body = match.group(2).replace(f"{UNTRUSTED_NOTICE}\n---\n", "").replace(UNTRUSTED_NOTICE, "")
+        body = _QUOTE_MARKS_RE.sub('"', body).strip("\n")
+        who = f"quoted from {author.group(1)}" if author else "quoted"
+        return f"«{who}, not written by the principal: {body}»"
 
-    out = _WRAP_OPEN_RE.sub(label, out)
-    return _WRAP_CLOSE_RE.sub("]", out)
+    return _WRAP_BLOCK_RE.sub(label, str(text or ""))
 
 
 def wrap_untrusted(

@@ -537,6 +537,30 @@ def test_calls_held_together_are_one_card(team: dict[str, Person]) -> None:
     ) == decision_id
 
 
+
+def test_a_card_for_several_calls_shows_every_one(team: dict[str, Person]) -> None:
+    """The web card and the chat-app card show each call Approve runs, not
+    only the first."""
+    from openexecutive.api.routes.decisions import _served
+    from openexecutive.integrations.channel_cards import card_text
+    from openexecutive.orchestrator.department_gate import Verdict
+
+    verdict = Verdict(run=False, approver_person_id=team["owner"].id, reason="it read your own mail first")
+    steps = [_rename(n) for n in range(1, 4)]
+    decision_id = gate.hold(
+        team["owner"], "google_workspace__update_drive_file", steps[0], verdict,
+        mcp=True, held=True, more=steps[1:],
+    )
+    instance = ledger.get_decision_instance(decision_id)
+    assert instance is not None
+    served = json.loads(_served(instance).proposed_payload_json)
+    shown = " ".join(d["value"] for d in served["details"])
+    assert all(f"Lot {n}" in shown for n in range(1, 4))
+    assert {d["field"].split(".")[0] for d in served["details"]} == {"1", "2", "3"}
+    text = card_text(decision_id)
+    assert text is not None and all(f"Lot {n}" in text for n in range(1, 4))
+
+
 def test_one_tap_carries_out_each_call(monkeypatch: pytest.MonkeyPatch) -> None:
     from openexecutive.orchestrator import mcp_gateway
 

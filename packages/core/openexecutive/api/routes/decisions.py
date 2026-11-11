@@ -128,6 +128,12 @@ def _served_json(raw: str | None) -> str | None:
     return json.dumps(card_details.served(payload), ensure_ascii=False)
 
 
+def card_details_steps(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    from openexecutive.orchestrator import card_details
+
+    return card_details.held_steps(payload)
+
+
 def _served(instance: DecisionInstance) -> DecisionInstance:
     """A held step as a page reads it: plain details, and no file's bytes
     (``orchestrator.card_details.served``), in what was proposed and in what
@@ -600,6 +606,9 @@ async def _carry_out_lead(
         # area approver says yes or no to what it would do, as it stands.
         if not _approver_is_principal(request):
             raise HTTPException(status_code=403, detail="Only the account owner can change this before approving.")
+        if len(card_details_steps(payload)) > 1:
+            # One card for several calls: Approve runs each as shown.
+            raise HTTPException(status_code=422, detail="This one can't be changed from its card.")
         source: dict[str, Any] = payload["input"] if isinstance(payload.get("input"), dict) else {}
         try:
             new_input, changed = take_the_lead.apply_edits(
