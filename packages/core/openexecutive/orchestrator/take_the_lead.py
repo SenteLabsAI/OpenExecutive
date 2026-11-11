@@ -2168,15 +2168,31 @@ async def carry_out(payload: dict[str, Any], *, by_principal: bool) -> str:
                 result = await run(dict(tool_input or {}))
             else:
                 # One card for several calls of one tool (levels.hold_many):
-                # each in order, and the result says how many went through.
-                results = [_as_text(await run(step)) for step in steps]
-                failed = [r for r in results if result_failed(r)]
+                # each in order, stopping at the first that fails, so nothing
+                # after a failure runs and the result says which went through.
+                results: list[str] = []
+                failure = ""
+                for step in steps:
+                    try:
+                        text = _as_text(await run(step))
+                    except Exception as exc:  # noqa: BLE001 - reported on the card
+                        text = str(exc) or type(exc).__name__
+                        failure = text
+                        break
+                    if result_failed(text):
+                        failure = text
+                        break
+                    results.append(text)
+                done = len(results)
                 result = (
                     json.dumps({
-                        "error": f"{len(failed)} of {len(results)} didn't go through. The first: {failed[0][:300]}",
-                        "done": len(results) - len(failed),
+                        "error": (
+                            f"{done} of {len(steps)} went through, then step {done + 1} didn't: "
+                            f"{failure[:300]}" + (" The rest didn't run." if done + 1 < len(steps) else "")
+                        ),
+                        "done": done,
                     })
-                    if failed else json.dumps({"done": len(results), "results": [r[:300] for r in results]})
+                    if failure else json.dumps({"done": done, "results": [r[:300] for r in results]})
                 )
     finally:
         current_session.reset(token)

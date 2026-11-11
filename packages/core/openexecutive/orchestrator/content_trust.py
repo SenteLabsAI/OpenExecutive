@@ -154,7 +154,7 @@ def unwrapped(text: str) -> str:
         author = _WRAP_AUTHOR_RE.search(match.group(1))
         body = match.group(2).replace(f"{UNTRUSTED_NOTICE}\n---\n", "").replace(UNTRUSTED_NOTICE, "")
         body = _QUOTE_MARKS_RE.sub('"', body).strip("\n")
-        who = f"quoted from {author.group(1)}" if author else "quoted"
+        who = f"quoted from {_QUOTE_MARKS_RE.sub(chr(34), author.group(1))}" if author else "quoted"
         return f"«{who}, not written by the principal: {body}»"
 
     return _WRAP_BLOCK_RE.sub(label, str(text or ""))

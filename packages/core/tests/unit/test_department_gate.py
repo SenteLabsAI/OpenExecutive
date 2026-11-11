@@ -579,5 +579,30 @@ def test_one_tap_carries_out_each_call(monkeypatch: pytest.MonkeyPatch) -> None:
                "held": True, "steps": steps}
     done = json.loads(asyncio.run(ttl.carry_out(payload, by_principal=True)))
     assert done["done"] == 2 and [c["arguments"] for c in calls] == steps
-    failed = asyncio.run(ttl.carry_out({**payload, "steps": [*steps, _rename(3)]}, by_principal=True))
-    assert ttl.result_failed(failed) and "1 of 3" in json.loads(failed)["error"]
+    # It stops at the first that fails: nothing after it runs.
+    calls.clear()
+    failed = asyncio.run(ttl.carry_out({**payload, "steps": [*steps, _rename(3), _rename(4)]}, by_principal=True))
+    assert ttl.result_failed(failed)
+    error = json.loads(failed)
+    assert error["done"] == 2 and "step 3 didn't" in error["error"] and "rest didn't run" in error["error"]
+    assert [c["arguments"]["file_id"] for c in calls] == ["f1", "f2", "f3"]
+
+
+def test_a_step_that_raises_stops_the_rest(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import mcp_gateway
+
+    calls: list[str] = []
+
+    class Gateway:
+        async def call_tool(self, tool_input: dict[str, Any]) -> str:
+            calls.append(tool_input["arguments"]["file_id"])
+            if tool_input["arguments"]["file_id"] == "f2":
+                raise TimeoutError("timed out")
+            return "Renamed."
+
+    monkeypatch.setattr(mcp_gateway, "get_active_gateway", lambda: Gateway())
+    steps = [_rename(n) for n in range(1, 4)]
+    payload = {"tool": "google_workspace__update_drive_file", "input": steps[0], "mcp": True,
+               "held": True, "steps": steps}
+    out = json.loads(asyncio.run(ttl.carry_out(payload, by_principal=True)))
+    assert out["done"] == 1 and "timed out" in out["error"] and calls == ["f1", "f2"]

@@ -1101,6 +1101,24 @@ def test_only_the_principal_edits_a_card(client: TestClient, owner: Any, monkeyp
     assert response.status_code == 403 and done == []
 
 
+def test_a_card_for_several_calls_is_not_changed_before_approving(
+    client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    done: list[dict[str, Any]] = []
+    _carry_out_into(done, monkeypatch)
+    decision_id = _held(owner)
+    parse = decisions_route._parse_payload
+
+    def with_steps(instance: Any) -> dict[str, Any]:
+        payload = parse(instance)
+        return {**payload, "steps": [payload["input"], {**payload["input"], "text": "And the other one"}]}
+
+    monkeypatch.setattr(decisions_route, "_parse_payload", with_steps)
+    monkeypatch.setattr(decisions_route, "_approver_is_principal", lambda request: True)
+    response = client.post(f"/decisions/{decision_id}/approve", json={"edits": {"input": {"text": "Pay it elsewhere"}}})
+    assert response.status_code == 422 and done == []
+
+
 def test_a_full_list_refuses_the_allow_before_acting(
     client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
