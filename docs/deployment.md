@@ -99,9 +99,13 @@ release. If the images fail, no release is
 created; re-running the failed job from the Actions UI creates it once the
 images succeed. A release that already exists for the tag is left alone.
 
-The images are `linux/amd64` only. The API image bakes the embedding models at
-build time (see the Dockerfile), which makes an emulated arm64 build
-impractically slow.
+The images are published for `linux/amd64` and `linux/arm64`: each tag is a
+multi-platform manifest list, so `docker pull` picks the host's platform. Each
+platform is built natively on its own GitHub-hosted runner (`ubuntu-24.04` and
+`ubuntu-24.04-arm`), never under QEMU, because the API image bakes torch and
+the embedding models at build time (see the Dockerfile), which would make an
+emulated build impractically slow. A tag appears only once both platforms of
+that image have built.
 
 > **First publish:** GitHub creates each package as private. An org admin makes
 > `openexecutive-api` and `openexecutive-ui` public once under the org's
