@@ -77,11 +77,12 @@ fi
 # permission sharing, whole-calendar delete — and an upstream bump can add
 # more. The list below is exactly the Outlook mail + calendar tools the
 # gateway gates or that carry no recipient; the scopes requested at --login
-# follow from it (Mail.ReadWrite, Mail.Send, Calendars.ReadWrite). The
-# server's account tools (login, logout, verify-login, list-accounts,
-# select-account, remove-account) are always registered regardless of the
-# filter; the gateway refuses login / logout / select-account /
-# remove-account itself (orchestrator/mcp_gateway.py).
+# follow from it (Mail.ReadWrite, Mail.Send, Calendars.ReadWrite). Since
+# 0.183.0 the server's account tools (login, logout, verify-login,
+# list-accounts, select-account, remove-account) follow the filter too, so
+# none of them is registered; the gateway still refuses login / logout /
+# select-account / remove-account itself (orchestrator/mcp_gateway.py) should
+# a later version register them again.
 #
 # OneDrive (opt-in, MS365_MCP_ONEDRIVE=true): the same surface the Executive
 # has on Google Drive — search, list, read (download-bytes, pinned by the
