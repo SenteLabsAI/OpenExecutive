@@ -20,8 +20,11 @@ Where a tap proves who made it, the same bar as a verified speaker there
 - Discord: a DM. The tap comes over the bot's own gateway connection, and
   counts only from the user whose DM with the bot it is.
 - Google Chat: a DM between the Chat app and one person alone
-  (``singleUserBotDm``). Google signs the tap's event as it signs a message's,
-  and it counts only from a human on People in such a DM. Not yet sent cards
+  (``singleUserBotDm``). The tap comes to the webhook with Google's token,
+  counts only from a human on People in such a DM, and only once Chat
+  itself, read as the app, confirms the message, the space and its one
+  person (``google_chat.verify_tap``), since the token isn't bound to the
+  event's body. Not yet sent cards
   that wait outside any chat (``chat_for``): the app has no stored DM to reach
   them in.
 
@@ -101,7 +104,9 @@ def _dm_proves_taps(channel: str) -> bool:
     if channel == "slack":
         return bool(s.slack_bot_token and s.slack_card_buttons)
     if channel == "google_chat":
-        # The Chat app's webhook: Google signs every event, a tap's too.
+        # The Chat app's webhook: its token says Google sent the event, and
+        # a tap counts only once Chat itself confirms it
+        # (``google_chat.verify_tap``).
         return bool(s.google_chat_project_number and (
             s.google_chat_service_account_file or s.google_chat_service_account_email
         ))

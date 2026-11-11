@@ -819,7 +819,7 @@ def _tap_event(*, alone: bool = True, user_type: str = "HUMAN", data: str = "car
         "common": {"invokedFunction": "oe_card", "parameters": {"card": data}},
         "message": {"name": "spaces/DM1/messages/C1", "text": "Meeting to book\nBoard prep"},
         "space": space,
-        "user": {"displayName": "Pat", "email": "pat@acme.com", "type": user_type},
+        "user": {"name": "users/111", "displayName": "Pat", "email": "pat@acme.com", "type": user_type},
     }
 
 
@@ -844,13 +844,14 @@ def test_a_tap_in_the_apps_own_dm_is_taken(monkeypatch: pytest.MonkeyPatch, clie
     assert tap["data"] == "card:12:a"
     assert tap["message_name"] == "spaces/DM1/messages/C1"
     assert tap["sender_email"] == "pat@acme.com"
-    assert tap["shown"] == "Meeting to book\nBoard prep"
+    assert tap["space_name"] == "spaces/DM1"
+    assert tap["user_name"] == "users/111"
 
 
 @pytest.mark.parametrize(
     "event",
-    [_tap_event(alone=False), _tap_event(user_type="BOT")],
-    ids=["two-peoples-dm", "a-bot"],
+    [_tap_event(alone=False), _tap_event(user_type="BOT"), _tap_event(user_type="")],
+    ids=["two-peoples-dm", "a-bot", "no-user-type"],
 )
 def test_a_tap_anywhere_else_decides_nothing(
     monkeypatch: pytest.MonkeyPatch, client: TestClient, event: dict
@@ -877,31 +878,114 @@ def test_the_older_tap_shape_is_read_too() -> None:
     assert gc_module._tapped({"action": {"actionMethodName": "oe_card"}}) is None
 
 
-@pytest.mark.parametrize(("person", "line"), [(SimpleNamespace(id=3), "Approved."), (None, "This card is no longer there.")])
-def test_a_decided_tap_rewrites_the_card(monkeypatch: pytest.MonkeyPatch, person: Any, line: str) -> None:
-    """The tapper is the person on People with the event's email; the card
-    keeps what it said, with the outcome under it."""
+@pytest.mark.parametrize(
+    ("person", "confirmed", "decided"),
+    [(SimpleNamespace(id=3), "Meeting to book", True), (None, "Meeting to book", False),
+     (SimpleNamespace(id=3), None, False)],
+    ids=["confirmed", "not-on-people", "chat-didnt-confirm"],
+)
+def test_a_tap_is_decided_only_once_chat_confirms_it(
+    monkeypatch: pytest.MonkeyPatch, person: Any, confirmed: str | None, decided: bool
+) -> None:
+    """The tapper is the person on People with the event's email, and only
+    when Chat itself confirms the message, the space and its one person. The
+    card is rewritten from Chat's own words, with the outcome under them;
+    a tap that isn't confirmed decides and rewrites nothing."""
     from openexecutive.integrations import channel_cards
 
     resolved: list[tuple] = []
     updated: list[tuple] = []
+    checked: list[tuple] = []
+    rows: list[dict] = []
 
     async def resolve(decision_id: int, who: Any, *, approve: bool, allow: bool = False) -> str:
         resolved.append((decision_id, who, approve, allow))
         return "Approved."
 
+    def verify(*a: Any) -> str | None:
+        checked.append(a)
+        return confirmed
+
     monkeypatch.setattr("openexecutive.people.store.find_person_by_email", lambda _e, **_k: person)
     monkeypatch.setattr(channel_cards, "resolve", resolve)
-    monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **k: None)
+    monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **k: rows.append(k.get("details") or {}))
+    monkeypatch.setattr(gc_module, "verify_tap", verify)
     monkeypatch.setattr(gc_module, "update_card", lambda *a: updated.append(a))
 
     asyncio.run(gc_module._decide_tap(
-        data="card:12:a", message_name="spaces/DM1/messages/C1", shown="Meeting to book",
-        sender_email="pat@acme.com", service_account_file="/k.json", service_account_email=None,
+        data="card:12:a", space_name="spaces/DM1", message_name="spaces/DM1/messages/C1",
+        sender_email="pat@acme.com", user_name="users/111",
+        service_account_file="/k.json", service_account_email=None,
     ))
 
-    assert resolved == ([(12, person, True, False)] if person else [])
-    assert updated == [("spaces/DM1/messages/C1", f"Meeting to book\n\n{line}", "/k.json", None)]
+    assert checked == ([("spaces/DM1", "spaces/DM1/messages/C1", "card:12:a", "users/111", "/k.json", None)]
+                       if person else [])
+    assert resolved == ([(12, person, True, False)] if decided else [])
+    assert updated == ([("spaces/DM1/messages/C1", "Meeting to book\n\nApproved.", "/k.json", None)]
+                       if decided else [])
+    [row] = rows
+    assert row["google_user"] == "users/111" and row["space_name"] == "spaces/DM1"
+    assert row.get("rejected", False) is (not decided)
+
+
+class _FakeChat:
+    """``spaces().messages().get``, ``spaces().get`` and ``spaces().members().list``."""
+
+    def __init__(self, message: dict, space: dict, members: list[dict]) -> None:
+        self._answers = {"message": message, "space": space, "members": {"memberships": members}}
+
+    def _call(self, key: str) -> Any:
+        return SimpleNamespace(execute=lambda: self._answers[key])
+
+    def spaces(self) -> Any:
+        return SimpleNamespace(
+            messages=lambda: SimpleNamespace(get=lambda name: self._call("message")),
+            get=lambda name: self._call("space"),
+            members=lambda: SimpleNamespace(list=lambda parent: self._call("members")),
+        )
+
+
+_OUR_CARD = {
+    "sender": {"type": "BOT"},
+    "text": "Meeting to book\n\nWorking on it…",
+    "cardsV2": gc_module._card_buttons(12, ("Approve", "Skip")),
+}
+_PAT = [{"member": {"name": "users/111", "type": "HUMAN"}}, {"member": {"name": "users/app", "type": "BOT"}}]
+
+
+@pytest.mark.parametrize(
+    ("message", "space", "members", "message_name", "expected"),
+    [
+        (_OUR_CARD, {"singleUserBotDm": True}, _PAT, "spaces/DM1/messages/C1", "Meeting to book"),
+        ({**_OUR_CARD, "sender": {"type": "HUMAN"}}, {"singleUserBotDm": True}, _PAT, "spaces/DM1/messages/C1", None),
+        ({**_OUR_CARD, "cardsV2": gc_module._card_buttons(13, ("Approve", "Skip"))}, {"singleUserBotDm": True},
+         _PAT, "spaces/DM1/messages/C1", None),
+        (_OUR_CARD, {"singleUserBotDm": False}, _PAT, "spaces/DM1/messages/C1", None),
+        (_OUR_CARD, {"singleUserBotDm": True}, [{"member": {"name": "users/222", "type": "HUMAN"}}],
+         "spaces/DM1/messages/C1", None),
+        (_OUR_CARD, {"singleUserBotDm": True}, _PAT, "spaces/OTHER/messages/C1", None),
+    ],
+    ids=["ours", "not-the-apps", "another-card", "not-a-dm-alone", "someone-else", "another-space"],
+)
+def test_chat_itself_confirms_a_tap(
+    message: dict, space: dict, members: list[dict], message_name: str, expected: str | None
+) -> None:
+    with (
+        patch.object(gc_module, "_build_credentials", return_value="creds"),
+        patch("googleapiclient.discovery.build", return_value=_FakeChat(message, space, members)),
+    ):
+        assert gc_module.verify_tap("spaces/DM1", message_name, "card:12:a", "users/111", None) == expected
+
+
+def test_a_check_chat_cant_answer_is_a_no() -> None:
+    with (
+        patch.object(gc_module, "_build_credentials", side_effect=RuntimeError("no creds")),
+    ):
+        assert gc_module.verify_tap("spaces/DM1", "spaces/DM1/messages/C1", "card:12:a", "users/111", None) is None
+
+
+def test_a_cards_words_cannot_hide_a_link() -> None:
+    assert "<" not in gc_module.card_safe("Agenda: <https://evil.example|Open the agenda>")
 
 
 def test_a_card_is_sent_with_its_buttons() -> None:

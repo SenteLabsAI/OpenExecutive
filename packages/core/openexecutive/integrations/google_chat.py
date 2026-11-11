@@ -150,6 +150,14 @@ def _card_buttons(decision_id: int, labels: tuple[str, ...]) -> list[dict[str, A
     return [{"cardId": f"oe-card-{decision_id}", "card": {"sections": [{"widgets": [{"buttonList": {"buttons": buttons}}]}]}}]
 
 
+def card_safe(text: str) -> str:
+    """A card's words with Chat's link markup made inert. A card can quote
+    what someone else wrote (a meeting title from an email), and Chat turns
+    ``<https://…|words>`` into a link that shows only the words, so an
+    approval card could hide where it points."""
+    return text.replace("<", "\u2039")
+
+
 def send_card(
     space_name: str,
     thread_name: str,
@@ -165,7 +173,7 @@ def send_card(
 
     creds = _build_credentials(service_account_file, service_account_email)
     service = google_build("chat", "v1", credentials=creds, cache_discovery=False)
-    body: dict[str, Any] = {"text": text, "cardsV2": _card_buttons(decision_id, labels)}
+    body: dict[str, Any] = {"text": card_safe(text), "cardsV2": _card_buttons(decision_id, labels)}
     if thread_name:
         body["thread"] = {"name": thread_name}
     service.spaces().messages().create(
@@ -189,7 +197,7 @@ def update_card(
     creds = _build_credentials(service_account_file, service_account_email)
     service = google_build("chat", "v1", credentials=creds, cache_discovery=False)
     service.spaces().messages().patch(
-        name=message_name, updateMask="text,cardsV2", body={"text": text, "cardsV2": []},
+        name=message_name, updateMask="text,cardsV2", body={"text": card_safe(text), "cardsV2": []},
     ).execute()
 
 
@@ -217,20 +225,69 @@ def _tapped(body: dict[str, Any]) -> str | None:
 def _card_shown(body: dict[str, Any]) -> str:
     """What the tapped card's message says, without a line a tap added."""
     message = _obj(body, "message")
-    text = str(message.get("text") or "")
+    return _strip_working(str(message.get("text") or ""))
+
+
+def _strip_working(text: str) -> str:
     return text.removesuffix(f"\n\n{_WORKING}")
+
+
+def verify_tap(
+    space_name: str,
+    message_name: str,
+    data: str,
+    user_name: str,
+    service_account_file: str | None,
+    service_account_email: str | None = None,
+) -> str | None:
+    """Whether a tap's event matches what Chat itself says, read as the app:
+    the tapped message is the app's own, in that space, carrying this very
+    button; the space is a DM between the app and one person alone; and that
+    person is the event's user. The webhook's token proves Google issued it,
+    not what the body says, so the tap counts only when Chat agrees.
+    Returns the card message's words as Chat has them, or None for a no.
+    Synchronous; call it via asyncio.to_thread(). Never raises: any doubt is
+    a no."""
+    import json
+
+    from googleapiclient.discovery import build as google_build
+
+    if not (space_name and user_name and message_name.startswith(f"{space_name}/messages/")):
+        return None
+    try:
+        creds = _build_credentials(service_account_file, service_account_email)
+        service = google_build("chat", "v1", credentials=creds, cache_discovery=False)
+        message = service.spaces().messages().get(name=message_name).execute()
+        sender = message.get("sender") if isinstance(message.get("sender"), dict) else {}
+        if sender.get("type") != "BOT" or json.dumps(data) not in json.dumps(message.get("cardsV2") or []):
+            return None
+        space = service.spaces().get(name=space_name).execute()
+        if space.get("singleUserBotDm") is not True:
+            return None
+        members = service.spaces().members().list(parent=space_name).execute()
+        humans = [
+            str((m.get("member") or {}).get("name") or "")
+            for m in members.get("memberships") or []
+            if isinstance(m, dict) and (m.get("member") or {}).get("type") == "HUMAN"
+        ]
+        return _strip_working(str(message.get("text") or "")) if humans == [user_name] else None
+    except Exception:
+        logger.warning("Google Chat: couldn't check a tap with Chat; it is refused", exc_info=True)
+        return None
 
 
 async def _decide_tap(
     data: str,
+    space_name: str,
     message_name: str,
-    shown: str,
     sender_email: str,
+    user_name: str,
     service_account_file: str | None,
     service_account_email: str | None,
 ) -> None:
-    """Decide a tap the webhook took: approve or skip the card for the person
-    whose DM with the app it is, then rewrite the card with the outcome."""
+    """Decide a tap the webhook took: once Chat confirms it (``verify_tap``),
+    approve or skip the card for the person whose DM with the app it is,
+    then rewrite the card with the outcome."""
     from openexecutive.audit import log_event as audit_log
     from openexecutive.integrations import channel_cards
     from openexecutive.people.store import find_person_by_email
@@ -240,25 +297,45 @@ async def _decide_tap(
         return
     decision_id, approve = parsed
     allow = channel_cards.tapped_allow(data)
+    where = {"space_name": space_name, "message_name": message_name, "google_user": user_name}
     try:
         person = await asyncio.to_thread(find_person_by_email, sender_email) if sender_email else None
     except Exception:
         logger.exception("Google Chat: couldn't look up who tapped card %d", decision_id)
         person = None
-    if person is None or person.id is None:
+    confirmed = None
+    if person is not None and person.id is not None:
+        confirmed = await asyncio.to_thread(
+            verify_tap, space_name, message_name, data, user_name, service_account_file, service_account_email,
+        )
+    if person is None or person.id is None or confirmed is None:
         line = "This card is no longer there."
-    else:
-        line = await channel_cards.resolve(decision_id, person, approve=approve, allow=allow)
-        choice = "allow" if allow else "approve" if approve else "skip"
+        logger.warning("Google Chat: a tap on card %d was refused (%s)", decision_id,
+                       "not on People" if person is None or person.id is None else "Chat didn't confirm it")
         await asyncio.to_thread(
             audit_log,
             "integration_inbound",
-            f"Google Chat card {decision_id}: tapped {choice.capitalize()}: {line[:120]}",
+            f"Rejected: Google Chat tap on card {decision_id}",
             actor="google_chat",
-            details={"channel": "google_chat", "decision_id": decision_id, "choice": choice,
-                     "outcome": channel_cards.outcome_of(line), "person_id": person.id},
+            details={"channel": "google_chat", "decision_id": decision_id, "rejected": True,
+                     "person_id": getattr(person, "id", None), **where},
         )
-    if line == channel_cards.BUSY or not message_name:
+        # Nothing is rewritten for a tap Chat didn't confirm: its message
+        # may not be ours.
+        return
+    # The card's words as Chat has them, not as the event said.
+    shown = confirmed
+    line = await channel_cards.resolve(decision_id, person, approve=approve, allow=allow)
+    choice = "allow" if allow else "approve" if approve else "skip"
+    await asyncio.to_thread(
+        audit_log,
+        "integration_inbound",
+        f"Google Chat card {decision_id}: tapped {choice.capitalize()}: {line[:120]}",
+        actor="google_chat",
+        details={"channel": "google_chat", "decision_id": decision_id, "choice": choice,
+                 "outcome": channel_cards.outcome_of(line), "person_id": person.id, **where},
+    )
+    if line == channel_cards.BUSY:
         return
     try:
         await asyncio.to_thread(
@@ -273,7 +350,9 @@ def _take_tap(body: dict[str, Any], background_tasks: BackgroundTasks, settings:
     """A CARD_CLICKED event: a tap on a card's button. It counts only in a DM
     between the app and the tapper alone (``singleUserBotDm``), from a human
     on People, as a Slack or Discord tap counts only in the tapper's own DM;
-    ``decisions.resolve_in_chat`` then decides whether the card is theirs.
+    ``verify_tap`` then checks that with Chat itself, since the token isn't
+    bound to the body, and ``decisions.resolve_in_chat`` decides whether the
+    card is theirs.
     The card shows it is being worked on at once, since deciding can take
     longer than Chat waits for an answer, and is rewritten when it is done."""
     data = _tapped(body)
@@ -283,14 +362,15 @@ def _take_tap(body: dict[str, Any], background_tasks: BackgroundTasks, settings:
     space = _obj(body, "space")
     message = _obj(body, "message")
     shown = _card_shown(body)
-    if not _is_one_on_one(space) or user.get("type", "HUMAN") != "HUMAN":
+    if not _is_one_on_one(space) or user.get("type") != "HUMAN":
         return {"actionResponse": {"type": "UPDATE_MESSAGE"}, "text": shown, "cardsV2": []}
     background_tasks.add_task(
         _decide_tap,
         data=data,
+        space_name=str(space.get("name") or ""),
         message_name=str(message.get("name") or ""),
-        shown=shown,
         sender_email=str(user.get("email") or ""),
+        user_name=str(user.get("name") or ""),
         service_account_file=settings.google_chat_service_account_file,
         service_account_email=settings.google_chat_service_account_email,
     )
