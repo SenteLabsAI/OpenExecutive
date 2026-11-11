@@ -108,6 +108,34 @@ def test_an_email_turns_approver_is_asked_on_their_own() -> None:
     assert routed.channel == "slack"
 
 
+def test_a_chat_that_cannot_answer_a_signoff_asks_on_its_own() -> None:
+    """Google Chat names its caller, but its adapter never calls the inbound
+    resolver: a question riding in the reply there could never be answered,
+    so it goes out on its own (mode 2)."""
+    current_session.set(
+        Session(
+            session_id="google_chat:spaces/AAA",
+            origin_channel="google_chat",
+            origin_channel_ref="spaces/AAA",
+            caller_person_id=7,
+        )
+    )
+    send = AsyncMock(
+        return_value=json.dumps(
+            {"status": "sent", "channel": "slack_dm", "channel_ref": "U7", "message_id": "m-1"}
+        )
+    )
+
+    with patch(
+        "openexecutive.orchestrator.schedule_tools.handle_message_person", send
+    ):
+        routed, delivery = _deliver(_gate(person_id=7))
+
+    send.assert_awaited_once()
+    assert delivery == "sent"
+    assert routed.channel == "slack"
+
+
 def test_gate_for_someone_else_is_actually_sent_to_them() -> None:
     """Same chat session, but the approver is a different person."""
     current_session.set(

@@ -85,8 +85,6 @@ def speaker(session: Any) -> Person | None:
         return None
     person_id = getattr(session, "caller_person_id", None)
     if person_id is None:
-        person_id = getattr(session, "gate_sender_person_id", None)
-    if person_id is None:
         # Signed in on the web but on nobody's People entry (an archived
         # teammate still allowed in, an allowlisted email): not the
         # principal, so not ungated either. They wait like someone in no
@@ -98,8 +96,8 @@ def speaker(session: Any) -> Person | None:
         # The same on a chat channel (Slack, Telegram, Discord, Google
         # Chat): a sender it couldn't match to anyone on People. Slack,
         # Telegram and Discord turn those away before the turn starts;
-        # Google Chat matches its sender by email (`gate_sender_person_id`)
-        # and lets an unmatched one through to this. Email is left out: whoever writes in is never on People,
+        # Google Chat matches its sender by email (`caller_person_id` when
+        # on People) and lets an unmatched one through to this. Email is left out: whoever writes in is never on People,
         # and its replies go through the mailbox's own gates.
         channel = str(getattr(session, "origin_channel", "") or "")
         if channel and channel != "email":

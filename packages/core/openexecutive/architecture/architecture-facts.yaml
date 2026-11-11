@@ -4024,11 +4024,11 @@ departments:
     origin_channel but email) whose sender matched no one, gated as someone
     in no department. Slack, Telegram and Discord reject unmatched senders
     before the turn, so in practice that is Google Chat. Google Chat matches
-    its sender by the Google account email on its signed event and sets
-    Session.gate_sender_person_id, read only by the gate (never
-    caller_person_id, since Google Chat is not a verified speaker surface),
-    so the principal there is not held and a teammate gets their own
-    department's authority. Email is left out: inbound senders are never
+    its sender by the Google account email on its signed event, and a sender
+    on People is the turn's caller_person_id with Session.speaker_verified,
+    as on Slack (a DM with the app is also Session.private_chat), so the
+    principal there is not held and a teammate gets their own department's
+    authority. Email is left out: inbound senders are never
     on People and the mailbox has its own recipient gates)
     wraps its sends and edits with the gate, in
     Executive._stream_agent_loop beside Take the lead's `leading` wrap:
@@ -6954,7 +6954,9 @@ workflows:
     state_json carries the routing fields. Two modes. Self-approval: the
     chat session's `origin_channel` is set (and is not `email` — an email
     turn's answer is no chat reply, so nothing would ever send the
-    question) and its `caller_person_id` is the gate's person — nothing is sent (the question rides in the
+    question; and is a channel whose adapter calls the inbound resolver,
+    channel_context.answers_signoffs, so not Google Chat, where a reply
+    could never answer it) and its `caller_person_id` is the gate's person — nothing is sent (the question rides in the
     Executive's own reply) and the gate records `origin_session_id` plus
     the session's channel/ref. Out-of-band: delegate to
     `schedule_tools.handle_message_person` (preferred-channel selection,
@@ -7801,7 +7803,7 @@ workflows:
     goals, and it re-grades goals) and `morning_brief` in {solo} (commitments
     and calendar). `workflow_run_tools._principal_only_refusal` checks at
     dispatch, before `create_run`, with the turn's effective mode; anyone
-    else (email, Google Chat, unverified Telegram, a teammate, an unattended
+    else (email, a Google Chat sender not on People, unverified Telegram, a teammate, an unattended
     run, no session) gets a plain JSON error that does not name the rule,
     audited refused=true with workflow, mode and caller context. A check that
     raises refuses. Team `morning_brief` is launchable by anyone as before.

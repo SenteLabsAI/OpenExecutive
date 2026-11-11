@@ -79,6 +79,10 @@ async def deliver_gate_question(
         # An email turn's answer is no chat reply: nothing sends it unless the
         # model mails it, so the question must be asked on its own (mode 2).
         and origin_channel != "email"
+        # Only where a reply can answer it: a chat whose adapter never calls
+        # the inbound resolver (Google Chat) would record the question as
+        # asked and leave it unanswerable, so it is asked on its own instead.
+        and _answers_signoffs(normalize_channel(origin_channel))
         and session_caller_id(session) == event.person_id
     ):
         return (
@@ -258,3 +262,9 @@ def _compose_question(
 
 
 __all__ = ["DeliveryStatus", "deliver_gate_question"]
+
+
+def _answers_signoffs(channel: str) -> bool:
+    from openexecutive.integrations.channel_context import answers_signoffs
+
+    return answers_signoffs(channel)

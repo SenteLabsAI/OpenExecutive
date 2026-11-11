@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 from collections.abc import Mapping
@@ -15,6 +16,7 @@ router = APIRouter()
 
 
 _GOOGLE_CHAT_ISSUER = "chat@system.gserviceaccount.com"
+_GOOGLE_CHAT_CERTS_URL = f"https://www.googleapis.com/service_accounts/v1/metadata/x509/{_GOOGLE_CHAT_ISSUER}"
 
 
 def verify_google_jwt(token: str, project_number: str) -> Mapping[str, Any]:
@@ -27,7 +29,11 @@ def verify_google_jwt(token: str, project_number: str) -> Mapping[str, Any]:
     from google.auth.transport import requests as google_requests
     from google.oauth2 import id_token
 
-    claims = id_token.verify_token(token, google_requests.Request(), audience=project_number)
+    # Chat signs with its own service account's keys, not Google's OAuth
+    # ones, which ``verify_token`` checks by default.
+    claims = id_token.verify_token(
+        token, google_requests.Request(), audience=project_number, certs_url=_GOOGLE_CHAT_CERTS_URL
+    )
     if claims.get("iss") != _GOOGLE_CHAT_ISSUER:
         raise ValueError(f"Unexpected issuer: {claims.get('iss')!r}")
     return claims
@@ -245,6 +251,13 @@ def _is_direct(space: object) -> bool:
     )
 
 
+def _is_one_on_one(space: object) -> bool:
+    """The event's space is a DM between the app and one person alone
+    (``singleUserBotDm``). A ``DIRECT_MESSAGE`` can also be two people's DM
+    the app was added to, which the other person reads too."""
+    return isinstance(space, dict) and space.get("singleUserBotDm") is True
+
+
 def _load_history(session_id: str) -> list[dict[str, Any]]:
     from openexecutive.memory.session_store import load_messages
 
@@ -291,11 +304,13 @@ async def _process_and_reply(
     sender_email: str = "",
     reply_context: str = "",
     direct: bool = False,
+    one_on_one: bool = False,
 ) -> None:
     """One Chat message's turn. ``reply_context`` is the message it quotes
     (``integrations.reply_context``), put in front of the words. ``direct``:
     a DM with the app, which is one conversation, whatever thread each
-    message lands in."""
+    message lands in. ``one_on_one``: a DM between the app and the sender
+    alone (``singleUserBotDm``), the only conversation private to them."""
     if not space_name:
         logger.error("Google Chat: missing space_name for message %s, cannot reply", message_name)
         return
@@ -308,8 +323,8 @@ async def _process_and_reply(
     session_id = f"google_chat:{space_name}" if direct else f"google_chat:{space_name}:{thread_name}"
     # The sender's People row, by the Google account email on the event (the
     # JWT proves the event is Google's, so the email is Google's word). None
-    # for someone who isn't on People; the department gate then holds their
-    # sends and edits for approval.
+    # for someone who isn't on People: their turn is unverified, and the
+    # department gate holds their sends and edits for approval.
     sender_person = None
     if sender_email:
         try:
@@ -319,6 +334,51 @@ async def _process_and_reply(
         except Exception:
             logger.exception("Google Chat: failed to look up the sender on People")
 
+    # The rows written before the turn binds its session (the inbound row,
+    # alert triage, retrieval) follow the sender's turn, as on the other chat
+    # channels (``people_tools.audit_rows_on_senders_turn``): a row naming one
+    # of the principal's contacts is theirs alone on their own turn, and a
+    # teammate's rows are that teammate's.
+    from openexecutive.audit.context import principal_turn_rows, rows_for_person
+    from openexecutive.orchestrator.people_tools import sent_by_principal, sent_by_teammate
+
+    principal, teammate = False, None
+    if sender_person is not None:
+        try:
+            principal = sent_by_principal("google_chat", space_name, sender_person, speaker_verified=True)
+            teammate = sent_by_teammate("google_chat", space_name, sender_person, speaker_verified=True)
+        except Exception:
+            logger.exception("Google Chat: couldn't tell whose turn this is; rows follow the ordinary rule")
+    with (
+        principal_turn_rows(principal),
+        rows_for_person(teammate) if teammate is not None else contextlib.nullcontext(),
+    ):
+        await _answer(
+            message_text=message_text, sender_name=sender_name, space_name=space_name,
+            thread_name=thread_name, message_name=message_name,
+            service_account_file=service_account_file, service_account_email=service_account_email,
+            attachments=attachments, sender_email=sender_email, reply_context=reply_context,
+            one_on_one=one_on_one, session_id=session_id, sender_person=sender_person,
+        )
+
+
+async def _answer(
+    *,
+    message_text: str,
+    sender_name: str,
+    space_name: str,
+    thread_name: str,
+    message_name: str,
+    service_account_file: str | None,
+    service_account_email: str | None,
+    attachments: list[dict] | None,
+    sender_email: str,
+    reply_context: str,
+    one_on_one: bool,
+    session_id: str,
+    sender_person: Any,
+) -> None:
+    """The rest of ``_process_and_reply``, once the sender is known."""
     from openexecutive.audit import log_event as audit_log
     audit_log(
         "integration_inbound",
@@ -354,6 +414,7 @@ async def _process_and_reply(
 
     try:
         from openexecutive.integrations.channel_context import (
+            attach_briefing_context,
             build_channel_context_block,
         )
         from openexecutive.knowledge.retriever import chat_builtin_results, retrieve
@@ -367,17 +428,35 @@ async def _process_and_reply(
         session = Session(
             session_id=session_id,
             company_profile=profile if not profile.is_empty() else None,
-            # Names the surface for logging and the `<channel>` block. This
-            # adapter turns no sender away (anyone in a space can post) and
-            # never populates trusted_alert_ids, so
-            # `ack_alert` refuses here — matching what the channel block
-            # already tells the model about this surface.
+            # Names the surface for logging and the `<channel>` block.
             origin_channel="google_chat",
-            # The sender's People row, for the department gate alone: this
-            # surface isn't one `people_tools` verifies, so it is never
-            # `caller_person_id` and grants nothing else.
-            gate_sender_person_id=sender_person.id if sender_person else None,
+            origin_channel_ref=space_name,
         )
+        if sender_person is not None:
+            # A sender on People is signed in here, as on Slack: Google
+            # signed the event (the JWT checked above), and its `user.email`
+            # is the Google account that sent it, never anything the message
+            # says. So the turn is theirs, verified, in a space or a DM, and
+            # their Approvals level decides what runs. Anyone else stays
+            # unverified, with no caller, and the department gate holds what
+            # they ask to send or change.
+            session.caller_person_id = sender_person.id
+            session.speaker_verified = True
+            # A DM between the app and the sender alone is read by them
+            # alone, like a Slack DM, so what is private to them (Act as me,
+            # Apps, recalled notes) may be offered there. Anything else never:
+            # a space, or a DM between two people the app was added to.
+            session.private_chat = one_on_one
+        # Anywhere but that DM, others write into the conversation this turn
+        # reads, and unlike Slack's channels not only people on People
+        # (Google Chat turns no one away). So it is a shared chat, as a web
+        # chat shared with teammates is: the principal-only tools and what
+        # else a shared chat withholds stay off, whoever speaks.
+        session.shared_chat = not one_on_one
+        # And anyone may have written last, so the turn is held as one that
+        # read outside words: under the Approvals level, its actions wait on
+        # a card rather than run from words someone else planted.
+        session.others_spoke_last = not one_on_one
         # The conversation so far, so a follow-up ("add a few more bullets")
         # has what it follows.
         history = await asyncio.to_thread(_load_history, session_id)
@@ -387,6 +466,11 @@ async def _process_and_reply(
             query=message_text, max_chars=get_settings().knowledge_chat_max_chars, n_builtin=chat_builtin_results()
         )
         episodic_context = format_for_prompt()
+        # The open-alert board, in the sender's own DM only (the helper
+        # returns "" anywhere else, and for someone who isn't on People).
+        briefing_context = await asyncio.to_thread(
+            attach_briefing_context, session, is_dm=one_on_one and sender_person is not None, person=sender_person
+        )
 
         own_text = message_text
         # Quoted only for people on the team: the quote is text the sender
@@ -417,7 +501,9 @@ async def _process_and_reply(
             session=session,
             retrieved_context=retrieved_context,
             episodic_context=episodic_context,
+            briefing_context=briefing_context,
             channel_context_block=build_channel_context_block("google_chat"),
+            person_id=sender_person.id if sender_person is not None else None,
             attachment_blocks=image_blocks or None,
             # The quote is not the person's words: memory keeps their own.
             memory_text=own_text if reply_context else None,
@@ -504,10 +590,11 @@ async def google_chat_webhook(request: Request, background_tasks: BackgroundTask
         reply_context=reply_context.google_chat(
             message,
             reply_context.google_chat_app_id(message),
-            # A direct message with the app has two people in it: the sender and the app.
-            two_party=_is_direct(body.get("space", {})),
+            # A DM between the app and one person has two in it: the sender and the app.
+            two_party=_is_one_on_one(body.get("space", {})),
         ),
         direct=_is_direct(body.get("space", {})),
+        one_on_one=_is_one_on_one(body.get("space", {})),
         service_account_file=settings.google_chat_service_account_file,
         service_account_email=settings.google_chat_service_account_email,
         attachments=attachments,
