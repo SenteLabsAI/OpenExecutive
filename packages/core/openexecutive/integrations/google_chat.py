@@ -122,6 +122,185 @@ def send_reply(
     ).execute()
 
 
+# A card's button runs this function (``onClick.action.function``); its tap
+# comes back as a CARD_CLICKED event naming it, with the button's data
+# (``channel_cards.callback_data``) under ``_CARD_PARAM``.
+_CARD_FUNCTION = "oe_card"
+_CARD_PARAM = "card"
+# What a card's message says while its tap is being decided.
+_WORKING = "Working on it…"
+
+
+def _card_buttons(decision_id: int, labels: tuple[str, ...]) -> list[dict[str, Any]]:
+    """A card's Approve and Skip (and, on a card that can teach, the "on its
+    own next time") buttons, as one Chat ``cardsV2`` card."""
+    from openexecutive.integrations import channel_cards
+
+    choices = (channel_cards.APPROVE, channel_cards.SKIP, channel_cards.ALLOW)
+    buttons = [
+        {
+            "text": label,
+            "onClick": {"action": {
+                "function": _CARD_FUNCTION,
+                "parameters": [{"key": _CARD_PARAM, "value": channel_cards.callback_data(decision_id, choice)}],
+            }},
+        }
+        for label, choice in zip(labels, choices, strict=False)
+    ]
+    return [{"cardId": f"oe-card-{decision_id}", "card": {"sections": [{"widgets": [{"buttonList": {"buttons": buttons}}]}]}}]
+
+
+def send_card(
+    space_name: str,
+    thread_name: str,
+    decision_id: int,
+    text: str,
+    labels: tuple[str, ...],
+    service_account_file: str | None,
+    service_account_email: str | None = None,
+) -> None:
+    """Post a card the reply left (``channel_cards``) as a message: its words,
+    then its buttons. Synchronous; call it via asyncio.to_thread()."""
+    from googleapiclient.discovery import build as google_build
+
+    creds = _build_credentials(service_account_file, service_account_email)
+    service = google_build("chat", "v1", credentials=creds, cache_discovery=False)
+    body: dict[str, Any] = {"text": text, "cardsV2": _card_buttons(decision_id, labels)}
+    if thread_name:
+        body["thread"] = {"name": thread_name}
+    service.spaces().messages().create(
+        parent=space_name,
+        body=body,
+        messageReplyOption="REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD",
+    ).execute()
+
+
+def update_card(
+    message_name: str,
+    text: str,
+    service_account_file: str | None,
+    service_account_email: str | None = None,
+) -> None:
+    """Rewrite a card's message once its tap is decided: what it said with
+    the outcome under it, and no buttons. The app may edit only its own
+    messages. Synchronous; call it via asyncio.to_thread()."""
+    from googleapiclient.discovery import build as google_build
+
+    creds = _build_credentials(service_account_file, service_account_email)
+    service = google_build("chat", "v1", credentials=creds, cache_discovery=False)
+    service.spaces().messages().patch(
+        name=message_name, updateMask="text,cardsV2", body={"text": text, "cardsV2": []},
+    ).execute()
+
+
+def _obj(body: dict[str, Any], key: str) -> dict[str, Any]:
+    value = body.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def _tapped(body: dict[str, Any]) -> str | None:
+    """The button data of a CARD_CLICKED event on one of our cards, or None."""
+    common = _obj(body, "common")
+    action = _obj(body, "action")
+    function = common.get("invokedFunction") or action.get("actionMethodName")
+    if function != _CARD_FUNCTION:
+        return None
+    params = common.get("parameters")
+    if isinstance(params, dict) and isinstance(params.get(_CARD_PARAM), str):
+        return str(params[_CARD_PARAM])
+    for item in action.get("parameters") or []:
+        if isinstance(item, dict) and item.get("key") == _CARD_PARAM and isinstance(item.get("value"), str):
+            return str(item["value"])
+    return None
+
+
+def _card_shown(body: dict[str, Any]) -> str:
+    """What the tapped card's message says, without a line a tap added."""
+    message = _obj(body, "message")
+    text = str(message.get("text") or "")
+    return text.removesuffix(f"\n\n{_WORKING}")
+
+
+async def _decide_tap(
+    data: str,
+    message_name: str,
+    shown: str,
+    sender_email: str,
+    service_account_file: str | None,
+    service_account_email: str | None,
+) -> None:
+    """Decide a tap the webhook took: approve or skip the card for the person
+    whose DM with the app it is, then rewrite the card with the outcome."""
+    from openexecutive.audit import log_event as audit_log
+    from openexecutive.integrations import channel_cards
+    from openexecutive.people.store import find_person_by_email
+
+    parsed = channel_cards.parse_callback(data)
+    if parsed is None:
+        return
+    decision_id, approve = parsed
+    allow = channel_cards.tapped_allow(data)
+    try:
+        person = await asyncio.to_thread(find_person_by_email, sender_email) if sender_email else None
+    except Exception:
+        logger.exception("Google Chat: couldn't look up who tapped card %d", decision_id)
+        person = None
+    if person is None or person.id is None:
+        line = "This card is no longer there."
+    else:
+        line = await channel_cards.resolve(decision_id, person, approve=approve, allow=allow)
+        choice = "allow" if allow else "approve" if approve else "skip"
+        await asyncio.to_thread(
+            audit_log,
+            "integration_inbound",
+            f"Google Chat card {decision_id}: tapped {choice.capitalize()}: {line[:120]}",
+            actor="google_chat",
+            details={"channel": "google_chat", "decision_id": decision_id, "choice": choice,
+                     "outcome": channel_cards.outcome_of(line), "person_id": person.id},
+        )
+    if line == channel_cards.BUSY or not message_name:
+        return
+    try:
+        await asyncio.to_thread(
+            update_card, message_name, f"{shown}\n\n{line}" if shown else line,
+            service_account_file, service_account_email,
+        )
+    except Exception:
+        logger.exception("Google Chat: couldn't update card %d after the tap", decision_id)
+
+
+def _take_tap(body: dict[str, Any], background_tasks: BackgroundTasks, settings: Any) -> dict[str, Any]:
+    """A CARD_CLICKED event: a tap on a card's button. It counts only in a DM
+    between the app and the tapper alone (``singleUserBotDm``), from a human
+    on People, as a Slack or Discord tap counts only in the tapper's own DM;
+    ``decisions.resolve_in_chat`` then decides whether the card is theirs.
+    The card shows it is being worked on at once, since deciding can take
+    longer than Chat waits for an answer, and is rewritten when it is done."""
+    data = _tapped(body)
+    if data is None:
+        return {}
+    user = _obj(body, "user")
+    space = _obj(body, "space")
+    message = _obj(body, "message")
+    shown = _card_shown(body)
+    if not _is_one_on_one(space) or user.get("type", "HUMAN") != "HUMAN":
+        return {"actionResponse": {"type": "UPDATE_MESSAGE"}, "text": shown, "cardsV2": []}
+    background_tasks.add_task(
+        _decide_tap,
+        data=data,
+        message_name=str(message.get("name") or ""),
+        shown=shown,
+        sender_email=str(user.get("email") or ""),
+        service_account_file=settings.google_chat_service_account_file,
+        service_account_email=settings.google_chat_service_account_email,
+    )
+    return {
+        "actionResponse": {"type": "UPDATE_MESSAGE"},
+        "text": f"{shown}\n\n{_WORKING}" if shown else _WORKING,
+        "cardsV2": [],
+    }
+
+
 # Per message: bounds the downloads (and OCR / model work) one message can
 # cause. Files are read only for a sender on the People roster (matched by
 # the Google account email the event carries): the webhook authenticates
@@ -290,6 +469,30 @@ def _save_turn(
         update_session_timestamp(session_id)
     except Exception:
         logger.exception("Google Chat: failed to keep the turn for %s", session_id)
+
+
+async def _send_cards(
+    space_name: str,
+    thread_name: str,
+    cards: list[int],
+    service_account_file: str | None,
+    service_account_email: str | None,
+) -> None:
+    """Post the cards a reply left, each as its own message under the reply."""
+    from openexecutive.integrations import channel_cards
+
+    for decision_id in cards[: channel_cards.MAX_CARDS]:
+        try:
+            text = await asyncio.to_thread(channel_cards.card_text, decision_id)
+            if not text:
+                continue
+            labels = await asyncio.to_thread(channel_cards.card_buttons, decision_id)
+            await asyncio.to_thread(
+                send_card, space_name, thread_name, decision_id, text, labels,
+                service_account_file, service_account_email,
+            )
+        except Exception:
+            logger.exception("Google Chat: couldn't send card %d", decision_id)
 
 
 async def _process_and_reply(
@@ -496,13 +699,20 @@ async def _answer(
                 f"the team: {names})\n\n{message_text}"
             )
 
+        from openexecutive.integrations.channel_cards import shows_cards
+
+        # A DM between the app and its person alone shows the reply's cards
+        # with Approve and Skip buttons (integrations.channel_cards).
+        cards_here = shows_cards(session)
+        cards: list[int] = []
         response = await Executive(mcp_gateway=get_active_gateway()).chat(
             user_message=chat_message,
             session=session,
             retrieved_context=retrieved_context,
             episodic_context=episodic_context,
             briefing_context=briefing_context,
-            channel_context_block=build_channel_context_block("google_chat"),
+            channel_context_block=build_channel_context_block("google_chat", cards_here=cards_here),
+            cards=cards if cards_here else None,
             person_id=sender_person.id if sender_person is not None else None,
             attachment_blocks=image_blocks or None,
             # The quote is not the person's words: memory keeps their own.
@@ -517,6 +727,8 @@ async def _answer(
             send_reply, space_name, thread_name, with_chat_line(response, session_id),
             service_account_file, service_account_email,
         )
+        if cards:
+            await _send_cards(space_name, thread_name, cards, service_account_file, service_account_email)
     except Exception:
         logger.exception("Google Chat: handler error for message %s", message_name)
         try:
@@ -562,6 +774,9 @@ async def google_chat_webhook(request: Request, background_tasks: BackgroundTask
     if event_type == "REMOVED_FROM_SPACE":
         logger.info("Google Chat bot removed from space: %s", body.get("space", {}).get("name"))
         return {}
+
+    if event_type == "CARD_CLICKED":
+        return _take_tap(body, background_tasks, settings)
 
     if event_type != "MESSAGE":
         return {}

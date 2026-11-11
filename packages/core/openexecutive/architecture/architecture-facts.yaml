@@ -8945,7 +8945,20 @@ integrations:
     Discord View's buttons carry the callback data as custom_id and
     on_interaction takes a tap only in a DMChannel whose recipient is the
     tapper. Either way the tapper must be on the roster by their app id.
-    Every other chat app (channels, threads, Google Chat) sends no card,
+    A Google Chat DM between the Chat app and one person alone
+    (singleUserBotDm, the one the adapter marks private_chat) does the same:
+    each card goes under the reply as a message whose cardsV2 buttons run
+    the function oe_card with the callback data as the parameter "card". A
+    tap comes back to the same Google-signed webhook as a CARD_CLICKED event
+    and counts only from a HUMAN user on People (by the event's email) in
+    such a DM. The webhook answers at once with UPDATE_MESSAGE (the card's
+    words, "Working on it…", no buttons), since deciding can outlast Chat's
+    wait, then decides it in the background and rewrites the message
+    (messages.patch, text and cardsV2) with the outcome under it. Cards that
+    wait outside any chat are not pushed to Google Chat (chat_for): the app
+    has no stored DM to reach them in.
+    Every other chat app (channels, threads, a Google Chat space or a
+    two-person DM) sends no card,
     and ``propose_actions`` tells the model the card is on Today.
 
     Every card that waits, in the chat app. ``CHAT_CARD_CLASSES`` also holds

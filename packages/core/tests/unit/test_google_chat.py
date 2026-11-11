@@ -803,3 +803,175 @@ def test_rows_before_the_session_follow_the_senders_turn(
         )
     )
     assert seen == [expected]
+
+
+# ---------------------------------------------------------------------------
+# Approve and Skip buttons (integrations.channel_cards)
+# ---------------------------------------------------------------------------
+
+
+def _tap_event(*, alone: bool = True, user_type: str = "HUMAN", data: str = "card:12:a") -> dict:
+    space: dict[str, Any] = {"name": "spaces/DM1", "spaceType": "DIRECT_MESSAGE"}
+    if alone:
+        space["singleUserBotDm"] = True
+    return {
+        "type": "CARD_CLICKED",
+        "common": {"invokedFunction": "oe_card", "parameters": {"card": data}},
+        "message": {"name": "spaces/DM1/messages/C1", "text": "Meeting to book\nBoard prep"},
+        "space": space,
+        "user": {"displayName": "Pat", "email": "pat@acme.com", "type": user_type},
+    }
+
+
+def test_a_tap_in_the_apps_own_dm_is_taken(monkeypatch: pytest.MonkeyPatch, client: TestClient) -> None:
+    """The card says it's being worked on at once, without its buttons, and
+    the tap is decided after the answer."""
+    taps: list[dict] = []
+
+    async def decide(**kw: Any) -> None:
+        taps.append(kw)
+
+    monkeypatch.setattr(gc_module, "_decide_tap", decide)
+    resp = client.post("/webhook/google-chat", json=_tap_event(), headers={"Authorization": "Bearer t"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "actionResponse": {"type": "UPDATE_MESSAGE"},
+        "text": "Meeting to book\nBoard prep\n\nWorking on it…",
+        "cardsV2": [],
+    }
+    [tap] = taps
+    assert tap["data"] == "card:12:a"
+    assert tap["message_name"] == "spaces/DM1/messages/C1"
+    assert tap["sender_email"] == "pat@acme.com"
+    assert tap["shown"] == "Meeting to book\nBoard prep"
+
+
+@pytest.mark.parametrize(
+    "event",
+    [_tap_event(alone=False), _tap_event(user_type="BOT")],
+    ids=["two-peoples-dm", "a-bot"],
+)
+def test_a_tap_anywhere_else_decides_nothing(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient, event: dict
+) -> None:
+    """Only a human, in a DM between the app and them alone: elsewhere the
+    tapper isn't proven to be the card's person."""
+    monkeypatch.setattr(gc_module, "_decide_tap", lambda **_kw: pytest.fail("decided a tap it shouldn't"))
+    resp = client.post("/webhook/google-chat", json=event, headers={"Authorization": "Bearer t"})
+    assert resp.status_code == 200
+    assert resp.json()["text"] == "Meeting to book\nBoard prep"
+
+
+def test_a_tap_on_something_else_is_left_alone(monkeypatch: pytest.MonkeyPatch, client: TestClient) -> None:
+    monkeypatch.setattr(gc_module, "_decide_tap", lambda **_kw: pytest.fail("not one of ours"))
+    event = _tap_event()
+    event["common"] = {"invokedFunction": "something_else"}
+    assert client.post("/webhook/google-chat", json=event, headers={"Authorization": "Bearer t"}).json() == {}
+
+
+def test_the_older_tap_shape_is_read_too() -> None:
+    """A classic event may carry the button's data as ``action.parameters``."""
+    body = {"action": {"actionMethodName": "oe_card", "parameters": [{"key": "card", "value": "card:7:s"}]}}
+    assert gc_module._tapped(body) == "card:7:s"
+    assert gc_module._tapped({"action": {"actionMethodName": "oe_card"}}) is None
+
+
+@pytest.mark.parametrize(("person", "line"), [(SimpleNamespace(id=3), "Approved."), (None, "This card is no longer there.")])
+def test_a_decided_tap_rewrites_the_card(monkeypatch: pytest.MonkeyPatch, person: Any, line: str) -> None:
+    """The tapper is the person on People with the event's email; the card
+    keeps what it said, with the outcome under it."""
+    from openexecutive.integrations import channel_cards
+
+    resolved: list[tuple] = []
+    updated: list[tuple] = []
+
+    async def resolve(decision_id: int, who: Any, *, approve: bool, allow: bool = False) -> str:
+        resolved.append((decision_id, who, approve, allow))
+        return "Approved."
+
+    monkeypatch.setattr("openexecutive.people.store.find_person_by_email", lambda _e, **_k: person)
+    monkeypatch.setattr(channel_cards, "resolve", resolve)
+    monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **k: None)
+    monkeypatch.setattr(gc_module, "update_card", lambda *a: updated.append(a))
+
+    asyncio.run(gc_module._decide_tap(
+        data="card:12:a", message_name="spaces/DM1/messages/C1", shown="Meeting to book",
+        sender_email="pat@acme.com", service_account_file="/k.json", service_account_email=None,
+    ))
+
+    assert resolved == ([(12, person, True, False)] if person else [])
+    assert updated == [("spaces/DM1/messages/C1", f"Meeting to book\n\n{line}", "/k.json", None)]
+
+
+def test_a_card_is_sent_with_its_buttons() -> None:
+    service = MagicMock()
+    with (
+        patch.object(gc_module, "_build_credentials", return_value="creds"),
+        patch("googleapiclient.discovery.build", return_value=service),
+    ):
+        gc_module.send_card("spaces/DM1", "spaces/DM1/threads/T", 12, "Meeting to book", ("Approve", "Skip"), None)
+
+    kwargs = service.spaces.return_value.messages.return_value.create.call_args.kwargs
+    assert kwargs["parent"] == "spaces/DM1"
+    body = kwargs["body"]
+    assert body["text"] == "Meeting to book"
+    assert body["thread"] == {"name": "spaces/DM1/threads/T"}
+    buttons = body["cardsV2"][0]["card"]["sections"][0]["widgets"][0]["buttonList"]["buttons"]
+    assert [b["text"] for b in buttons] == ["Approve", "Skip"]
+    assert [b["onClick"]["action"]["parameters"][0]["value"] for b in buttons] == ["card:12:a", "card:12:s"]
+    assert {b["onClick"]["action"]["function"] for b in buttons} == {"oe_card"}
+
+
+@pytest.mark.parametrize("one_on_one", [True, False])
+def test_the_replys_cards_follow_it_only_in_the_apps_own_dm(
+    monkeypatch: pytest.MonkeyPatch, one_on_one: bool
+) -> None:
+    """The cards a reply leaves go under it as messages with buttons in a DM
+    between the app and its person alone; anywhere else none are collected."""
+    monkeypatch.setattr(
+        "openexecutive.integrations.channel_cards._dm_proves_taps", lambda channel: channel == "google_chat"
+    )
+    monkeypatch.setattr("openexecutive.integrations.channel_cards.card_text", lambda _i: "Meeting to book")
+    monkeypatch.setattr("openexecutive.integrations.channel_cards.card_buttons", lambda _i: ("Approve", "Skip"))
+    sent: list[tuple] = []
+    monkeypatch.setattr(gc_module, "send_card", lambda *a: sent.append(a))
+    monkeypatch.setattr("openexecutive.alerts.pipeline.schedule_evaluation", lambda _e: None)
+    monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **k: None)
+    monkeypatch.setattr("openexecutive.knowledge.retriever.retrieve", lambda **_: "")
+    monkeypatch.setattr("openexecutive.memory.episodic.format_for_prompt", lambda: "")
+    monkeypatch.setattr(
+        "openexecutive.onboarding.profile_builder.load_or_create_profile",
+        lambda: SimpleNamespace(is_empty=lambda: True),
+    )
+    monkeypatch.setattr(
+        "openexecutive.people.store.find_person_by_email", lambda _e, **_k: SimpleNamespace(id=3),
+    )
+    monkeypatch.setattr("openexecutive.integrations.channel_context.attach_briefing_context", lambda *a, **k: "")
+    seen: dict[str, Any] = {}
+
+    async def fake_chat(**kw: Any) -> str:
+        seen.update(kw)
+        if kw["cards"] is not None:
+            kw["cards"].append(12)
+        return "Booked if you say so."
+
+    mock_exec = MagicMock()
+    mock_exec.chat = fake_chat
+    with (
+        patch("openexecutive.orchestrator.executive.Executive", return_value=mock_exec),
+        patch("openexecutive.integrations.google_chat.send_reply", new=lambda *a, **k: None),
+    ):
+        asyncio.run(
+            _process_and_reply(
+                message_text="book the board prep", sender_name="Pat", space_name="spaces/DM1",
+                thread_name="spaces/DM1/threads/T", message_name="spaces/DM1/messages/M",
+                service_account_file=None, service_account_email=None, sender_email="pat@acme.com",
+                direct=True, one_on_one=one_on_one,
+            )
+        )
+
+    assert (seen["cards"] is not None) is one_on_one
+    assert ("Approve and Skip buttons" in seen["channel_context_block"]) is one_on_one
+    assert sent == ([("spaces/DM1", "spaces/DM1/threads/T", 12, "Meeting to book", ("Approve", "Skip"), None, None)]
+                    if one_on_one else [])
