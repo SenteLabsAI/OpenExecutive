@@ -609,9 +609,9 @@ def _caller_context() -> dict[str, Any]:
 def _principal_asked() -> bool:
     """Whether this turn is the principal on a surface that verified it is
     them — the roster tools' rule (``people_tools.is_principal_on_verified_
-    surface``): the web chat, their own Slack or Discord, a private Telegram
-    chat with a valid webhook secret. Email, Google Chat, the CLI, the MCP
-    server, teammates and unattended runs are not. Fails closed."""
+    surface``): the web chat, their own Slack, Discord or Google Chat, a
+    private Telegram chat with a valid webhook secret. Email, the CLI, the
+    MCP server, teammates and unattended runs are not. Fails closed."""
     from openexecutive.orchestrator.people_tools import is_principal_on_verified_surface
     from openexecutive.orchestrator.schedule_tools import current_session
 

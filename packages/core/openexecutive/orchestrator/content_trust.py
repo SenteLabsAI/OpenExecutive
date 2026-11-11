@@ -12,15 +12,16 @@ when the surface proved it:
 - the web chat, signed in as the principal — or, on an install with no
   principal on the People page yet, a request that carried no sign-in at all;
 - the CLI, run on the host itself;
-- Slack, Discord, or a private Telegram chat with a valid webhook secret, from
-  the principal's own account (``people_tools.is_principal_on_verified_surface``);
+- Slack, Discord, Google Chat (a sender on People, by the Google account on
+  the signed event), or a private Telegram chat with a valid webhook secret,
+  from the principal's own account
+  (``people_tools.is_principal_on_verified_surface``);
 - email from the principal's primary address that Gmail's own
   Authentication-Results header marks ``dmarc=pass``
   (``Session.email_authenticated``, ``fact_confirmation.authenticated_by_gmail``).
 
 Nothing else counts: a teammate, an unrostered sender, the principal's address
-on mail Gmail did not authenticate, Google Chat (which names no verified
-sender), the MCP server (its caller names themselves), and every run nobody is
+on mail Gmail did not authenticate, the MCP server (its caller names themselves), and every run nobody is
 watching (the scheduler, alert review, workflows).
 
 **What may become memory.** The principal's own words, on such a turn only.

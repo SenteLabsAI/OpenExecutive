@@ -38,6 +38,12 @@ _CHANNEL_LABELS = {
 _RESOLVER_CHANNELS = frozenset({"slack", "discord", "telegram"})
 
 
+def answers_signoffs(channel: str) -> bool:
+    """Whether a reply on ``channel`` can answer a workflow sign-off: its
+    adapter calls the inbound resolver (``_RESOLVER_CHANNELS``)."""
+    return channel in _RESOLVER_CHANNELS
+
+
 def build_channel_context_block(
     channel: str, *, ui_base_url: str | None = None, cards_here: bool = False
 ) -> str:
@@ -171,4 +177,4 @@ def attach_briefing_context(session: object, *, is_dm: bool, person: object) -> 
         return ""
 
 
-__all__ = ["attach_briefing_context", "build_channel_context_block"]
+__all__ = ["answers_signoffs", "attach_briefing_context", "build_channel_context_block"]

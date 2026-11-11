@@ -131,11 +131,11 @@ def test_the_owner_on_a_chat_channel_is_not_gated(team: dict[str, Person], chann
 
 
 def test_google_chat_gates_its_sender_by_their_people_entry(team: dict[str, Person]) -> None:
-    """Google Chat names its sender for the gate alone: the owner goes, a
-    teammate gets their own department's authority."""
+    """Google Chat names a sender on People as the turn's caller, as Slack
+    does: the owner goes, a teammate gets their own department's authority."""
     owner, sam = team["owner"], team["sam"]
-    assert gate.speaker(Session(origin_channel="google_chat", gate_sender_person_id=owner.id)) is None
-    teammate = gate.speaker(Session(origin_channel="google_chat", gate_sender_person_id=sam.id))
+    assert gate.speaker(Session(origin_channel="google_chat", caller_person_id=owner.id)) is None
+    teammate = gate.speaker(Session(origin_channel="google_chat", caller_person_id=sam.id))
     assert teammate is not None and teammate.id == sam.id
 
 

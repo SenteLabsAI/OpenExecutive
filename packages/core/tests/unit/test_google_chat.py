@@ -427,6 +427,9 @@ def _run_with_attachments(
     download: Any,
     *,
     rostered: bool = True,
+    direct: bool = False,
+    one_on_one: bool = False,
+    briefing: Any = None,
 ) -> dict[str, Any]:
     from openexecutive.knowledge.pdf_reader import PdfReadResult
 
@@ -444,6 +447,8 @@ def _run_with_attachments(
         lambda email, **_kw: SimpleNamespace(id=3) if rostered and email == "bob@acme.com" else None,
     )
     monkeypatch.setattr("openexecutive.integrations.attachments._schedule_ingest", lambda *_: None)
+    if briefing is not None:
+        monkeypatch.setattr("openexecutive.integrations.channel_context.attach_briefing_context", briefing)
 
     async def fake_read(data: bytes, *, filename: str = "", inbound: bool = False) -> PdfReadResult:
         return PdfReadResult("APPRAISED VALUE 4.2M", "ocr", 1)
@@ -473,6 +478,8 @@ def _run_with_attachments(
                 service_account_email=None,
                 attachments=attachments,
                 sender_email="bob@acme.com",
+                direct=direct,
+                one_on_one=one_on_one,
             )
         )
     return captured
@@ -567,18 +574,72 @@ def test_files_from_someone_off_the_roster_are_not_downloaded(
     )
 
 
-@pytest.mark.parametrize("rostered", [True, False])
-def test_the_sender_is_named_to_the_department_gate_only(
-    monkeypatch: pytest.MonkeyPatch, rostered: bool
+@pytest.mark.parametrize(
+    ("direct", "one_on_one"),
+    [(True, True), (False, False), (True, False)],
+    ids=["dm-with-the-app", "space", "two-peoples-dm"],
+)
+def test_a_sender_on_people_is_signed_in_as_on_slack(
+    monkeypatch: pytest.MonkeyPatch, direct: bool, one_on_one: bool
 ) -> None:
-    """The sender's People entry reaches the department gate, so the owner's
-    own sends aren't held, but never `caller_person_id`: this surface grants
-    nothing else."""
-    captured = _run_with_attachments(monkeypatch, [], lambda *_a: b"", rostered=rostered)
+    """Google signed the event and named its sender: someone on People is the
+    turn's verified caller, in a space or a DM. Only a DM between the app and
+    them alone is private; anywhere else others write in, so it is shared."""
+    from openexecutive.delegation.settings import private_conversation
+    from openexecutive.orchestrator.content_trust import (
+        PRINCIPAL_ONLY_TOOLS,
+        principal_only_withheld,
+    )
+    from openexecutive.orchestrator.people_tools import _is_verified_speaker_surface
+
+    briefed: list[bool] = []
+
+    def briefing(_session: Any, *, is_dm: bool, person: Any) -> str:
+        briefed.append(is_dm)
+        return "BOARD" if is_dm else ""
+
+    captured = _run_with_attachments(
+        monkeypatch, [], lambda *_a: b"", rostered=True, direct=direct, one_on_one=one_on_one,
+        briefing=briefing,
+    )
 
     session = captured["session"]
-    assert session.gate_sender_person_id == (3 if rostered else None)
+    assert session.caller_person_id == 3
+    assert captured["person_id"] == 3
+    assert session.origin_channel_ref == "spaces/AAA"
+    assert _is_verified_speaker_surface(session) is True
+    assert private_conversation(session) is one_on_one
+    assert session.shared_chat is (not one_on_one)
+    assert session.others_spoke_last is (not one_on_one)
+    if not one_on_one:
+        # Whoever speaks: others write into what the turn reads.
+        assert principal_only_withheld(session) == PRINCIPAL_ONLY_TOOLS
+    assert briefed == [one_on_one]
+    assert captured["briefing_context"] == ("BOARD" if one_on_one else "")
+
+
+@pytest.mark.parametrize("direct", [True, False])
+def test_a_sender_off_people_stays_unverified(monkeypatch: pytest.MonkeyPatch, direct: bool) -> None:
+    """Anyone in a space can post, and the email of someone not on People
+    proves nothing about who they are to this company: no caller, nothing
+    private, and the department gate holds what they ask to send."""
+    from openexecutive.delegation.settings import private_conversation
+    from openexecutive.orchestrator.department_gate import speaker
+    from openexecutive.orchestrator.people_tools import _is_verified_speaker_surface
+
+    captured = _run_with_attachments(
+        monkeypatch, [], lambda *_a: b"", rostered=False, direct=direct, one_on_one=direct,
+        briefing=lambda _s, *, is_dm, person: "BOARD" if is_dm else "",
+    )
+
+    session = captured["session"]
     assert session.caller_person_id is None
+    assert captured["person_id"] is None
+    assert _is_verified_speaker_surface(session) is False
+    assert private_conversation(session) is False
+    assert captured["briefing_context"] == ""
+    held = speaker(session)
+    assert held is not None and held.id is None
 
 
 @pytest.mark.parametrize(("person", "expected"), [(SimpleNamespace(id=42), 42), (None, None)])
@@ -691,3 +752,54 @@ def test_the_webhook_marks_a_dm_as_direct(monkeypatch: pytest.MonkeyPatch, clien
     room = _message_event()
     assert client.post("/webhook/google-chat", json=room, headers={"Authorization": "Bearer t"}).status_code == 200
     assert [c["direct"] for c in calls] == [True, False]
+    assert [c["one_on_one"] for c in calls] == [False, False]
+    alone = _message_event()
+    alone["space"] = {"name": "spaces/AAA", "spaceType": "DIRECT_MESSAGE", "singleUserBotDm": True}
+    assert client.post("/webhook/google-chat", json=alone, headers={"Authorization": "Bearer t"}).status_code == 200
+    assert calls[-1]["direct"] is True and calls[-1]["one_on_one"] is True
+
+
+def test_the_token_is_checked_against_chats_own_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Chat signs with chat@system.gserviceaccount.com's keys, not Google's
+    OAuth ones that ``verify_token`` reads by default."""
+    seen: dict[str, Any] = {}
+
+    def verify_token(token: str, _request: Any, **kw: Any) -> dict[str, str]:
+        seen.update(kw, token=token)
+        return {"iss": "chat@system.gserviceaccount.com"}
+
+    monkeypatch.setattr("google.oauth2.id_token.verify_token", verify_token)
+    gc_module.verify_google_jwt("tok", "123")
+    assert seen == {
+        "token": "tok",
+        "audience": "123",
+        "certs_url": "https://www.googleapis.com/service_accounts/v1/metadata/x509/chat@system.gserviceaccount.com",
+    }
+
+
+@pytest.mark.parametrize(("principal", "expected"), [(True, (True, None)), (False, (False, 3))])
+def test_rows_before_the_session_follow_the_senders_turn(
+    monkeypatch: pytest.MonkeyPatch, principal: bool, expected: tuple[bool, int | None]
+) -> None:
+    """As on the other chat channels (``audit_rows_on_senders_turn``): the
+    principal's turn scopes rows that name a contact to them, a teammate's
+    rows are theirs alone."""
+    from openexecutive.audit import context as audit_context
+
+    person = SimpleNamespace(id=3, is_principal=principal, archived=False, kind="team")
+    monkeypatch.setattr("openexecutive.people.store.find_person_by_email", lambda _e, **_k: person)
+    monkeypatch.setattr("openexecutive.orchestrator.people_tools.team_member_id", lambda pid: None if principal else pid)
+    seen: list[tuple[bool, int | None]] = []
+
+    async def answer(**_kw: Any) -> None:
+        seen.append((audit_context.rows_on_principal_turn(), audit_context.rows_owner()))
+
+    monkeypatch.setattr(gc_module, "_answer", answer)
+    asyncio.run(
+        _process_and_reply(
+            message_text="hi", sender_name="Pat", space_name="spaces/AAA", thread_name="",
+            message_name="m", service_account_file=None, service_account_email=None,
+            sender_email="pat@x.com",
+        )
+    )
+    assert seen == [expected]

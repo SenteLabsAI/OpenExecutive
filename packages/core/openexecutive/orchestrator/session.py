@@ -128,13 +128,6 @@ class Session:
     # resolved `caller_person_id` from a sender identity the platform
     # authenticated, never from anything the message says, and per turn.
     speaker_verified: bool = False
-    # The sender's People entry on a channel that names its sender but isn't
-    # one `people_tools` verifies (Google Chat, by the Google account email on
-    # its signed event). Read only by the department gate
-    # (`department_gate.speaker`), so the principal there isn't held and a
-    # teammate gets their own department's authority. Never a grant for
-    # anything else, and never set alongside `caller_person_id`.
-    gate_sender_person_id: int | None = None
     # Set by a channel adapter when nobody but the speaker (and the
     # Executive) can read the conversation, e.g. a direct message
     # (`delegation.settings.private_conversation`, which also needs
