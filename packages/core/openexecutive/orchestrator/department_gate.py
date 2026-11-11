@@ -221,11 +221,14 @@ def hold(
     session_id: str | None = None,
     db_path: Path | None = None,
     held: bool = False,
+    more: list[dict[str, Any]] | None = None,
 ) -> int:
     """Make a held action a decision for its approver, with a card on Today.
     The same action still waiting is that card, not a new one. ``held``: the
     owner's level put it on a card (``orchestrator.levels``), so Approve may
-    carry out any step the Executive runs, not only a send."""
+    carry out any step the Executive runs, not only a send. ``more``: further
+    calls of the same tool held with it; the one card lists them all and its
+    Approve carries out each in order (``take_the_lead.carry_out``)."""
     from openexecutive.alerts.models import PRIVATE_ALERT_TAG, AlertSeverity
     from openexecutive.alerts.store import insert_alert
     from openexecutive.audit import log_event
@@ -241,7 +244,8 @@ def hold(
         # Someone on no People entry is told apart by their chat.
         json.dumps(
             [person.id if person.id is not None else f"session:{session_id}", tool, tool_input, mcp]
-            + (["held"] if held else []),
+            + (["held"] if held else [])
+            + ([more] if more else []),
             sort_keys=True, default=str,
         ).encode()
     ).hexdigest()[:32]
@@ -254,11 +258,20 @@ def hold(
         if not take_the_lead._idem_used(key, db_path=db_path):
             idem = key
             break
-    summary = take_the_lead.summarize(tool, tool_input, mcp=mcp)
+    steps = [tool_input, *(more or [])]
     private = take_the_lead._is_principal(verdict.approver_person_id)
     # What it would say quotes the conversation: a card on the team's Today
     # shows only the plain line; the approver opens the decision for the rest.
-    shown = summary if private else take_the_lead.summarize(tool, tool_input, mcp=mcp, quote=False)
+    each = [take_the_lead.summarize(tool, step, mcp=mcp) for step in steps]
+    each_shown = each if private else [
+        take_the_lead.summarize(tool, step, mcp=mcp, quote=False) for step in steps
+    ]
+    summary, shown = each[0], each_shown[0]
+    listed = ""
+    if more:
+        summary = f"{each[0]} and {len(more)} more like it"
+        shown = f"{each_shown[0]} and {len(more)} more like it"
+        listed = "\n".join(f"- {line}" for line in each_shown)
     who = person.full_name or (
         "Someone on the team" if person.id is not None else "Someone who isn't on People"
     )
@@ -267,11 +280,13 @@ def hold(
         "tool": tool, "input": tool_input, "mcp": mcp, "summary": summary,
         "requested_by_person_id": person.id, "requested_by": who,
         "department": verdict.department, "level": verdict.level, "reason": verdict.reason,
-        "fields": take_the_lead.editable_fields(tool, tool_input, mcp=mcp),
+        # A card for several calls can't be edited field by field.
+        "fields": [] if more else take_the_lead.editable_fields(tool, tool_input, mcp=mcp),
         # Everything the call says, in full: the card shows this before it
         # can be approved, since the summary keeps only the start.
-        "details": card_details.plain(tool, tool_input),
+        "details": card_details.plain_steps(tool, steps),
         **({"held": True} if held else {}),
+        **({"steps": steps} if more else {}),
     }
     decision_id = create_decision_instance(
         decision_class=DECISION_CLASS,
@@ -294,7 +309,7 @@ def hold(
                 f"Waiting for your OK: {shown}" if held and person.is_principal
                 else f"{who} asked the Executive to: {shown}"
             )[:160],
-            body=f"{shown}\n\nIt waited because {verdict.reason}.",
+            body=f"{listed or shown}\n\nIt waited because {verdict.reason}.",
             suggested_action=shown,
             topic_tags=[
                 decision_instance_tag(decision_id),

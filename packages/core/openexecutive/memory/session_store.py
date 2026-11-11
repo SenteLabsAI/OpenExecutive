@@ -455,6 +455,8 @@ def search_past_messages(
     progress, whose history the turn already has). Each row: ``session_id``,
     ``title``, ``said_at`` (the message's time), ``role``, ``excerpt``
     around the first match, and ``mail_private`` (``mark_mail_private``)."""
+    from openexecutive.orchestrator.content_trust import unwrapped
+
     words = [w for w in " ".join(query.split()).lower().split(" ") if len(w) > 1][:_PAST_CHAT_WORDS]
     if not words or not db_path.exists():
         return []
@@ -484,7 +486,9 @@ def search_past_messages(
             "title": row["title"],
             "said_at": row["created_at"],
             "role": row["role"],
-            "excerpt": _excerpt(row["content"], words, _PAST_CHAT_EXCERPT_CHARS),
+            # Our own block labels left out: cut by the excerpt, they read
+            # as text trying to give orders (content_trust.unwrapped).
+            "excerpt": _excerpt(unwrapped(row["content"]), words, _PAST_CHAT_EXCERPT_CHARS),
             "mail_private": bool(row["mail_private"]),
         })
         if len(out) >= _PAST_CHAT_LIMIT:

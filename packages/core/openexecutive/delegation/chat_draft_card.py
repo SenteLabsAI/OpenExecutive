@@ -80,7 +80,7 @@ async def _client(person: Any, gmail: Any) -> Any:
     return client
 
 
-def _shown(row: Any, draft: Any) -> dict[str, Any]:
+def _shown(row: Any, draft: Any, files: list[str] | None = None) -> dict[str, Any]:
     message = draft.message
     if message.id != row.message_id:
         return {"status": CHANGED}
@@ -90,7 +90,25 @@ def _shown(row: Any, draft: Any) -> dict[str, Any]:
         "cc": list(message.cc),
         "subject": message.subject,
         "body": message.text,
+        # The names of the files attached to it, so the card shows them.
+        "files": list(files or []),
     }
+
+
+async def _file_names(client: Any, message: Any) -> list[str]:
+    """The names of the files attached to the draft: Gmail lists them with
+    the message, Outlook only when asked. [] when they can't be read: the
+    card still shows the draft."""
+    from openexecutive.delegation.ghostwriter import one_line
+
+    try:
+        attached = list(message.attachments)
+        if not attached and message.has_attachments:
+            attached = list(await client.list_attachments(message.id))
+        return [one_line(a.name, 120) or "attachment" for a in attached]
+    except Exception:
+        logger.warning("chat draft card: couldn't list the draft's files", exc_info=True)
+        return []
 
 
 async def _read(row: Any, client: Any, now: datetime) -> dict[str, Any]:
@@ -106,7 +124,9 @@ async def _read(row: Any, client: Any, now: datetime) -> dict[str, Any]:
         drafts.mark_gone(row.id, now)
         fresh = drafts.get_row(row.id)
         return {"status": REPLACED if fresh is not None and fresh.replaced_by else GONE}
-    return _shown(row, draft)
+    if draft.message.id != row.message_id:
+        return _shown(row, draft)
+    return _shown(row, draft, await _file_names(client, draft.message))
 
 
 async def state(

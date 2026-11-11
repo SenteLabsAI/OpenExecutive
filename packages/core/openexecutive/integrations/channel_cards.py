@@ -210,13 +210,13 @@ def card_text(decision_id: int) -> str | None:
         if reason:
             lines.append(f"It waited because {reason.removesuffix('.')}.")
         # Everything the call says, as the web card shows it before Approve.
-        tool_input = payload.get("input")
-        if not isinstance(tool_input, dict):
-            return None
         from openexecutive.orchestrator import card_details
 
+        steps = card_details.held_steps(payload)
+        if not steps:
+            return None
         lines.append("")
-        for detail in card_details.plain(str(payload.get("tool") or ""), tool_input):
+        for detail in card_details.plain_steps(str(payload.get("tool") or ""), steps):
             lines.append(f"{detail['field']}: {detail['value']}")
     elif instance.decision_class == "app_action":
         # Written by the server from the change itself (workflow_change.card_text).

@@ -292,3 +292,14 @@ def test_the_delete_route_deletes_only_the_callers_own_draft(owner: Any, monkeyp
     resp = client.delete(f"/delegation/drafts/{row}", headers=headers)
     assert resp.status_code == 200 and resp.json()["status"] == "gone"
     assert "d1" not in mailbox.drafts
+
+
+def test_the_card_names_the_files_on_the_draft(db: Path, owner: Any) -> None:
+    from openexecutive.delegation.gmail import MailAttachment
+
+    mailbox, row = _chat_draft(owner)
+    assert _state(owner, row, mailbox)["files"] == []
+    mailbox.drafts["d1"].message.attachments = [
+        MailAttachment(index=1, name="2026 Tax - Lot 1.pdf"), MailAttachment(index=2, name="2026 Tax - Lot 2.pdf"),
+    ]
+    assert _state(owner, row, mailbox)["files"] == ["2026 Tax - Lot 1.pdf", "2026 Tax - Lot 2.pdf"]

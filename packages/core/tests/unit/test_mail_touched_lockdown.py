@@ -322,9 +322,25 @@ def test_the_outside_handlers_refuse_on_their_own() -> None:
         current_session.reset(token)
 
 
-def test_the_gateway_refuses_only_outside_tools_after_the_turn_read_mail() -> None:
+def _cards(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, list[dict[str, Any]], str]]:
+    """Stand in for the Approve card a held gateway call goes on
+    (``levels.hold_many``), recording what it held."""
+    from openexecutive.orchestrator import levels
+
+    held: list[tuple[str, list[dict[str, Any]], str]] = []
+
+    def hold_many(tool: str, inputs: list[dict[str, Any]], **kw: Any) -> str:
+        held.append((tool, inputs, kw["reason"]))
+        return json.dumps({"status": "waiting_for_approval", "decision_instance_id": len(held)})
+
+    monkeypatch.setattr(levels, "hold_many", hold_many)
+    return held
+
+
+def test_the_gateway_refuses_only_outside_tools_after_the_turn_read_mail(monkeypatch: pytest.MonkeyPatch) -> None:
     from openexecutive.orchestrator.mcp_gateway import MCPGateway
 
+    cards = _cards(monkeypatch)
     gateway = MCPGateway.__new__(MCPGateway)
     session = Session()
     session.turn_delegation = TurnDelegation(  # type: ignore[attr-defined]
@@ -336,7 +352,9 @@ def test_the_gateway_refuses_only_outside_tools_after_the_turn_read_mail() -> No
             fetch = asyncio.run(gateway.call_tool({
                 "name": "fetch__fetch_url", "arguments": {"url": "https://x.example/"},
             }))
-            assert "read the user's own mail" in json.loads(fetch)["error"]
+            # It waits on the owner's Approve card, the exact call.
+            assert json.loads(fetch)["status"] == "waiting_for_approval"
+            assert cards == [("fetch__fetch_url", [{"url": "https://x.example/"}], "mail_touched")]
             load = asyncio.run(gateway.load_mcp_server({"name": "x", "url": "https://x.example/mcp"}))
             assert "read the user's own mail" in json.loads(load)["error"]
             # A read, and a send whose recipients the gateway checks, go on to
@@ -390,9 +408,12 @@ def test_a_onedrive_file_opens_but_a_mail_attachment_does_not() -> None:
 
 
 @pytest.mark.parametrize("read_mail", [True, False])
-def test_the_gateway_opens_a_drive_file_in_a_conversation_that_read_mail(read_mail: bool) -> None:
+def test_the_gateway_opens_a_drive_file_in_a_conversation_that_read_mail(
+    read_mail: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from openexecutive.orchestrator.mcp_gateway import MCPGateway
 
+    _cards(monkeypatch)
     gateway = MCPGateway.__new__(MCPGateway)
     session = Session()
     session.turn_delegation = TurnDelegation(  # type: ignore[attr-defined]
@@ -407,7 +428,7 @@ def test_the_gateway_opens_a_drive_file_in_a_conversation_that_read_mail(read_ma
                 }))
             fetch = {"name": "fetch__fetch_url", "arguments": {"url": "https://x.example/"}}
             if read_mail:
-                assert "read the user's own mail" in json.loads(asyncio.run(gateway.call_tool(fetch)))["error"]
+                assert json.loads(asyncio.run(gateway.call_tool(fetch)))["status"] == "waiting_for_approval"
             else:
                 # A later turn of that conversation is not locked.
                 with pytest.raises(AssertionError, match="reached the server"):
@@ -1126,3 +1147,48 @@ def test_a_reply_or_forward_subject_is_someone_elses(subject: str) -> None:
     assert outside_content._CARRIED_SUBJECT.match(subject)
     assert not outside_content._CARRIED_SUBJECT.match("Index: Pilot")
     assert not outside_content._CARRIED_SUBJECT.match("For Pat: offers")
+
+
+def test_a_code_built_call_after_a_mail_read_holds_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Attaching Drive files to a draft runs Drive calls built in code: they
+    run, and nothing waits on a card or a "Go ahead"."""
+    from openexecutive.orchestrator import outside_content
+    from openexecutive.orchestrator.mcp_gateway import MCPGateway, code_built_call
+
+    cards = _cards(monkeypatch)
+    gateway = MCPGateway.__new__(MCPGateway)
+    session = Session()
+    session.turn_delegation = TurnDelegation(  # type: ignore[attr-defined]
+        enabled=True, offered=True, touched_mail=True, read_mail=True, session_id=session.session_id,
+    )
+    token = current_session.set(session)
+    state = outside_content.begin_turn(session, user_message="attach the scans to the draft")
+    try:
+        built = {"name": "google_workspace__get_drive_file_permissions", "arguments": {"file_id": "f1"}}
+        with (
+            patch.object(MCPGateway, "_require_session", side_effect=AssertionError("reached the server")),
+            code_built_call(built),
+            pytest.raises(AssertionError, match="reached the server"),
+        ):
+            asyncio.run(gateway.call_tool(built))
+        assert cards == [] and state.held == []
+    finally:
+        outside_content.end_turn(state)
+        current_session.reset(token)
+
+
+def test_a_skill_a_handler_stops_waits_on_a_card(monkeypatch: pytest.MonkeyPatch) -> None:
+    cards = _cards(monkeypatch)
+    session = Session()
+    session.turn_delegation = TurnDelegation(  # type: ignore[attr-defined]
+        enabled=True, offered=True, touched_mail=True, read_mail=True, session_id=session.session_id,
+    )
+    token = current_session.set(session)
+    try:
+        held = lockdown.outside_reach_refusal("schedule_followup", {"intent": "chase Kyle"})
+        assert held is not None and json.loads(held)["status"] == "waiting_for_approval"
+        assert cards == [("schedule_followup", [{"intent": "chase Kyle"}], "mail_touched")]
+        # With no input to carry out, it is refused instead.
+        assert "was not run" in json.loads(lockdown.outside_reach_refusal("run_workflow") or "{}")["error"]
+    finally:
+        current_session.reset(token)

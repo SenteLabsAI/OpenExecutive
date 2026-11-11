@@ -46,6 +46,9 @@ CARD = "card"
 # ``decide`` turns it into run or card.
 OUTSIDE = "outside_content"
 OWN_MAIL = "mail_touched"
+# The owner's own mail was read this turn and the content check flagged some
+# of what it read: Balanced holds then too, and the card says why.
+MAIL_FLAGGED = "mail_flagged"
 PRIVATE = "private_turn"
 SHARED = "shared_chat"
 AI_APP = "mcp_client"
@@ -56,14 +59,15 @@ NEW_PERSON = "new_person"
 FILE_PLACE = "file_place"
 URL_FETCH = "url_fetch"
 REASONS: frozenset[str] = frozenset({
-    OUTSIDE, OWN_MAIL, PRIVATE, SHARED, AI_APP, NOT_OWNER, UNATTENDED, STRANGER, NEW_PERSON, FILE_PLACE,
-    URL_FETCH,
+    OUTSIDE, OWN_MAIL, MAIL_FLAGGED, PRIVATE, SHARED, AI_APP, NOT_OWNER, UNATTENDED, STRANGER, NEW_PERSON,
+    FILE_PLACE, URL_FETCH,
 })
 
 # What the card says it waited for, in the owner's words.
 _WHY: dict[str, str] = {
     OUTSIDE: "it read something from outside the company that tried to give it instructions",
     OWN_MAIL: "it read your own mail first",
+    MAIL_FLAGGED: "something it read looked like it was trying to give it instructions",
     PRIVATE: "it came from mail that's private to you",
     SHARED: "someone else wrote in this shared chat",
     AI_APP: "another AI app asked for it",
@@ -158,6 +162,22 @@ def turn_level(session: Any = None) -> str:
 
         session = current_session.get()
     return outside_mode.for_turn(session)
+
+
+def mail_reason() -> str:
+    """Why a step waits after the owner's own mail was read this turn:
+    ``MAIL_FLAGGED`` when the content check flagged some of what it read,
+    else ``OWN_MAIL``. Never raises."""
+    try:
+        from openexecutive.orchestrator import outside_content
+
+        state = outside_content.current()
+        flags = getattr(state, "flags", None) or []
+        if any(source == outside_content.MAIL for source, _, _ in flags):
+            return MAIL_FLAGGED
+    except Exception:
+        logger.debug("levels: couldn't tell whether a mail read was flagged", exc_info=True)
+    return OWN_MAIL
 
 
 def decide(reason: str, *, mode: str | None = None) -> str:
@@ -283,8 +303,23 @@ def hold(
     """Put the exact step on an Approve card for the owner, and return the
     tool result that tells the model it is waiting. The same step still
     waiting is that card, not a new one."""
+    return hold_many(tool, [tool_input], mcp=mcp, reason=reason, session=session)
+
+
+def hold_many(
+    tool: str,
+    tool_inputs: list[dict[str, Any]],
+    *,
+    mcp: bool,
+    reason: str,
+    session: Any = None,
+) -> str:
+    """``hold`` for several calls of one tool held together (fourteen
+    renames in one round): one Approve card that lists them all, and one tap
+    carries out each, in order. The tool result is the same for each call."""
     from openexecutive.orchestrator import department_gate, take_the_lead
 
+    steps = [dict(i or {}) for i in tool_inputs] or [{}]
     if mcp and not str(tool or "").strip():
         # Nothing anyone could approve (no tool named).
         return json.dumps({"error": "call_tool needs the tool's name: find it with search_tools first."})
@@ -302,24 +337,29 @@ def hold(
         decision_id = department_gate.hold(
             _requester(session),
             tool,
-            dict(tool_input or {}),
+            steps[0],
             verdict,
             mcp=mcp,
             session_id=getattr(session, "session_id", None),
             held=True,
+            more=steps[1:],
         )
     except Exception:
         logger.exception("levels: couldn't put %s on a card", tool)
         return json.dumps({
             "error": f"{tool} was not done and couldn't be put on an Approve card. Tell them what you would have done.",
         })
+    together = (
+        f" It is one card for all {len(steps)} of these {tool} calls: one tap does them all."
+        if len(steps) > 1 else ""
+    )
     return json.dumps({
         "status": "waiting_for_approval",
         "decision_instance_id": decision_id,
         "message": (
             "Not done yet: it's on an Approve card for them (in this chat, on Today and in their chat app), "
-            f"because {why}. Tapping Approve does exactly this. Tell them in one line it's waiting for "
-            "their tap. Do not retry or work around it."
+            f"because {why}. Tapping Approve does exactly this.{together} Tell them in one line it's "
+            "waiting for their tap. Do not retry or work around it."
         ),
     })
 

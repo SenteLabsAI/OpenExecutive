@@ -209,6 +209,7 @@ export default function ChatDraftCard({
   const cc = open ? now.cc : draft.cc;
   const subject = open ? now.subject : draft.subject;
   const body = open ? now.body : draft.preview;
+  const files = open ? (now.files ?? []) : [];
   const cut = !open && draft.preview.length >= PREVIEW_CHARS;
   const theirs = now?.status === "changed";
   const canChange = open && !done && !theirs;
@@ -217,6 +218,24 @@ export default function ChatDraftCard({
     <article className="mt-3 rounded-2xl border border-line bg-surface-elevated p-4 sm:p-5">
       <div className="text-xs font-semibold uppercase tracking-wide text-accent">Email as you</div>
       <Who to={to} cc={cc} subject={subject} />
+      {files.length > 0 && (
+        <div className="mt-2">
+          <div className="text-xs text-fg-muted">
+            {files.length === 1 ? "1 file attached" : `${files.length} files attached`}
+          </div>
+          <ul className="mt-1 flex flex-wrap gap-1.5">
+            {files.map((name, i) => (
+              <li
+                key={`${i}-${name}`}
+                className="max-w-full truncate rounded-lg border border-line bg-surface px-2 py-1 text-xs text-fg"
+                title={name}
+              >
+                {name}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {editing !== null ? (
         <div className="mt-2">
           <textarea

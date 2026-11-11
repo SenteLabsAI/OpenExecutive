@@ -169,6 +169,28 @@ def plain(tool: str, tool_input: Any) -> list[dict[str, str]]:
     return out or refs
 
 
+def held_steps(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every call a held card runs on Approve: its ``steps`` when one card
+    holds several (levels.hold_many), else its one ``input``."""
+    steps = payload.get("steps")
+    if isinstance(steps, list) and len(steps) > 1 and all(isinstance(s, dict) for s in steps):
+        return steps
+    tool_input = payload.get("input")
+    return [tool_input] if isinstance(tool_input, dict) else []
+
+
+def plain_steps(tool: str, steps: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """``plain`` for each call one card holds, numbered when there are
+    several, so the card shows everything Approve does."""
+    if len(steps) == 1:
+        return plain(tool, steps[0])
+    return [
+        {"field": f"{n}. {detail['field']}", "value": detail["value"]}
+        for n, step in enumerate(steps, 1)
+        for detail in plain(tool, step)
+    ]
+
+
 def served(payload: dict[str, Any]) -> dict[str, Any]:
     """A held step's payload as a page reads it: its details in plain words
     (cards held before this read raw), and no field long enough to be a
@@ -177,8 +199,11 @@ def served(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(tool_input, dict):
         return payload
     out = dict(payload)
-    out["details"] = plain(str(payload.get("tool") or ""), tool_input)
-    out["input"] = {
-        k: ("" if isinstance(v, str) and len(v) > SERVED_MAX else v) for k, v in tool_input.items()
-    }
+    out["details"] = plain_steps(str(payload.get("tool") or ""), held_steps(payload))
+    def short(step: dict[str, Any]) -> dict[str, Any]:
+        return {k: ("" if isinstance(v, str) and len(v) > SERVED_MAX else v) for k, v in step.items()}
+
+    out["input"] = short(tool_input)
+    if isinstance(payload.get("steps"), list):
+        out["steps"] = [short(s) if isinstance(s, dict) else s for s in payload["steps"]]
     return out

@@ -2150,16 +2150,56 @@ async def carry_out(payload: dict[str, Any], *, by_principal: bool) -> str:
                 gateway = get_active_gateway()
                 if gateway is None:
                     raise RuntimeError("The connection to the mail and calendar tools isn't running.")
-                result = await gateway.call_tool({"name": tool, "arguments": tool_input})
+
+                async def run(step: dict[str, Any]) -> Any:
+                    return await gateway.call_tool({"name": tool, "arguments": step})
             else:
                 from openexecutive.orchestrator.executive import _ALL_SKILL_HANDLERS
 
                 allowed = tool in _ALL_SKILL_HANDLERS and (tool in ACTING_TOOLS or payload.get("held") is True)
                 if not allowed:
                     raise RuntimeError(f"{tool} can't be done from here.")
-                result = await _ALL_SKILL_HANDLERS[tool](tool_input)
+
+                async def run(step: dict[str, Any]) -> Any:
+                    return await _ALL_SKILL_HANDLERS[tool](step)
+
+            steps = payload.get("steps")
+            if not (isinstance(steps, list) and len(steps) > 1 and all(isinstance(x, dict) for x in steps)):
+                result = await run(dict(tool_input or {}))
+            else:
+                # One card for several calls of one tool (levels.hold_many):
+                # each in order, stopping at the first that fails, so nothing
+                # after a failure runs and the result says which went through.
+                results: list[str] = []
+                failure = ""
+                for step in steps:
+                    try:
+                        text = _as_text(await run(step))
+                    except Exception as exc:  # noqa: BLE001 - reported on the card
+                        text = str(exc) or type(exc).__name__
+                        failure = text
+                        break
+                    if result_failed(text):
+                        failure = text
+                        break
+                    results.append(text)
+                done = len(results)
+                result = (
+                    json.dumps({
+                        "error": (
+                            f"{done} of {len(steps)} went through, then step {done + 1} didn't: "
+                            f"{failure[:300]}" + (" The rest didn't run." if done + 1 < len(steps) else "")
+                        ),
+                        "done": done,
+                    })
+                    if failure else json.dumps({"done": done, "results": [r[:300] for r in results]})
+                )
     finally:
         current_session.reset(token)
+    return _as_text(result)
+
+
+def _as_text(result: Any) -> str:
     return result if isinstance(result, str) else json.dumps(result, default=str)
 
 

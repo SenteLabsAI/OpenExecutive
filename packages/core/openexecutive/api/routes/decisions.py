@@ -600,6 +600,11 @@ async def _carry_out_lead(
         # area approver says yes or no to what it would do, as it stands.
         if not _approver_is_principal(request):
             raise HTTPException(status_code=403, detail="Only the account owner can change this before approving.")
+        from openexecutive.orchestrator import card_details
+
+        if len(card_details.held_steps(payload)) > 1:
+            # One card for several calls: Approve runs each as shown.
+            raise HTTPException(status_code=422, detail="This one can't be changed from its card.")
         source: dict[str, Any] = payload["input"] if isinstance(payload.get("input"), dict) else {}
         try:
             new_input, changed = take_the_lead.apply_edits(

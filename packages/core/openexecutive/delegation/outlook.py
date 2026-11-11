@@ -1071,7 +1071,8 @@ class DelegateOutlook:
         that version on Microsoft's side too). With ``to`` it goes to ``to``
         and ``cc`` instead. Returns its new version.
         Raises ``GmailNotFound`` when it is gone and ``DraftChanged`` when it
-        changed meanwhile or is more than plain text. Nothing is sent."""
+        changed meanwhile or its body is more than plain text; attached files
+        stay on it. Nothing is sent."""
         if not valid_id(draft_id):
             raise GmailError("invalid draft id")
         path = f"/messages/{quote(draft_id, safe='')}"
@@ -1083,7 +1084,9 @@ class DelegateOutlook:
             if draft_version(draft_id, change_key) != expected_version or not change_key:
                 raise DraftChanged("changed")
             body = data.get("body")
-            if data.get("hasAttachments") is True or not (isinstance(body, dict) and _plain_or_ours(body)):
+            # Its files are separate from its body in Outlook: a new body
+            # leaves them on it.
+            if not (isinstance(body, dict) and _plain_or_ours(body)):
                 raise DraftChanged("not_plain")
             etag = str(data.get("@odata.etag") or f'W/"{change_key}"')
             fields: dict[str, Any] = {"body": _body(text)}
