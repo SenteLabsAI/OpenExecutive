@@ -130,6 +130,8 @@ _CARD_PARAM = "card"
 # What a card's message says while its tap is being decided.
 _WORKING = "Working on it…"
 # What it says when a tap couldn't be confirmed (``verify_tap``).
+# How long the webhook waits on Chat to confirm a tap (Chat waits 30s).
+_TAP_CHECK_S = 20.0
 _UNCONFIRMED = "That tap couldn't be checked, so nothing was done. The card is still waiting on Today."
 
 
@@ -395,9 +397,15 @@ async def _take_tap(body: dict[str, Any], background_tasks: BackgroundTasks, set
     user_name = str(user.get("name") or "")
     sa_file = settings.google_chat_service_account_file
     sa_email = settings.google_chat_service_account_email
-    confirmed = await _confirm_tap(
-        data, space_name, message_name, str(user.get("email") or ""), user_name, sa_file, sa_email,
-    )
+    try:
+        # Inside Chat's wait for the answer: a check that outlasts it is a no,
+        # so a late yes can't decide a card whose tapper saw an error.
+        confirmed = await asyncio.wait_for(_confirm_tap(
+            data, space_name, message_name, str(user.get("email") or ""), user_name, sa_file, sa_email,
+        ), timeout=_TAP_CHECK_S)
+    except TimeoutError:
+        logger.warning("Google Chat: checking a tap took too long; it is refused")
+        confirmed = None
     if confirmed is None:
         return {"actionResponse": {"type": "UPDATE_MESSAGE"}, "text": _UNCONFIRMED, "cardsV2": []}
     person, words = confirmed

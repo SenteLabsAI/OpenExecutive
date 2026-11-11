@@ -910,6 +910,18 @@ def test_the_older_tap_shape_is_read_too() -> None:
     assert gc_module._tapped({"action": {"actionMethodName": "oe_card"}}) is None
 
 
+def test_a_check_that_outlasts_chats_wait_is_a_no(monkeypatch: pytest.MonkeyPatch, client: TestClient) -> None:
+    async def slow(*_a: Any) -> tuple[Any, str]:
+        await asyncio.sleep(1)
+        return SimpleNamespace(id=3), "Meeting to book"
+
+    monkeypatch.setattr(gc_module, "_TAP_CHECK_S", 0.01)
+    monkeypatch.setattr(gc_module, "_confirm_tap", slow)
+    monkeypatch.setattr(gc_module, "_decide_tap", lambda **_kw: pytest.fail("decided after Chat stopped waiting"))
+    resp = client.post("/webhook/google-chat", json=_tap_event(), headers={"Authorization": "Bearer t"})
+    assert resp.json()["text"] == gc_module._UNCONFIRMED
+
+
 def test_a_confirmed_tap_is_decided_and_its_card_rewritten(monkeypatch: pytest.MonkeyPatch) -> None:
     """The card is rewritten from Chat's own words, with the outcome under them."""
     from openexecutive.integrations import channel_cards
