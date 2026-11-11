@@ -824,28 +824,60 @@ def _tap_event(*, alone: bool = True, user_type: str = "HUMAN", data: str = "car
 
 
 def test_a_tap_in_the_apps_own_dm_is_taken(monkeypatch: pytest.MonkeyPatch, client: TestClient) -> None:
-    """The card says it's being worked on at once, without its buttons, and
-    the tap is decided after the answer."""
+    """Chat confirms the tap before the answer, while the button is still on
+    the message. The card then says it's being worked on, from Chat's own
+    words and without its buttons, and the tap is decided after the answer."""
     taps: list[dict] = []
+    checked: list[tuple] = []
+    pat = SimpleNamespace(id=3)
 
     async def decide(**kw: Any) -> None:
         taps.append(kw)
 
+    def verify(*a: Any) -> str:
+        checked.append(a)
+        return "Meeting to book"
+
+    monkeypatch.setattr("openexecutive.people.store.find_person_by_email", lambda _e, **_k: pat)
+    monkeypatch.setattr(gc_module, "verify_tap", verify)
     monkeypatch.setattr(gc_module, "_decide_tap", decide)
     resp = client.post("/webhook/google-chat", json=_tap_event(), headers={"Authorization": "Bearer t"})
 
     assert resp.status_code == 200
     assert resp.json() == {
         "actionResponse": {"type": "UPDATE_MESSAGE"},
-        "text": "Meeting to book\nBoard prep\n\nWorking on it…",
+        "text": "Meeting to book\n\nWorking on it…",
         "cardsV2": [],
     }
+    [(space, message, data, user, *_creds)] = checked
+    assert (space, message, data, user) == ("spaces/DM1", "spaces/DM1/messages/C1", "card:12:a", "users/111")
     [tap] = taps
-    assert tap["data"] == "card:12:a"
+    assert tap["data"] == "card:12:a" and tap["person"] is pat and tap["shown"] == "Meeting to book"
     assert tap["message_name"] == "spaces/DM1/messages/C1"
-    assert tap["sender_email"] == "pat@acme.com"
     assert tap["space_name"] == "spaces/DM1"
     assert tap["user_name"] == "users/111"
+
+
+@pytest.mark.parametrize(
+    ("person", "confirmed"),
+    [(None, "Meeting to book"), (SimpleNamespace(id=3), None)],
+    ids=["not-on-people", "chat-didnt-confirm"],
+)
+def test_a_tap_chat_doesnt_confirm_decides_nothing(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient, person: Any, confirmed: str | None
+) -> None:
+    """The card says so in a fixed line, nothing from the event, and the
+    refusal is audited."""
+    rows: list[dict] = []
+    monkeypatch.setattr("openexecutive.people.store.find_person_by_email", lambda _e, **_k: person)
+    monkeypatch.setattr(gc_module, "verify_tap", lambda *a: confirmed)
+    monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **k: rows.append(k.get("details") or {}))
+    monkeypatch.setattr(gc_module, "_decide_tap", lambda **_kw: pytest.fail("decided a tap Chat didn't confirm"))
+    monkeypatch.setattr(gc_module, "update_card", lambda *a: pytest.fail("the answer says it"))
+    resp = client.post("/webhook/google-chat", json=_tap_event(), headers={"Authorization": "Bearer t"})
+    assert resp.json() == {"actionResponse": {"type": "UPDATE_MESSAGE"}, "text": gc_module._UNCONFIRMED, "cardsV2": []}
+    [row] = rows
+    assert row["rejected"] is True and row["google_user"] == "users/111" and row["space_name"] == "spaces/DM1"
 
 
 @pytest.mark.parametrize(
@@ -878,57 +910,33 @@ def test_the_older_tap_shape_is_read_too() -> None:
     assert gc_module._tapped({"action": {"actionMethodName": "oe_card"}}) is None
 
 
-@pytest.mark.parametrize(
-    ("person", "confirmed", "decided"),
-    [(SimpleNamespace(id=3), "Meeting to book", True), (None, "Meeting to book", False),
-     (SimpleNamespace(id=3), None, False)],
-    ids=["confirmed", "not-on-people", "chat-didnt-confirm"],
-)
-def test_a_tap_is_decided_only_once_chat_confirms_it(
-    monkeypatch: pytest.MonkeyPatch, person: Any, confirmed: str | None, decided: bool
-) -> None:
-    """The tapper is the person on People with the event's email, and only
-    when Chat itself confirms the message, the space and its one person. The
-    card is rewritten from Chat's own words, with the outcome under them;
-    a tap that isn't confirmed decides nothing, and its card says so."""
+def test_a_confirmed_tap_is_decided_and_its_card_rewritten(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The card is rewritten from Chat's own words, with the outcome under them."""
     from openexecutive.integrations import channel_cards
 
     resolved: list[tuple] = []
     updated: list[tuple] = []
-    checked: list[tuple] = []
     rows: list[dict] = []
+    pat = SimpleNamespace(id=3)
 
     async def resolve(decision_id: int, who: Any, *, approve: bool, allow: bool = False) -> str:
         resolved.append((decision_id, who, approve, allow))
         return "Approved."
 
-    def verify(*a: Any) -> str | None:
-        checked.append(a)
-        return confirmed
-
-    monkeypatch.setattr("openexecutive.people.store.find_person_by_email", lambda _e, **_k: person)
     monkeypatch.setattr(channel_cards, "resolve", resolve)
     monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **k: rows.append(k.get("details") or {}))
-    monkeypatch.setattr(gc_module, "verify_tap", verify)
     monkeypatch.setattr(gc_module, "update_card", lambda *a: updated.append(a))
 
     asyncio.run(gc_module._decide_tap(
-        data="card:12:a", space_name="spaces/DM1", message_name="spaces/DM1/messages/C1",
-        sender_email="pat@acme.com", user_name="users/111",
+        data="card:12:a", person=pat, shown="Meeting to book", space_name="spaces/DM1",
+        message_name="spaces/DM1/messages/C1", user_name="users/111",
         service_account_file="/k.json", service_account_email=None,
     ))
 
-    assert checked == ([("spaces/DM1", "spaces/DM1/messages/C1", "card:12:a", "users/111", "/k.json", None)]
-                       if person else [])
-    assert resolved == ([(12, person, True, False)] if decided else [])
-    assert updated == [(
-        "spaces/DM1/messages/C1",
-        "Meeting to book\n\nApproved." if decided else gc_module._UNCONFIRMED,
-        "/k.json", None,
-    )]
+    assert resolved == [(12, pat, True, False)]
+    assert updated == [("spaces/DM1/messages/C1", "Meeting to book\n\nApproved.", "/k.json", None)]
     [row] = rows
-    assert row["google_user"] == "users/111" and row["space_name"] == "spaces/DM1"
-    assert row.get("rejected", False) is (not decided)
+    assert row["google_user"] == "users/111" and row["person_id"] == 3 and row["choice"] == "approve"
 
 
 class _FakeChat:
@@ -978,20 +986,6 @@ def test_chat_itself_confirms_a_tap(
         patch("googleapiclient.discovery.build", return_value=_FakeChat(message, space, members)),
     ):
         assert gc_module.verify_tap("spaces/DM1", message_name, "card:12:a", "users/111", None) == expected
-
-
-def test_an_unconfirmed_tap_elsewhere_rewrites_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A message outside the event's space is never touched."""
-    updated: list[tuple] = []
-    monkeypatch.setattr("openexecutive.people.store.find_person_by_email", lambda _e, **_k: SimpleNamespace(id=3))
-    monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **k: None)
-    monkeypatch.setattr(gc_module, "verify_tap", lambda *a: None)
-    monkeypatch.setattr(gc_module, "update_card", lambda *a: updated.append(a))
-    asyncio.run(gc_module._decide_tap(
-        data="card:12:a", space_name="spaces/DM1", message_name="spaces/OTHER/messages/C1",
-        sender_email="pat@acme.com", user_name="users/111", service_account_file=None, service_account_email=None,
-    ))
-    assert updated == []
 
 
 def test_a_check_chat_cant_answer_is_a_no() -> None:

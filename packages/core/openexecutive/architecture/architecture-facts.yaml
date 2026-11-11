@@ -8956,12 +8956,16 @@ integrations:
     that space, carrying that very button; the space is singleUserBotDm;
     its one human member is the event's user). Why: the token isn't bound
     to the body, and a forged CARD_CLICKED would otherwise approve any
-    open card as its person (a ChatTap counts as a signed sign-in). An
-    unconfirmed tap decides and rewrites nothing and is audited Rejected.
-    Card words have Chat's <url|label> markup made inert (card_safe). The webhook answers at once with UPDATE_MESSAGE (the card's
-    words, "Working on it…", no buttons), since deciding can outlast Chat's
-    wait, then decides it in the background and rewrites the message
-    (messages.patch, text and cardsV2) with the outcome under it. Cards that
+    open card as its person (a ChatTap counts as a signed sign-in). The
+    check runs before the webhook answers, because it looks for the tapped
+    button on the message and the answer takes the buttons off. An
+    unconfirmed tap decides nothing, is audited Rejected, and its card
+    says so in a fixed line. Card words have Chat's <url|label> markup made
+    inert (card_safe). A confirmed tap is answered with UPDATE_MESSAGE
+    (Chat's copy of the card's words, "Working on it…", no buttons), since
+    deciding can outlast Chat's wait, then decided in the background, and
+    the message is rewritten (messages.patch, text and cardsV2) with the
+    outcome under it. Cards that
     wait outside any chat are not pushed to Google Chat (chat_for): the app
     has no stored DM to reach them in.
     Every other chat app (channels, threads, a Google Chat space or a
