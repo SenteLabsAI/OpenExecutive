@@ -10878,8 +10878,7 @@ delegation:
   who: |
     delegation.settings.can_delegate(person) is the single rule: any
     non-archived team member (never a contact). Teammates are full users;
-    there is no install or owner switch for them (DELEGATION_TEAM_MEMBERS
-    and PUT /delegation/team were removed). The ghostwriter's prompt is a
+    there is no install or owner switch for them. The ghostwriter's prompt is a
     constant outside the Council, so the /agents and /personas edit routes
     (no principal check) can't change how anyone's draft is written. A
     person turns it on for themselves (PUT /delegation); nobody turns it on
