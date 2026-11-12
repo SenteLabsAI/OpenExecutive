@@ -282,7 +282,8 @@ export function ReplyCardItem({
       }
       // The reply may have been brought up to date with newer mail since it
       // was shown: show it as it is now, beside the second question.
-      if (result.reasons.includes("thread_moved_on")) void onRefresh();
+      // Or changed from chat since it was shown.
+      if (result.reasons.includes("thread_moved_on") || result.reasons.includes("changed_in_chat")) void onRefresh();
       setStep({
         kind: "confirm",
         message: result.message,

@@ -67,8 +67,13 @@ GHOSTWRITE_EMAIL_TOOL: dict[str, Any] = {
         "words. To reply, pass `thread_id`, or `find` (a search in their "
         "mailbox, e.g. 'from:dana@example.com subject:pilot'); if several threads "
         "match you get `candidates` — ask them which one and call again with its "
-        "thread_id. To start a new email instead, pass `to` (any address; it is "
-        "only a draft). To forward an email, pass `forward` (its "
+        "thread_id. A reply stays in that thread and answers its newest message "
+        "from someone else; to answer someone else in it (\"reply to Dana\"), add "
+        "`to` with their address, or `message_id` for one message, and `reply_all` "
+        "to keep the others on it. When they ask for a reply, never write a new "
+        "email instead. A reply to an email that already has a reply waiting on its "
+        "card changes that card's reply (`on_card`) rather than making a second draft. To start a new email, pass `to` without a thread (any "
+        "address; it is only a draft). To forward an email, pass `forward` (its "
         "thread_id: its latest message is forwarded, with its files, unless "
         "`forward_message_id` names an earlier one) and `to`; "
         "`intent` is the note above it. To attach files to a new email or a reply, "
@@ -107,10 +112,20 @@ GHOSTWRITE_EMAIL_TOOL: dict[str, Any] = {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "For a NEW email or a forward: recipient addresses. Any address "
+                    "Recipient addresses. With `thread_id` / `find`: who the reply "
+                    "goes to, answering their latest message in that thread. Any address "
                     "works, since it is only a draft; one not in their People that "
                     "they didn't type comes back in `not_in_people`, so ask them to "
                     "check it before they send."
+                ),
+            },
+            "message_id": {
+                "type": "string",
+                "description": (
+                    "With `thread_id` / `find`: the message of that thread to reply "
+                    "to (a message_id read_my_email listed). It goes to that message's "
+                    "sender unless `to` says otherwise. Leave it out for the newest "
+                    "message from someone else."
                 ),
             },
             "reply_all": {
@@ -419,9 +434,21 @@ def _plan(writer: _Writer, thread: Any, tool_input: dict[str, Any], roster: dict
     if isinstance(cc, str):
         return _error(cc)
     if thread is not None:
-        plan = plan_reply(thread, writer.email, tool_input.get("reply_all") is True)
+        named: list[str] = []
+        if tool_input.get("to"):
+            checked_to = _new_recipients(tool_input.get("to"))
+            if isinstance(checked_to, str):
+                return _error(checked_to)
+            named = checked_to
+        message_id = tool_input.get("message_id")
+        plan = plan_reply(
+            thread, writer.email, tool_input.get("reply_all") is True,
+            to=named, message_id=message_id.strip() if isinstance(message_id, str) and message_id.strip() else None,
+        )
         if isinstance(plan, str):
             return _error(plan)
+        if named:
+            plan["not_in_people"] = not_in_people(named, writer.pinned.speaker_text, roster)
         if asks_if_ai(plan["last_text"]):
             plan["flags"].append("asks_if_ai")
         added = [a for a in cc if a not in plan["to"] and a not in plan["cc"] and a != writer.email]
@@ -581,6 +608,13 @@ async def _draft(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> tu
     )
     if not composed.subject:
         return _error("The draft came back without a subject. Try again with a clearer intent."), False
+    if thread is not None and not attached.items and tool_input.get("send") is not True:
+        asked = tool_input.get("message_id")
+        on_card = await _onto_open_card(
+            writer, thread, plan, composed, message_id=asked.strip() if isinstance(asked, str) else "",
+        )
+        if on_card is not None:
+            return on_card, True
     draft = await writer.mailbox.create_draft(DraftSpec(
         to=plan["to"],
         cc=plan["cc"],
@@ -595,6 +629,92 @@ async def _draft(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> tu
     if getattr(draft, "skipped_attachments", 0) and "attachments_left_off" not in plan["flags"]:
         plan["flags"].append("attachments_left_off")
     return await _drafted(writer, thread, plan, composed, draft, attached=[f.name for f in attached.items]), True
+
+
+_CHECK_ADDRESS = (
+    "Not in their People and not typed by them: name the address and ask "
+    "them to check it before they send. They can add the person with an "
+    "approval card (propose_actions, add_contact)."
+)
+
+
+def _same_reply(payload: dict[str, Any], plan: dict[str, Any], message_id: str) -> bool:
+    """Whether the reply ``plan`` makes is the one on the card: it answers the
+    card's message, or (with no message named) goes only to people the card's
+    reply already goes to. Otherwise a reply to someone else in the thread
+    would replace the card's."""
+    card_message = str(payload.get("message_id") or "")
+    if str(plan.get("message_id") or "") == card_message:
+        return True
+    if message_id:
+        return False
+    on_card = {str(a).lower() for a in payload.get("draft_to") or []}
+    return bool(plan["to"]) and all(a.lower() in on_card for a in plan["to"])
+
+
+async def _onto_open_card(
+    writer: _Writer, thread: Any, plan: dict[str, Any], composed: Any, *, message_id: str = "",
+) -> str | None:
+    """A reply to an email that already has a reply card waiting (the inbox
+    watcher's) goes onto that card instead of a second draft: one reply per
+    email. None when there is no such card, the reply isn't the card's
+    (``_same_reply``), or the card can't take the change right now; the
+    caller then saves a draft of its own."""
+    from openexecutive.delegation import card_drafts
+    from openexecutive.delegation.inbox import FOLLOW_UP_SOURCE, card_payload, open_cards
+    from openexecutive.delegation.reply_send import SendRefused
+    from openexecutive.orchestrator import reply_card_tools
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    # The inbox's own work on a card hands back through update_reply_card;
+    # a turn driven by an email's text never readdresses a card.
+    if reply_card_tools.offered(current_session.get()):
+        return None
+    try:
+        card = next((
+            c for c in open_cards(writer.person.id)
+            if str(card_payload(c).get("thread_id") or "") == str(thread.id)
+            and card_payload(c).get("source") != FOLLOW_UP_SOURCE
+        ), None)
+    except Exception:
+        logger.warning("ghostwrite: couldn't look for a reply card on the thread", exc_info=True)
+        return None
+    if card is None:
+        return None
+    if not _same_reply(card_payload(card), plan, message_id):
+        return None
+    try:
+        await card_drafts.from_chat(card, writer.person, writer.mailbox, words=composed.body, to=plan["to"], cc=plan["cc"])
+    except SendRefused as refused:
+        logger.info("ghostwrite: the reply card couldn't take the change (%s); saving a draft", refused.code)
+        return None
+    flags = [*plan["flags"], *composed.flags]
+    questions = list(composed.open_questions)
+    if "asks_if_ai" in flags:
+        questions.append("They asked whether they're talking to an AI — answer that yourself.")
+    _audit(writer.person.id, f"Put a reply on person {writer.person.id}'s reply card", {
+        "thread_id": thread.id, "decision_id": card.id, "reply": True,
+        "recipients": len(plan["to"]) + len(plan["cc"]), "flags": flags,
+    })
+    return json.dumps({
+        "status": "drafted",
+        "on_card": card.id,
+        "to": plan["to"],
+        "cc": plan["cc"],
+        "subject": composed.subject,
+        "preview": composed.body[:_PREVIEW_CHARS],
+        **({"open_questions": questions} if questions else {}),
+        **({"flags": flags} if flags else {}),
+        **(
+            {"not_in_people": plan["not_in_people"], "check_address": _CHECK_ADDRESS}
+            if plan.get("not_in_people") else {}
+        ),
+        "note": (
+            "This email already had a reply waiting on its card, so the reply there now says this, "
+            "to these people. No second draft was made and nothing was sent. Tell them it's the reply "
+            "waiting for that email, and that one tap on Send there sends it."
+        ),
+    })
 
 
 async def _attachments(writer: _Writer, tool_input: dict[str, Any]) -> Any:
@@ -716,11 +836,7 @@ async def _drafted(
         "flags": flags,
         "open_questions": questions,
         **(
-            {"not_in_people": plan["not_in_people"], "check_address": (
-                "Not in their People and not typed by them: name the address and ask "
-                "them to check it before they send. They can add the person with an "
-                "approval card (propose_actions, add_contact)."
-            )}
+            {"not_in_people": plan["not_in_people"], "check_address": _CHECK_ADDRESS}
             if plan.get("not_in_people") else {}
         ),
         "note": (

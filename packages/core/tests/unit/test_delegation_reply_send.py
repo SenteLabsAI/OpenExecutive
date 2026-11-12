@@ -236,6 +236,24 @@ def test_a_draft_brought_up_to_date_asks_again_unless_that_version_was_shown(
     assert _status(card) == "approved_unchanged"
 
 
+def test_a_reply_changed_from_chat_asks_again_unless_that_version_was_shown(
+    owner: Any, models: dict[str, Any],
+) -> None:
+    from openexecutive.delegation import card_drafts
+
+    mailbox, card = _card(owner)
+    asyncio.run(card_drafts.from_chat(card, owner, mailbox, words="Hi Dana,\n\nMonday works.", to=[DANA], cc=[]))
+    card = ledger.get_decision_instance(card.id)
+    shown = card_drafts.version(inbox.card_payload(card))
+    # A card shown before (a chat app's Send, a page not reloaded): a second yes.
+    for confirm in ({}, {"seen_caught_up_at": ""}):
+        first = _refused(card, mailbox, owner, confirm=confirm)
+        assert first.code == "confirm" and first.extra["reasons"] == ["changed_in_chat"]
+    assert mailbox.sent == []
+    _send(card, mailbox, owner, confirm={"seen_caught_up_at": shown})
+    assert mailbox.sent == ["d1"]
+
+
 def test_a_draft_gone_or_answered_closes_the_card(owner: Any, models: dict[str, Any]) -> None:
     mailbox, card = _card(owner)
     del mailbox.drafts["d1"]
@@ -448,17 +466,19 @@ def test_only_the_send_path_sends_and_only_its_four_doors_reach_it() -> None:
     assert _uses("send_for_workflow") == {"delegation/workflow_email.py"}
     assert _uses("send_chat_draft") == {"api/routes/delegation.py"}
     assert _uses("handle_send_email_as_me") == {"workflows/tool_catalog.py"}
-    # card_drafts, answers, the chat draft card, the edit routes and the
-    # inbox's work on a card (card_work, update_reply_card) use its refusals
-    # and caller check only.
+    # card_drafts, answers, the chat draft card, the edit routes, the
+    # inbox's work on a card (card_work, update_reply_card) and a chat reply
+    # put onto a waiting card (ghostwrite_email) use its refusals and caller
+    # check only.
     assert _importers("openexecutive.delegation.reply_send") == {
         "api/routes/decisions.py", "api/routes/delegation.py", "delegation/inbox.py", "delegation/card_drafts.py",
         "delegation/answers.py", "delegation/workflow_email.py", "delegation/chat_draft_card.py",
-        "delegation/card_work.py", "orchestrator/reply_card_tools.py",
+        "delegation/card_work.py", "orchestrator/reply_card_tools.py", "orchestrator/delegation_tools.py",
     }
     assert _importers("openexecutive.delegation.reply_send.SendRefused") >= {"delegation/answers.py"}
     for only_refuses in (
         "delegation/answers.py", "delegation/chat_draft_card.py", "orchestrator/reply_card_tools.py",
+        "orchestrator/delegation_tools.py",
     ):
         assert not ({"send_draft", "send_approved_reply", "send_on_its_own", "send_for_workflow", "send_chat_draft"} & {
             n for n, files in _index()[0].items() if only_refuses in files

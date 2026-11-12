@@ -85,8 +85,8 @@ def _strings(value: Any) -> list[str]:
 def cards(person: Any) -> list[ReplyCard]:
     """``person``'s open reply cards, newest first."""
     from openexecutive.delegation import card_work, training
-    from openexecutive.delegation.answers import CAUGHT_UP_KEY, conversation, questions_for
-    from openexecutive.delegation.card_drafts import QUESTIONS_SETTLED
+    from openexecutive.delegation.answers import conversation, questions_for
+    from openexecutive.delegation.card_drafts import QUESTIONS_SETTLED, version
     from openexecutive.delegation.gmail import credential_provider, mailbox_link
     from openexecutive.delegation.handle_it import REASONS
     from openexecutive.delegation.inbox import REPLY_OTHERS, card_payload, ledger_flags, open_cards
@@ -136,7 +136,7 @@ def cards(person: Any) -> list[ReplyCard]:
             reply_others=[] if payload.get("source") == "follow_up" else _strings(payload.get(REPLY_OTHERS)),
             gist=str(payload.get("gist") or ""),
             conversation=conversation(payload),
-            caught_up_at=str(payload.get(CAUGHT_UP_KEY) or ""),
+            caught_up_at=version(payload),
             working=payload.get(card_work.WORK_KEY) == card_work.WORKING and card_work.running(card.id),
             files=[
                 str(f.get("name") or "") for f in payload.get(card_work.FILES_KEY) or []

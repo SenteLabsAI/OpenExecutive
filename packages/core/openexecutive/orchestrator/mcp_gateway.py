@@ -108,7 +108,7 @@ _FORWARDED_ENV_VARS = (
 
 # Outbound Gmail tools whose arguments may carry recipients. Any tool name
 # matching one of these (after the `google_workspace__` namespace prefix) is
-# subject to the recipient allow-list. Names track workspace-mcp 2.1.0: the
+# subject to the recipient allow-list. Names track workspace-mcp 2.4.2: the
 # send/reply/forward surface is a single `send_gmail_message` (reply is that
 # tool with thread_id/quoting; forward is its `forward_message_id` arg, which
 # `_GMAIL_ALLOWED_ARG_KEYS` refuses), and `draft_gmail_message` replaced
@@ -126,6 +126,13 @@ _GATED_GMAIL_TOOLS = frozenset({
 _GATED_CALENDAR_TOOLS = frozenset({
     "google_workspace__manage_event",
 })
+
+# workspace-mcp 2.4's `manage_calendar` creates a calendar and shares one:
+# `share` / `update_sharing` grant a person, a group, a whole domain or
+# everyone (scope_type "default") access to it. Like an invite, a grant to
+# anyone not in People is a step the owner's Approvals level decides.
+_CALENDAR_SHARE_TOOL = "google_workspace__manage_calendar"
+_CALENDAR_GRANT_ACTIONS = frozenset({"share", "update_sharing"})
 
 # Namespace prefix every workspace-mcp tool carries once proxied through the
 # gateway.
@@ -581,6 +588,9 @@ _GMAIL_ALLOWED_ARG_KEYS = frozenset({
     # NOT a recipient and NOT the From address (that stays the authenticated
     # user_google_email). Validated for CR/LF below to block header injection.
     "from_name",
+    # Text direction of the body (2.4+): "auto" / "ltr" / "rtl", an enum the
+    # server validates. Not an address.
+    "direction",
     # Gmail "Send As" alias address (1.21.1+). Sets the From mailbox to a verified
     # alias of the authenticated user (Gmail rejects unverified aliases, so it
     # can't spoof arbitrary senders) — NOT a recipient, so not roster-checked, but
@@ -1765,6 +1775,42 @@ def _check_calendar_attendees(tool: str, arguments: dict[str, Any]) -> str | Non
             return _block("attendees", email, tool,
                           reason=f"attendee {email!r} is not on the People roster — "
                                  "refusing to create calendar event.")
+    return None
+
+
+def _check_calendar_share(tool: str, arguments: dict[str, Any]) -> str | None:
+    """None unless a ``manage_calendar`` call grants calendar access to
+    someone not in People, else a JSON error naming who.
+
+    ``share`` names the grantee in ``scope_type`` / ``scope_value``;
+    ``update_sharing`` names an existing rule (``rule_id``, Google's
+    ``<type>:<value>``, e.g. ``user:ann@example.com``). A domain grant or a
+    public one (``default``) reaches people who aren't in People, so it is
+    never a roster address. Creating a calendar, listing its sharing and
+    removing a rule grant nothing.
+    """
+    action = str(_arg(arguments, "action") or "").strip().lower()
+    if action not in _CALENDAR_GRANT_ACTIONS:
+        return None
+    if action == "share":
+        scope_type = str(_arg(arguments, "scope_type") or "user").strip().lower()
+        value = _arg(arguments, "scope_value")
+    else:
+        rule = str(_arg(arguments, "rule_id") or "")
+        scope_type, _, value = rule.partition(":")
+        scope_type = scope_type.strip().lower()
+    if scope_type not in ("user", "group"):
+        return _block("scope_type", scope_type or "<none>", tool,
+                      reason="sharing the calendar with a whole domain or with everyone "
+                             "reaches people who aren't in People.")
+    if not isinstance(value, str) or not value.strip():
+        return _block("scope_value", "<empty>", tool)
+    address = value.strip()
+    if "\n" in address or "\r" in address:
+        return _block("scope_value", "<contains-newline>", tool)
+    if address.lower() not in _roster_allow_set():
+        return _block("scope_value", address, tool,
+                      reason=f"{address!r} is not on the People roster — refusing to share the calendar.")
     return None
 
 
@@ -3981,6 +4027,10 @@ class MCPGateway:
             if blocked is not None:
                 return levels.card_or(blocked, tool_name, arguments, reason=levels.NEW_PERSON)
             arguments = _pin_calendar_notifications(arguments)
+        if tool_name == _CALENDAR_SHARE_TOOL and not relaxed:
+            blocked = _check_calendar_share(tool_name, arguments)
+            if blocked is not None:
+                return levels.card_or(blocked, tool_name, arguments, reason=levels.NEW_PERSON)
         if _is_drive_share_tool(tool_name) and not relaxed:
             blocked = _check_drive_share(tool_name, arguments)
             if blocked is not None:

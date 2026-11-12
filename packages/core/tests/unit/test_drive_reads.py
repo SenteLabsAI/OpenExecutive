@@ -79,6 +79,18 @@ def test_parse_content_result_keeps_opening_text_only() -> None:
     assert drive_reads.parse_content_result("File too large: 50MB") is None
 
 
+def test_parse_content_result_reads_the_versioned_header() -> None:
+    # workspace-mcp 2.4 names the file's Drive version after its type.
+    versioned = CONTENT_RESULT.replace(
+        "Type: application/vnd.google-apps.presentation)",
+        "Type: application/vnd.google-apps.presentation, Version: 42)",
+    )
+    opened = drive_reads.parse_content_result(versioned)
+    assert opened is not None
+    assert opened["file_id"] == "1AbC_d-9"
+    assert opened["mime_type"] == "application/vnd.google-apps.presentation"
+
+
 def test_found_then_opened_is_remembered_for_the_session(db: Path) -> None:
     assert drive_reads.record_drive_result("s1", 7, SEARCH, {"query": "board deck"}, SEARCH_RESULT)
     block = drive_reads.format_drive_memory("s1", 7)

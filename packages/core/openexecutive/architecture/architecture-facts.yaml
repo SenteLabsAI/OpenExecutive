@@ -9285,7 +9285,7 @@ integrations:
     and block 0 carries a Connected Systems section built from them
     (prompts/connected_systems.render_connected_systems) with the Google tool
     names pinned by service (GOOGLE_TOOL_MANIFEST, checked against
-    workspace-mcp 2.1.0 — re-check on a bump). extensible-mcp's
+    workspace-mcp 2.4.2 — re-check on a bump). extensible-mcp's
     DiscoveredToolsFilter runs only tools one of the session's searches
     returned and keeps them for the session's life, so the lifespan runs
     MCPGateway.prime_pinned_tools() once in the background when
@@ -9323,7 +9323,7 @@ integrations:
     single-tenant model (one install = one company = one exec Google account), so
     the server is inherently one-per-install; co-locating means a new install needs
     only the API+UI apps. workspace-mcp is baked into the API image in its own
-    venv (docker/Dockerfile: `uv pip install workspace-mcp==2.1.0` at /opt/
+    venv (docker/Dockerfile: `uv pip install workspace-mcp==2.4.2` at /opt/
     workspace-mcp — it has the --tool-tier flag and a fastmcp that works
     with modern pydantic) and launched by
     docker/workspace-mcp-launch.sh, referenced as the `command` of the
@@ -9741,6 +9741,13 @@ integrations:
       its notice through calendar_cancel_grant for that event id only. Take
       the lead counts a connected tool whose action deletes
       (manage_event action=delete) as deleting.
+    - Calendar sharing (google_workspace__manage_calendar, workspace-mcp
+      2.4+, _check_calendar_share): action share or update_sharing grants
+      access to the Executive's calendar. A grantee not on the People
+      roster, or a domain or public (scope_type default) grant, is
+      levels.NEW_PERSON, so the owner's Approvals level decides it like an
+      off-roster invite. create, list_sharing and unshare grant nothing and
+      pass.
     - Below Hands-off, every Apps Script tool (_BLOCKED_APPS_SCRIPT_TOOLS
       plus the _is_apps_script_tool name pattern, scoped to the
       google_workspace namespace) waits on an Approve card (levels.card_or,
@@ -10946,9 +10953,16 @@ delegation:
     Then it sets touched_mail BEFORE the first mailbox read and runs
     gmail_status. A search with several matches returns status choose with
     candidates (subject, sender, date; no text) and drafts nothing.
-    Recipients are decided in code: a reply goes to the last inbound From,
-    never Reply-To (flag reply_to_ignored), with cc only on reply_all (minus
-    the writer and the sender; beyond 10 trimmed and flagged cc_trimmed);
+    A reply stays in its thread and answers one message (threads.plan_reply):
+    the one message_id names, else the latest from someone to names, else the
+    newest inbound one (their own latest when there is none). It goes to that
+    message's From, never Reply-To (flag reply_to_ignored), or to the people
+    to names, with cc only on reply_all (minus the writer and the recipients;
+    beyond 10 trimmed and flagged cc_trimmed). Asked for a reply, the
+    Executive never writes a new email instead; a reply to an email with a
+    reply card waiting goes onto that card (card_drafts.from_chat, result
+    on_card) instead of a second draft, unless the card is busy, files are
+    attached or it is to be sent now;
     References from gmail.references_header — whole ids only, the parent
     last, the oldest after the root dropped to fit one header; a new email
     or a forward may go to any well-formed address (_new_recipients): it is

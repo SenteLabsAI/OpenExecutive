@@ -119,13 +119,10 @@ Routes:
                                     too_many / no_profile
   PUT    /delegation/voice        — edit fields, lock / unlock
   DELETE /delegation/voice        — forget it (history kept)
-  PUT    /delegation/team         — {enabled}: the owner's "Let team members
-                                    use Act as me" (principal only; 409
-                                    ``not_available`` unless the install
-                                    allows it, ``DELEGATION_TEAM_MEMBERS``)
 
-``GET /delegation`` gives the principal ``team`` while the install allows it:
-the switch and, for each team member who has it on, counts only — drafts
+Every team member may use Act as me for themselves; Approvals decides what
+runs. ``GET /delegation`` gives the principal ``team``: for each team member
+who has it on, counts only — drafts
 saved and sent in the last 30 days, never what they said or to whom. A team
 member's own mail, cards and rows are theirs alone.
 
@@ -681,8 +678,7 @@ def _inbox_out(person_id: int) -> InboxOut:
 
 
 def _team_out(person: Person) -> TeamOut | None:
-    """The owner's switch and each team member's counts, for the principal
-    while the install allows it; None otherwise."""
+    """Each team member's counts, for the principal; None otherwise."""
     from datetime import UTC, datetime, timedelta
 
     from openexecutive.delegation import drafts, inbox
