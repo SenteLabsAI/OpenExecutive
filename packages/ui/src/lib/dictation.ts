@@ -37,6 +37,14 @@ export function clock(seconds: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
+/** Whether live words may run beside the recording. Not on Android, where
+ *  the phone gives the microphone to one listener at a time: while the
+ *  browser's recognition runs, the recording is silent. "Request desktop
+ *  site" drops Android from the user agent, so the platform is checked too. */
+export function liveWordsAllowed(userAgent: string, platform = ""): boolean {
+  return !/Android/i.test(userAgent) && !/Android/i.test(platform);
+}
+
 /** One piece of what the browser's own speech recognition heard so far. */
 export interface HeardPart {
   transcript: string;

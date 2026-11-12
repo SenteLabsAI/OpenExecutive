@@ -13,7 +13,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import { getVoiceStatus, transcribeRecording } from "@/lib/api";
-import { clock, joinDictation, pickRecordingType, recordingFilename, splitHeard } from "@/lib/dictation";
+import { clock, joinDictation, liveWordsAllowed, pickRecordingType, recordingFilename, splitHeard } from "@/lib/dictation";
 import { playMicTone } from "@/lib/micTone";
 
 type Phase = "idle" | "listening" | "hearing";
@@ -131,12 +131,11 @@ export default function MicButton({ disabled, onLive, onText, onError }: Props) 
   // a pause or a minute, so it starts again (keeping what it had, a little
   // later each time) until the recording stops. An error other than silence
   // ends live words for this recording; the words still come when it stops.
-  // Not on Android: there the phone gives the microphone to one listener at
-  // a time, so while its recognition runs the recording is silent and the
-  // words written out at the end are lost.
+  // Not on Android (`liveWordsAllowed`), where it would silence the recording.
   const listen = useCallback(() => {
     const Ctor = browserRecognition();
-    if (!Ctor || !onLive || /Android/i.test(navigator.userAgent)) return;
+    const platform = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform;
+    if (!Ctor || !onLive || !liveWordsAllowed(navigator.userAgent, platform)) return;
     let earlier = "";
     let restarts = 0;
     const maxRestarts = 20;

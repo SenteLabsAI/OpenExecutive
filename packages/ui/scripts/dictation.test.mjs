@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { MIC_TONES, clock, joinDictation, pickRecordingType, recordingFilename, splitHeard } from "../src/lib/dictation.ts";
+import { MIC_TONES, clock, joinDictation, liveWordsAllowed, pickRecordingType, recordingFilename, splitHeard } from "../src/lib/dictation.ts";
 
 test("what was heard follows what the box held", () => {
   assert.equal(joinDictation("", "  move my call  "), "move my call");
@@ -55,4 +55,12 @@ test("a repeated word is kept", () => {
 test("the start tone rises and the stop tone falls", () => {
   assert.ok(MIC_TONES.start[1] > MIC_TONES.start[0]);
   assert.ok(MIC_TONES.stop[1] < MIC_TONES.stop[0]);
+});
+
+test("no live words on Android, where they would silence the recording", () => {
+  assert.equal(liveWordsAllowed("Mozilla/5.0 (Linux; Android 14; SM-F966U) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36"), false);
+  // "Request desktop site" hides Android from the user agent but not the platform.
+  assert.equal(liveWordsAllowed("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0 Safari/537.36", "Android"), false);
+  assert.equal(liveWordsAllowed("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131.0 Safari/537.36", "macOS"), true);
+  assert.equal(liveWordsAllowed("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1"), true);
 });
