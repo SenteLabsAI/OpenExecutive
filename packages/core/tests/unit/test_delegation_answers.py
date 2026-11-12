@@ -514,3 +514,25 @@ def test_the_signature_and_ai_line_stay_out_of_the_rewrite(monkeypatch: pytest.M
     main, tail = answers._split_tail(f"Hi Dana,\n\nSoon.\n\nOlivia Owner\nFernway\n\n{LINE}", "Olivia Owner\nFernway")
     assert main == "Hi Dana,\n\nSoon."
     assert tail == f"Olivia Owner\nFernway\n\n{LINE}"
+
+
+def test_a_reply_written_in_chat_goes_onto_the_waiting_card(
+    ids: dict[str, int], monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+) -> None:
+    from openexecutive.delegation import card_drafts
+    from openexecutive.memory.decision_ledger import get_decision_instance
+
+    mailbox, card_id = _card(ids["principal"], monkeypatch, cc=("sam@northpeak.example",))
+    person = people_store.get_person(ids["principal"])
+    card = get_decision_instance(card_id)
+    payload = asyncio.run(card_drafts.from_chat(
+        card, person, mailbox, words="Hi Dana,\n\nFriday at 10 works.\n\nOlivia",
+        to=["dana@northpeak.example"], cc=["sam@northpeak.example"],
+    ))
+    assert "Friday at 10 works." in payload["draft_body"]
+    assert payload["draft_to"] == ["dana@northpeak.example", "sam@northpeak.example"]
+    assert payload[card_drafts.QUESTIONS_SETTLED] is True
+    assert card_drafts.EDITED_ON_CARD not in payload
+    # Changed in their Drafts too, and still the one card.
+    assert mailbox.drafts["d1"].message.text == payload["draft_body"]
+    assert [c.id for c in inbox.open_cards(ids["principal"])] == [card_id]

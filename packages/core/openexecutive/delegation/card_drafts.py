@@ -345,6 +345,41 @@ async def redraft(instance: Any, person: Any, gmail: Any, rewrite: Rewrite) -> d
         _EDITING.discard(instance.id)
 
 
+async def from_chat(
+    instance: Any, person: Any, gmail: Any, *, words: str, to: list[str], cc: list[str],
+) -> dict[str, Any]:
+    """Put a reply the person asked for in chat (``ghostwrite_email``) onto
+    the reply card already waiting for that email, in place of a second
+    draft: its words, and who it goes to. The same card checks as
+    ``redraft``; the card's open questions are settled, since the person
+    said what goes. Returns the payload as it now is; raises ``SendRefused``.
+    Sends nothing."""
+    from openexecutive.delegation import disclosure as ai_disclosure
+    from openexecutive.delegation.inbox import SENDING, card_payload
+    from openexecutive.delegation.reply_send import SendRefused
+    from openexecutive.delegation.settings import is_enabled
+    from openexecutive.memory.decision_ledger import STATUS_PROPOSED
+
+    payload = card_payload(instance)
+    if instance.approver_person_id != person.id or payload.get("person_id") != person.id:
+        raise SendRefused(403, "not_yours", "That card isn't this person's.")
+    if instance.status != STATUS_PROPOSED or instance.id in SENDING:
+        raise SendRefused(409, "already_handled", "This reply was already sent or dismissed.")
+    if getattr(instance, "gate_mode", "") == "auto_execute" or not is_enabled(person.id):
+        raise SendRefused(409, "already_handled", "This reply isn't waiting on its card.")
+    if instance.id in _EDITING or instance.id in _MAKING:
+        raise SendRefused(409, "busy", "This reply is being saved or sent right now.")
+    _EDITING.add(instance.id)
+    try:
+        signed = ai_disclosure.sign(person.id, words, on_its_own=False)
+        extra = {QUESTIONS_SETTLED: True, "gist": ""}
+        return await _edit(
+            instance, person, payload, _check_words(signed), gmail, extra, (list(to), list(cc)), by_hand=False,
+        )
+    finally:
+        _EDITING.discard(instance.id)
+
+
 async def _edit(
     instance: Any, person: Any, payload: dict[str, Any], words: str, gmail: Any, extra: dict[str, Any],
     recipients: tuple[list[str], list[str]] | None = None, *, by_hand: bool = True,

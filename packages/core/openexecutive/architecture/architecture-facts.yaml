@@ -10993,7 +10993,10 @@ delegation:
     message's From, never Reply-To (flag reply_to_ignored), or to the people
     to names, with cc only on reply_all (minus the writer and the recipients;
     beyond 10 trimmed and flagged cc_trimmed). Asked for a reply, the
-    Executive never writes a new email instead;
+    Executive never writes a new email instead; a reply to an email with a
+    reply card waiting goes onto that card (card_drafts.from_chat, result
+    on_card) instead of a second draft, unless the card is busy, files are
+    attached or it is to be sent now;
     References from gmail.references_header — whole ids only, the parent
     last, the oldest after the root dropped to fit one header; a new email
     or a forward may go to any well-formed address (_new_recipients): it is

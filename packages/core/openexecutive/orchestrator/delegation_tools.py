@@ -71,7 +71,8 @@ GHOSTWRITE_EMAIL_TOOL: dict[str, Any] = {
         "from someone else; to answer someone else in it (\"reply to Dana\"), add "
         "`to` with their address, or `message_id` for one message, and `reply_all` "
         "to keep the others on it. When they ask for a reply, never write a new "
-        "email instead. To start a new email, pass `to` without a thread (any "
+        "email instead. A reply to an email that already has a reply waiting on its "
+        "card changes that card's reply (`on_card`) rather than making a second draft. To start a new email, pass `to` without a thread (any "
         "address; it is only a draft). To forward an email, pass `forward` (its "
         "thread_id: its latest message is forwarded, with its files, unless "
         "`forward_message_id` names an earlier one) and `to`; "
@@ -607,6 +608,10 @@ async def _draft(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> tu
     )
     if not composed.subject:
         return _error("The draft came back without a subject. Try again with a clearer intent."), False
+    if thread is not None and not attached.items and tool_input.get("send") is not True:
+        on_card = await _onto_open_card(writer, thread, plan, composed)
+        if on_card is not None:
+            return on_card, True
     draft = await writer.mailbox.create_draft(DraftSpec(
         to=plan["to"],
         cc=plan["cc"],
@@ -621,6 +626,56 @@ async def _draft(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> tu
     if getattr(draft, "skipped_attachments", 0) and "attachments_left_off" not in plan["flags"]:
         plan["flags"].append("attachments_left_off")
     return await _drafted(writer, thread, plan, composed, draft, attached=[f.name for f in attached.items]), True
+
+
+async def _onto_open_card(writer: _Writer, thread: Any, plan: dict[str, Any], composed: Any) -> str | None:
+    """A reply to an email that already has a reply card waiting (the inbox
+    watcher's) goes onto that card instead of a second draft: one reply per
+    email. None when there is no such card or it can't take the change
+    right now; the caller then saves a draft of its own."""
+    from openexecutive.delegation import card_drafts
+    from openexecutive.delegation.inbox import FOLLOW_UP_SOURCE, card_payload, open_cards
+    from openexecutive.delegation.reply_send import SendRefused
+
+    try:
+        card = next((
+            c for c in open_cards(writer.person.id)
+            if str(card_payload(c).get("thread_id") or "") == str(thread.id)
+            and card_payload(c).get("source") != FOLLOW_UP_SOURCE
+        ), None)
+    except Exception:
+        logger.warning("ghostwrite: couldn't look for a reply card on the thread", exc_info=True)
+        return None
+    if card is None:
+        return None
+    try:
+        await card_drafts.from_chat(card, writer.person, writer.mailbox, words=composed.body, to=plan["to"], cc=plan["cc"])
+    except SendRefused as refused:
+        logger.info("ghostwrite: the reply card couldn't take the change (%s); saving a draft", refused.code)
+        return None
+    flags = [*plan["flags"], *composed.flags]
+    questions = list(composed.open_questions)
+    if "asks_if_ai" in flags:
+        questions.append("They asked whether they're talking to an AI — answer that yourself.")
+    _audit(writer.person.id, f"Put a reply on person {writer.person.id}'s reply card", {
+        "thread_id": thread.id, "decision_id": card.id, "reply": True,
+        "recipients": len(plan["to"]) + len(plan["cc"]), "flags": flags,
+    })
+    return json.dumps({
+        "status": "drafted",
+        "on_card": card.id,
+        "to": plan["to"],
+        "cc": plan["cc"],
+        "subject": composed.subject,
+        "preview": composed.body[:_PREVIEW_CHARS],
+        **({"open_questions": questions} if questions else {}),
+        **({"flags": flags} if flags else {}),
+        "note": (
+            "This email already had a reply waiting on its card, so the reply there now says this, "
+            "to these people. No second draft was made and nothing was sent. Tell them it's the reply "
+            "waiting for that email, and that one tap on Send there sends it."
+        ),
+    })
 
 
 async def _attachments(writer: _Writer, tool_input: dict[str, Any]) -> Any:

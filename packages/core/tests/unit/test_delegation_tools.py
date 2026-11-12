@@ -924,3 +924,53 @@ def test_cc_goes_on_a_new_email_and_a_reply(roster: SimpleNamespace, composer: l
     assert "priya@co.example" in mailbox.drafts[1].cc and reply["status"] == "drafted"
     bad = _run(_session(mailbox), {"intent": "x", "to": [DANA], "cc": ["not an address"]})
     assert "`cc`" in bad["error"]
+
+
+# --------------------------------------------------------------------------- #
+# A reply card already waiting for the email
+# --------------------------------------------------------------------------- #
+
+
+def _waiting_card(monkeypatch: pytest.MonkeyPatch, thread_id: str = "t1") -> list[dict[str, Any]]:
+    from openexecutive.delegation import card_drafts, inbox
+
+    card = SimpleNamespace(id=81, proposed_payload_json=json.dumps({"thread_id": thread_id}))
+    monkeypatch.setattr(inbox, "open_cards", lambda person_id: [card])
+    calls: list[dict[str, Any]] = []
+
+    async def from_chat(instance: Any, person: Any, gmail: Any, **kw: Any) -> dict[str, Any]:
+        calls.append({"card": instance.id, **kw})
+        return {}
+
+    monkeypatch.setattr(card_drafts, "from_chat", from_chat)
+    return calls
+
+
+def test_a_reply_to_an_email_with_a_waiting_card_goes_onto_that_card(
+    roster: SimpleNamespace, composer: list[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _waiting_card(monkeypatch)
+    mailbox = FakeMailbox()
+    result = _run(_session(mailbox), {"intent": "Yes to Oct 5.", "thread_id": "t1", "reply_all": True})
+    assert result["status"] == "drafted" and result["on_card"] == 81
+    assert "draft_row" not in result and mailbox.drafts == []
+    assert calls[0]["card"] == 81 and calls[0]["to"] == [DANA] and calls[0]["cc"] == ["sam@northpeak.example"]
+
+
+def test_a_card_on_another_thread_or_one_that_cant_change_leaves_a_draft(
+    roster: SimpleNamespace, composer: list[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.delegation import card_drafts
+    from openexecutive.delegation.reply_send import SendRefused
+
+    _waiting_card(monkeypatch, thread_id="t9")
+    mailbox = FakeMailbox()
+    assert "on_card" not in _run(_session(mailbox), {"intent": "Yes.", "thread_id": "t1"})
+    _waiting_card(monkeypatch)
+
+    async def busy(*args: Any, **kw: Any) -> dict[str, Any]:
+        raise SendRefused(409, "busy", "busy")
+
+    monkeypatch.setattr(card_drafts, "from_chat", busy)
+    result = _run(_session(mailbox), {"intent": "Yes.", "thread_id": "t1"})
+    assert "on_card" not in result and len(mailbox.drafts) == 2
