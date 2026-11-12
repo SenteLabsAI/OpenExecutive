@@ -609,7 +609,10 @@ async def _draft(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> tu
     if not composed.subject:
         return _error("The draft came back without a subject. Try again with a clearer intent."), False
     if thread is not None and not attached.items and tool_input.get("send") is not True:
-        on_card = await _onto_open_card(writer, thread, plan, composed)
+        asked = tool_input.get("message_id")
+        on_card = await _onto_open_card(
+            writer, thread, plan, composed, message_id=asked.strip() if isinstance(asked, str) else "",
+        )
         if on_card is not None:
             return on_card, True
     draft = await writer.mailbox.create_draft(DraftSpec(
@@ -628,11 +631,21 @@ async def _draft(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> tu
     return await _drafted(writer, thread, plan, composed, draft, attached=[f.name for f in attached.items]), True
 
 
-async def _onto_open_card(writer: _Writer, thread: Any, plan: dict[str, Any], composed: Any) -> str | None:
+_CHECK_ADDRESS = (
+    "Not in their People and not typed by them: name the address and ask "
+    "them to check it before they send. They can add the person with an "
+    "approval card (propose_actions, add_contact)."
+)
+
+
+async def _onto_open_card(
+    writer: _Writer, thread: Any, plan: dict[str, Any], composed: Any, *, message_id: str = "",
+) -> str | None:
     """A reply to an email that already has a reply card waiting (the inbox
     watcher's) goes onto that card instead of a second draft: one reply per
-    email. None when there is no such card or it can't take the change
-    right now; the caller then saves a draft of its own."""
+    email. None when there is no such card, ``message_id`` names another
+    message of the thread than the card answers, or the card can't take the
+    change right now; the caller then saves a draft of its own."""
     from openexecutive.delegation import card_drafts
     from openexecutive.delegation.inbox import FOLLOW_UP_SOURCE, card_payload, open_cards
     from openexecutive.delegation.reply_send import SendRefused
@@ -647,6 +660,8 @@ async def _onto_open_card(writer: _Writer, thread: Any, plan: dict[str, Any], co
         logger.warning("ghostwrite: couldn't look for a reply card on the thread", exc_info=True)
         return None
     if card is None:
+        return None
+    if message_id and message_id != str(card_payload(card).get("message_id") or ""):
         return None
     try:
         await card_drafts.from_chat(card, writer.person, writer.mailbox, words=composed.body, to=plan["to"], cc=plan["cc"])
@@ -670,6 +685,10 @@ async def _onto_open_card(writer: _Writer, thread: Any, plan: dict[str, Any], co
         "preview": composed.body[:_PREVIEW_CHARS],
         **({"open_questions": questions} if questions else {}),
         **({"flags": flags} if flags else {}),
+        **(
+            {"not_in_people": plan["not_in_people"], "check_address": _CHECK_ADDRESS}
+            if plan.get("not_in_people") else {}
+        ),
         "note": (
             "This email already had a reply waiting on its card, so the reply there now says this, "
             "to these people. No second draft was made and nothing was sent. Tell them it's the reply "
@@ -797,11 +816,7 @@ async def _drafted(
         "flags": flags,
         "open_questions": questions,
         **(
-            {"not_in_people": plan["not_in_people"], "check_address": (
-                "Not in their People and not typed by them: name the address and ask "
-                "them to check it before they send. They can add the person with an "
-                "approval card (propose_actions, add_contact)."
-            )}
+            {"not_in_people": plan["not_in_people"], "check_address": _CHECK_ADDRESS}
             if plan.get("not_in_people") else {}
         ),
         "note": (

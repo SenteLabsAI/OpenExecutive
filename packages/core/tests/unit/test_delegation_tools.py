@@ -931,10 +931,12 @@ def test_cc_goes_on_a_new_email_and_a_reply(roster: SimpleNamespace, composer: l
 # --------------------------------------------------------------------------- #
 
 
-def _waiting_card(monkeypatch: pytest.MonkeyPatch, thread_id: str = "t1") -> list[dict[str, Any]]:
+def _waiting_card(
+    monkeypatch: pytest.MonkeyPatch, thread_id: str = "t1", message_id: str = "m1",
+) -> list[dict[str, Any]]:
     from openexecutive.delegation import card_drafts, inbox
 
-    card = SimpleNamespace(id=81, proposed_payload_json=json.dumps({"thread_id": thread_id}))
+    card = SimpleNamespace(id=81, proposed_payload_json=json.dumps({"thread_id": thread_id, "message_id": message_id}))
     monkeypatch.setattr(inbox, "open_cards", lambda person_id: [card])
     calls: list[dict[str, Any]] = []
 
@@ -974,3 +976,23 @@ def test_a_card_on_another_thread_or_one_that_cant_change_leaves_a_draft(
     monkeypatch.setattr(card_drafts, "from_chat", busy)
     result = _run(_session(mailbox), {"intent": "Yes.", "thread_id": "t1"})
     assert "on_card" not in result and len(mailbox.drafts) == 2
+
+
+def test_naming_another_message_than_the_card_answers_leaves_a_draft(
+    roster: SimpleNamespace, composer: list[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _waiting_card(monkeypatch, message_id="m0")
+    mailbox = FakeMailbox()
+    result = _run(_session(mailbox), {"intent": "Yes.", "thread_id": "t1", "message_id": "m1"})
+    assert "on_card" not in result and len(mailbox.drafts) == 1 and calls == []
+    _waiting_card(monkeypatch, message_id="m1")
+    assert _run(_session(mailbox), {"intent": "Yes.", "thread_id": "t1", "message_id": "m1"})["on_card"] == 81
+
+
+def test_a_reply_on_the_card_to_someone_new_says_to_check_the_address(
+    roster: SimpleNamespace, composer: list[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _waiting_card(monkeypatch)
+    result = _run(_session(FakeMailbox()), {"intent": "Yes.", "thread_id": "t1", "to": ["stranger@else.example"]})
+    assert result["on_card"] == 81
+    assert result["not_in_people"] == ["stranger@else.example"] and "check it" in result["check_address"]
