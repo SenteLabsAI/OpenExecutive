@@ -6,8 +6,9 @@
 // the browser has its own speech recognition (Chrome, Edge, Safari), the
 // words show up while the person talks (`onLive`); when they stop, the
 // recording is written out as before and that version replaces the live
-// words. Without it (Firefox) the words come after stopping. Hidden when
-// speech to text isn't set up or the browser can't record.
+// words. Without it (Firefox), and on Android, the words come after
+// stopping. Hidden when speech to text isn't set up or the browser can't
+// record.
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
@@ -130,16 +131,15 @@ export default function MicButton({ disabled, onLive, onText, onError }: Props) 
   // a pause or a minute, so it starts again (keeping what it had, a little
   // later each time) until the recording stops. An error other than silence
   // ends live words for this recording; the words still come when it stops.
+  // Not on Android: there the phone gives the microphone to one listener at
+  // a time, so while its recognition runs the recording is silent and the
+  // words written out at the end are lost.
   const listen = useCallback(() => {
     const Ctor = browserRecognition();
-    if (!Ctor || !onLive) return;
+    if (!Ctor || !onLive || /Android/i.test(navigator.userAgent)) return;
     let earlier = "";
     let restarts = 0;
-    // Chrome on Android plays its own sound each time recognition starts,
-    // so there it runs once: after a long pause the rest comes on stop.
-    // It also repeats earlier words in each piece it sends.
-    const android = /Android/i.test(navigator.userAgent);
-    const maxRestarts = android ? 0 : 20;
+    const maxRestarts = 20;
     let failed = false;
     wantLiveRef.current = true;
     const begin = () => {
@@ -157,7 +157,7 @@ export default function MicButton({ disabled, onLive, onText, onError }: Props) 
       let latest = earlier;
       rec.onresult = (e) => {
         const parts = Array.from(e.results, (r) => ({ transcript: r[0]?.transcript ?? "", isFinal: r.isFinal }));
-        const { settled, pending } = splitHeard(earlier, parts, android);
+        const { settled, pending } = splitHeard(earlier, parts);
         latest = joinDictation(settled, pending);
         heardRef.current = latest;
         onLive(settled, pending);

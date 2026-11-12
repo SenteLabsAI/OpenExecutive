@@ -44,23 +44,7 @@ test("live words: settled ones follow what came before, the latest guess stays a
   assert.deepEqual(splitHeard("", []), { settled: "", pending: "" });
 });
 
-test("live words from Chrome on Android, which repeats what came before, don't repeat", () => {
-  const parts = [
-    { transcript: "move the", isFinal: true },
-    { transcript: "move the board prep", isFinal: true },
-    { transcript: "move the board prep to Thursday", isFinal: false },
-  ];
-  assert.deepEqual(splitHeard("", parts, true), { settled: "", pending: "move the board prep to Thursday" });
-  assert.deepEqual(splitHeard("", parts.slice(0, 2), true), { settled: "move the board prep", pending: "" });
-  assert.deepEqual(splitHeard("", [{ transcript: "the", isFinal: true }, { transcript: "theory", isFinal: true }], true), {
-    settled: "the theory",
-    pending: "",
-  });
-  assert.deepEqual(splitHeard("", [{ transcript: "hello", isFinal: true }, { transcript: "Hello, how are you", isFinal: false }], true), {
-    settled: "",
-    pending: "Hello, how are you",
-  });
-  // Desktop sends only new words, so a repeated word is kept.
+test("a repeated word is kept", () => {
   const desktop = [
     { transcript: "very", isFinal: true },
     { transcript: " very good", isFinal: true },
