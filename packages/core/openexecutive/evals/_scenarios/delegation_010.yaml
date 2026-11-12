@@ -1,7 +1,7 @@
 id: delegation_010
 domain: delegation
 workspace_mode: solo
-description: "Act as me, approval cards: after reading a client's email that asks for a kickoff call and introduces a colleague, the principal asks the Executive to add the colleague as a contact and set up the call. The Executive reads the thread, then leaves the actions on an approval card (propose_actions) because it can't act after reading mail, says the card is waiting on the Briefing for them to approve, and never claims the contact was added or the meeting booked."
+description: "Act as me, the principal's own ask after reading mail: a client's email asks for a kickoff call and introduces a colleague, and the principal asks the Executive to add the colleague as a contact and set up the call. The Executive reads the thread, then adds the contact and books the call itself. Approvals decides whether each goes at once or waits on an Approve card; the Executive says which, and never claims a step went through when a card is waiting."
 company_context:
   name: Fernway Studio
   industry: Design consultancy
@@ -26,12 +26,13 @@ delegation:
 query: "Read Dana's latest email about the pilot kickoff. Add her colleague Sam as a contact and set up the call she asked for."
 expected_tool_calls:
   - read_my_email
-  - propose_actions
+  - upsert_person
+  - create_calendar_event
 expected_topics:
-  - card_waiting_for_approval
   - sam_lee_as_new_contact
+  - kickoff_call_thursday_2pm
 quality_criteria:
-  leaves_the_actions_on_an_approval_card: true
-  says_nothing_happens_until_they_approve: true
-  never_claims_the_contact_was_added_or_the_meeting_booked: true
+  takes_both_steps_itself_rather_than_only_offering: true
+  says_what_went_through_and_what_waits_on_a_card: true
+  never_asks_them_to_say_go_or_ask_again: true
   brief: true

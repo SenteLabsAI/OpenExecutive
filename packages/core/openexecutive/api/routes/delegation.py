@@ -119,13 +119,10 @@ Routes:
                                     too_many / no_profile
   PUT    /delegation/voice        — edit fields, lock / unlock
   DELETE /delegation/voice        — forget it (history kept)
-  PUT    /delegation/team         — {enabled}: the owner's "Let team members
-                                    use Act as me" (principal only; 409
-                                    ``not_available`` unless the install
-                                    allows it, ``DELEGATION_TEAM_MEMBERS``)
 
-``GET /delegation`` gives the principal ``team`` while the install allows it:
-the switch and, for each team member who has it on, counts only — drafts
+Every team member may use Act as me for themselves; Approvals decides what
+runs. ``GET /delegation`` gives the principal ``team``: for each team member
+who has it on, counts only — drafts
 saved and sent in the last 30 days, never what they said or to whom. A team
 member's own mail, cards and rows are theirs alone.
 
@@ -158,9 +155,6 @@ from openexecutive.delegation.settings import (
     is_enabled,
     local_login,
     set_enabled,
-    set_team_members,
-    team_members_available,
-    team_members_switch,
 )
 from openexecutive.delegation.voice import (
     DESCRIPTION_MAX_CHARS,
@@ -335,11 +329,6 @@ class DelegationOut(BaseModel):
     # allows it; None for anyone else.
     team: TeamOut | None = None
 
-
-class TeamUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: bool
 
 
 class InboxUpdate(BaseModel):
@@ -689,14 +678,13 @@ def _inbox_out(person_id: int) -> InboxOut:
 
 
 def _team_out(person: Person) -> TeamOut | None:
-    """The owner's switch and each team member's counts, for the principal
-    while the install allows it; None otherwise."""
+    """Each team member's counts, for the principal; None otherwise."""
     from datetime import UTC, datetime, timedelta
 
     from openexecutive.delegation import drafts, inbox
     from openexecutive.people.store import get_person
 
-    if not person.is_principal or not team_members_available():
+    if not person.is_principal:
         return None
     since = datetime.now(UTC) - timedelta(days=30)
     members: list[TeamMemberUse] = []
@@ -716,7 +704,7 @@ def _team_out(person: Person) -> TeamOut | None:
             person_id=person_id, name=member.full_name or member.email or f"Person {person_id}",
             enabled=True, inbox=watching, drafts_30d=drafted, sent_30d=sent,
         ))
-    return TeamOut(enabled=team_members_switch(), members=members)
+    return TeamOut(enabled=True, members=members)
 
 
 def _one_status_check(route: Any) -> Any:
@@ -876,28 +864,6 @@ async def update_delegation(request: Request, body: DelegationUpdate) -> Delegat
             "delegation_settings_changed",
             f"As you turned {'on' if body.enabled else 'off'} by person {person_id}",
             {"person_id": person_id, "enabled": body.enabled},
-        )
-    return await _state(person)
-
-
-@router.put("/delegation/team", response_model=DelegationOut)
-async def update_delegation_team(request: Request, body: TeamUpdate) -> DelegationOut:
-    """The owner's "Let team members use Act as me". Off takes it away from
-    every team member from their next message (``can_delegate``), and their
-    inbox watchers stop at their next check; their own switches, drafts and
-    cards are kept for if it is turned on again."""
-    person = _caller(request)
-    person_id = _person_id(person)
-    if not person.is_principal:
-        raise _refuse(403, "principal_only", "Only the account owner can change this.")
-    if not team_members_available():
-        raise _refuse(409, "not_available", "As you for team members isn't available on this install.")
-    if team_members_switch() != body.enabled:
-        set_team_members(body.enabled, updated_by=f"person:{person_id}")
-        _audit(
-            "delegation_settings_changed",
-            f"As you for team members turned {'on' if body.enabled else 'off'} by person {person_id}",
-            {"person_id": person_id, "team_members": body.enabled},
         )
     return await _state(person)
 

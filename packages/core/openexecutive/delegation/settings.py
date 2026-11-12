@@ -5,10 +5,9 @@ themselves (``PUT /delegation``), and nobody turns it on for anyone else.
 Absent, unreadable or off all mean off.
 
 **Who may have it.** ``can_delegate`` is the single rule: the principal, and
-a team member (not a contact, not archived) once the owner has let team
-members use it (``team_members_enabled``: the ``DELEGATION_TEAM_MEMBERS``
-install setting makes the owner's switch available, and the owner's switch in
-``delegation_team`` turns it on). Each still turns it on for themselves.
+a team member (not a contact, not archived). Each turns it on for
+themselves; there is no switch above that (``delegation_team`` keeps an old
+install's stored switch, no longer read).
 Everything else here is keyed by person. What a teammate's mailbox touches is
 private to *that* person, not to the principal: audit rows carry
 ``private_to_person`` (``audit.rows_for_person``), a reply card is its
@@ -59,7 +58,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from openexecutive.delegation.schema import SETTINGS_TABLE, TEAM_TABLE, ensure_schema
+from openexecutive.delegation.schema import SETTINGS_TABLE, ensure_schema
 from openexecutive.utils.deployment import is_local_login as local_login
 
 if TYPE_CHECKING:
@@ -160,75 +159,14 @@ _TURN: contextvars.ContextVar[TurnDelegation | None] = contextvars.ContextVar(
 
 
 def can_delegate(person: Person | None) -> bool:
-    """Whether ``person`` may turn Act as me on for themselves: a non-archived
-    team member who is the principal, or any other one once the owner has let
-    team members use it (``team_members_enabled``). Never a contact."""
-    if not (
+    """Whether ``person`` may turn Act as me on for themselves: any
+    non-archived team member. Never a contact."""
+    return bool(
         person is not None
         and person.id is not None
         and not person.archived
         and person.kind == "team"
-    ):
-        return False
-    return bool(person.is_principal) or team_members_enabled()
-
-
-def team_members_available() -> bool:
-    """Whether this install lets the owner turn it on for team members
-    (``DELEGATION_TEAM_MEMBERS``). Never raises."""
-    try:
-        from openexecutive.config import get_settings
-
-        return bool(get_settings().delegation_team_members)
-    except Exception:
-        logger.warning("delegation: couldn't read the team-members setting — treating it as off", exc_info=True)
-        return False
-
-
-def team_members_switch(*, db_path: Path | None = None) -> bool:
-    """The owner's "Let team members use Act as me", as stored. Never raises:
-    a missing file, table or row, or any read error, is off (logged)."""
-    path = _resolve_db_path(db_path)
-    if not path.exists():
-        return False
-    try:
-        conn = sqlite3.connect(str(path))
-        try:
-            row = conn.execute(f"SELECT enabled FROM {TEAM_TABLE} WHERE id = 1").fetchone()  # noqa: S608 — constant table name
-        finally:
-            conn.close()
-    except sqlite3.OperationalError as exc:
-        if "no such table" not in str(exc):
-            logger.warning("delegation: could not read the team switch (%s) — treating it as off", exc)
-        return False
-    except Exception:
-        logger.warning("delegation: could not read the team switch — treating it as off", exc_info=True)
-        return False
-    return bool(row is not None and row[0])
-
-
-def team_members_enabled(*, db_path: Path | None = None) -> bool:
-    """Whether team members may have it: the install allows it and the owner
-    turned it on. Never raises."""
-    return team_members_available() and team_members_switch(db_path=db_path)
-
-
-def set_team_members(enabled: bool, *, updated_by: str, db_path: Path | None = None) -> None:
-    """Store the owner's switch. Callers authorize first (the route)."""
-    now = datetime.now(UTC).isoformat()
-    conn = sqlite3.connect(str(_resolve_db_path(db_path)))
-    try:
-        ensure_schema(conn)
-        conn.execute(
-            f"INSERT INTO {TEAM_TABLE} (id, enabled, updated_at, updated_by) "  # noqa: S608 — constant table name
-            "VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET "
-            "enabled = excluded.enabled, updated_at = excluded.updated_at, "
-            "updated_by = excluded.updated_by",
-            (1 if enabled else 0, now, updated_by),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    )
 
 
 def enabled_person_ids(*, db_path: Path | None = None) -> list[int]:
@@ -331,8 +269,6 @@ def enabled_for_install() -> bool:
     principal = _principal()
     if can_delegate(principal) and is_enabled(principal.id if principal else None):
         return True
-    if not team_members_enabled():
-        return False
     try:
         from openexecutive.people.store import get_person
 

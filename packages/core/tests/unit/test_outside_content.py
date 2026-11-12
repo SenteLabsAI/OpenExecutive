@@ -638,7 +638,7 @@ def test_someone_added_this_turn_gets_no_dm_or_invite() -> None:
         assert held is not None and "added to People" in json.loads(held)["error"]
         sent = json.loads(await schedule_tools.message_person({"person_id": pid, "text": "hi"}))
         assert "added to People" in sent["error"]
-        booked = calendar_tools._resolve_attendees([pid], include_principal=False, max_attendees=5)
+        booked = calendar_tools._resolve_attendees([pid], include_principal=False)
         assert isinstance(booked, dict) and "added to People" in booked["error"]
         oc.end_turn(state)
 

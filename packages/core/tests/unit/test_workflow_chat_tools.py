@@ -206,40 +206,6 @@ async def test_a_workflow_cannot_start_itself_or_nest_too_deep(
     assert ct._chain.get() == ()
 
 
-@pytest.mark.asyncio
-async def test_a_team_members_workflow_goes_through_their_department_gate(
-    monkeypatch: pytest.MonkeyPatch, fake_session: list[str]
-) -> None:
-    member = SimpleNamespace(id=7, is_principal=False, kind="team")
-    monkeypatch.setattr(
-        "openexecutive.people.store.get_person", lambda pid: member if pid == 7 else None
-    )
-    gated: list[Any] = []
-
-    def gated_handlers(handlers: dict[str, Any], person: Any, *, session_id: str | None = None) -> Any:
-        gated.append((person, session_id))
-
-        async def refused(tool_input: dict[str, Any]) -> str:
-            return "held for the department head"
-
-        return {name: refused for name in handlers}
-
-    monkeypatch.setattr(
-        "openexecutive.orchestrator.department_gate.gated_handlers", gated_handlers
-    )
-
-    async def message_person(tool_input: dict[str, Any]) -> str:
-        return "sent"
-
-    _handlers(monkeypatch, message_person=message_person)
-    with ct.in_workflow("wf", 7):
-        assert await ct.run_chat_tool("message_person", {}) == "held for the department head"
-    assert gated == [(member, "wf-session")]
-    # The principal's own workflow (no creator on record) is not gated.
-    assert await ct.run_chat_tool("message_person", {}) == "sent"
-    assert len(gated) == 1
-
-
 # ── In an action step ────────────────────────────────────────────────────────
 
 

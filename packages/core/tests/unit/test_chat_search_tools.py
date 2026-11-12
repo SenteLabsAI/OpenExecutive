@@ -21,7 +21,6 @@ from openexecutive.delegation import settings as dsettings
 from openexecutive.delegation.settings import (
     DelegationOverride,
     pin_turn_delegation,
-    set_team_members,
 )
 from openexecutive.memory import episodic, session_store
 from openexecutive.orchestrator import chat_search_tools as cs
@@ -67,8 +66,6 @@ def roster(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     principal = people_store.upsert_person(full_name="Olivia Owner", is_principal=True, email=OWNER)
     teammate = people_store.upsert_person(full_name="Ben Teammate", email=TEAM)
     people_registry.invalidate()
-    monkeypatch.setattr(dsettings, "team_members_available", lambda: True)
-    set_team_members(True, updated_by="test")
     return SimpleNamespace(principal=principal, teammate=teammate)
 
 

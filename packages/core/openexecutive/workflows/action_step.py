@@ -771,8 +771,10 @@ async def run_action_step(
     from openexecutive.delegation import workflow_reads
 
     # A workflow that reads its creator's mail is locked down for all of its
-    # steps (delegation.workflow_reads): checked again here, and no scripts.
+    # steps below Hands-off (delegation.workflow_reads): checked again here,
+    # and no scripts.
     reads_mail, refused = workflow_reads.run_rules(workflow_name)
+    reads_mail = reads_mail and not workflow_reads.hands_off()
     if refused is not None:
         yield ("error", f"step {step.id!r} cannot run: {refused}")
         return

@@ -383,16 +383,15 @@ def test_one_reply_on_its_own_per_conversation_a_day(owner: Any, models: dict[st
     assert inbox.open_cards(owner.id)[0].gate_mode == "propose"
 
 
-def test_the_daily_limit_holds(owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+def test_there_is_no_daily_limit(owner: Any, models: dict[str, Any]) -> None:
     _on(owner)
-    monkeypatch.setenv("DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY", "1")
     mailbox = FakeInbox()
     mailbox.add(_msg("m1", "t1"), _msg("m2", "t2", sender="lee@co.example", name="Lee", minutes_ago=40))
     people_store.upsert_person(full_name="Lee", email="lee@co.example", kind="contact")
     people_registry.invalidate()
     result = _scan(owner, mailbox)
-    assert result.drafted == 2 and result.handled == 1
-    assert len(mailbox.sent) == 1
+    assert result.drafted == 2 and result.handled == 2
+    assert len(mailbox.sent) == 2
 
 
 def test_turning_it_off_before_the_send_leaves_the_card(
@@ -513,7 +512,6 @@ def test_a_plain_reply_passes(switched_on: Any) -> None:
     # The Executive's own address is never a recipient of a reply sent as them.
     ({"cc": ["exec@co.example"]}, "recipients"),
     # Long replies say more than an acknowledgement should.
-    ({"body": "word " * 1000}, "long"),
     # Anything the writer flagged.
     ({"flags": ["asks_if_ai"]}, "flagged"),
     ({"flags": ["names_the_executive"]}, "flagged"),

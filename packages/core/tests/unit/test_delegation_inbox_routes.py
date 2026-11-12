@@ -24,6 +24,8 @@ from .test_delegation_inbox import NOW, FakeInbox, _msg
 
 OWNER = {"x-caller-email": "olivia@co.example"}
 TEAMMATE = {"x-caller-email": "ben@co.example"}
+# Someone not on the team: Act as me answers only the team.
+NOT_ON_TEAM = {"x-caller-email": "nobody@x.example"}
 
 
 @pytest.fixture(autouse=True)
@@ -83,7 +85,7 @@ def test_the_switch_needs_act_as_me_and_gmail(client: TestClient, ids: dict[str,
     assert body["inbox"]["enabled"] is True and body["inbox"]["status"] == "waiting"
     assert client.get("/delegation", headers=OWNER).json()["inbox"]["watch_since"] is not None
     # Only the owner, for themselves.
-    assert client.put("/delegation/inbox", json={"enabled": True}, headers=TEAMMATE).status_code == 403
+    assert client.put("/delegation/inbox", json={"enabled": True}, headers=NOT_ON_TEAM).status_code == 403
 
 
 def test_act_as_me_off_turns_the_watcher_off_too(client: TestClient, ids: dict[str, int]) -> None:
@@ -144,11 +146,11 @@ def test_the_cards_are_the_owners_alone(
     card = cards[0]
     assert card["from_email"] == "dana@northpeak.example" and card["draft_to"] == ["dana@northpeak.example"]
     assert card["gmail_link"].startswith("https://mail.google.com/")
-    assert client.get("/delegation/replies", headers=TEAMMATE).status_code == 403
+    assert client.get("/delegation/replies", headers=NOT_ON_TEAM).status_code == 403
     # Nor can anyone else find it through /decisions.
-    assert client.get("/decisions", params={"decision_class": "delegation_reply"}, headers=TEAMMATE).json() == []
-    assert client.get(f"/decisions/{card_id}", headers=TEAMMATE).status_code == 404
-    assert client.post(f"/decisions/{card_id}/reject", json={}, headers=TEAMMATE).status_code == 404
+    assert client.get("/decisions", params={"decision_class": "delegation_reply"}, headers=NOT_ON_TEAM).json() == []
+    assert client.get(f"/decisions/{card_id}", headers=NOT_ON_TEAM).status_code == 404
+    assert client.post(f"/decisions/{card_id}/reject", json={}, headers=NOT_ON_TEAM).status_code == 404
 
 
 def test_dismiss_through_decisions_deletes_the_unedited_draft(
@@ -230,7 +232,7 @@ def test_keeping_replies_in_the_mailbox_is_the_callers_own_choice_and_off_by_def
     body = client.put("/delegation/inbox", json={"mailbox_drafts": True}, headers=OWNER).json()
     assert body["inbox"]["mailbox_drafts"] is True and body["inbox"]["enabled"] is True
     assert client.put("/delegation/inbox", json={}, headers=OWNER).status_code == 422
-    assert client.put("/delegation/inbox", json={"mailbox_drafts": True}, headers=TEAMMATE).status_code == 403
+    assert client.put("/delegation/inbox", json={"mailbox_drafts": True}, headers=NOT_ON_TEAM).status_code == 403
     assert inbox.get_watch(ids["teammate"]).mailbox_drafts is False
 
 
@@ -244,7 +246,7 @@ def test_changing_a_replys_words_on_its_card(
     resp = client.put(url, json={"text": "Friday at 10 works."}, headers=OWNER)
     assert resp.status_code == 409 and resp.json()["detail"]["code"] == "caller_signing_required"
     monkeypatch.setenv("OE_LOCAL_LOGIN", "1")
-    assert client.put(url, json={"text": "Friday at 10 works."}, headers=TEAMMATE).status_code == 403
+    assert client.put(url, json={"text": "Friday at 10 works."}, headers=NOT_ON_TEAM).status_code == 403
     resp = client.put(url, json={"text": "Friday at 10 works."}, headers=OWNER)
     assert resp.status_code == 200 and resp.json()["draft_body"] == "Friday at 10 works."
     # It was in their Drafts too (this test's setting): changed there as well.
@@ -264,7 +266,7 @@ def test_choosing_who_a_reply_goes_to(
     # New to them: it starts with the sender alone, and they can add the others.
     card = client.get("/delegation/replies", headers=OWNER).json()["cards"][0]
     assert card["reply_others"] == ["ben@northpeak.example"] and card["draft_to"] == [sender]
-    assert client.put(url, json={"everyone": True}, headers=TEAMMATE).status_code == 403
+    assert client.put(url, json={"everyone": True}, headers=NOT_ON_TEAM).status_code == 403
     resp = client.put(url, json={"everyone": True}, headers=OWNER)
     assert resp.status_code == 200 and resp.json()["draft_to"] == [sender, "ben@northpeak.example"]
     assert mailbox.drafts["d1"].message.cc == ["ben@northpeak.example"]
@@ -299,7 +301,7 @@ def test_view_an_email_from_home(client: TestClient, ids: dict[str, int], monkey
     missing = client.get("/delegation/mail", params={"thread_id": "t1", "message_id": "x"}, headers=OWNER)
     assert missing.status_code == 404
     # Someone without Act as me reads nothing.
-    assert client.get("/delegation/mail", params={"thread_id": "t1", "message_id": "m1"}, headers=TEAMMATE).status_code == 403
+    assert client.get("/delegation/mail", params={"thread_id": "t1", "message_id": "m1"}, headers=NOT_ON_TEAM).status_code == 403
 
 
 def test_reply_from_home_makes_a_card(client: TestClient, ids: dict[str, int], monkeypatch: pytest.MonkeyPatch) -> None:

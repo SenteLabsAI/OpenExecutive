@@ -319,7 +319,7 @@ def test_persona_contains_departments_addendum() -> None:
     blocks = build_system_blocks()
     persona = blocks[0]["text"]
     assert "Departments & Org Coordination" in persona
-    assert "authority_level" in persona
+    assert "Approvals" in persona
 
 
 def test_org_block_includes_person_contact_channels() -> None:

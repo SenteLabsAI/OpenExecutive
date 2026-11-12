@@ -192,7 +192,7 @@ def test_an_acting_turn_runs_a_change_inside_open_executive(roster: SimpleNamesp
     assert json.loads(_results(provider)["tu-1"]) == {"status": "remembered"}
 
 
-def test_the_gateway_still_refuses_a_send_on_an_acting_turn(roster: SimpleNamespace) -> None:
+def test_the_gateway_puts_a_send_on_a_card_on_an_acting_turn(roster: SimpleNamespace) -> None:
     gateway, reached = _real_gateway()
 
     async def _go() -> str:
@@ -202,7 +202,7 @@ def test_the_gateway_still_refuses_a_send_on_an_acting_turn(roster: SimpleNamesp
                 "arguments": {"to": "ben@co.example", "subject": "s", "body": "b"},
             }))
 
-    assert MCP_CLIENT_ACTING_REFUSAL in json.loads(asyncio.run(_go()))["error"]
+    assert json.loads(asyncio.run(_go()))["status"] == "waiting_for_approval"
     assert reached == []
 
 

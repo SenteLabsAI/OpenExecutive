@@ -699,6 +699,9 @@ def _cap_reason(person_id: int, message: Any, relation: str, now: datetime, db_p
     return None
 
 
+# What an asked-for draft's slot is taken against: nothing holds it.
+_NO_CAP = 10**9
+
 # Limits that hold for the rest of the scan, not just this sender.
 _SCAN_STOPPING_LIMITS = frozenset({"classify_limit", "inbox_limit", "daily_limit", "uncountable"})
 
@@ -1350,7 +1353,10 @@ async def _draft_card(
 
     email = (person.email or "").strip().lower()
     settings = get_settings()
-    if caps.reserve(person.id, settings.delegation_max_drafts_per_day) is not None:
+    # The person asked for this one (Home's Reply): no daily limit holds it,
+    # though it still counts toward the watcher's own.
+    daily_cap = settings.delegation_max_drafts_per_day if not asked else _NO_CAP
+    if caps.reserve(person.id, daily_cap) is not None:
         # Chat took the day's last draft while this one was being read: it
         # waits for a later scan, like any message a limit holds back.
         _retry_later(person.id, message.id, "daily_limit", count=False)
@@ -1512,8 +1518,6 @@ async def draft_on_request(
     on_thread = next((c for c in cards if card_payload(c).get("thread_id") == thread_id), None)
     if on_thread is not None:
         return int(on_thread.id)
-    if len(cards) >= OPEN_CARDS_MAX:
-        return "backlog_full"
     client = gmail if gmail is not None else gmail_for(email)
     try:
         thread = await client.get_thread(thread_id)

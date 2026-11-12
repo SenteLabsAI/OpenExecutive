@@ -490,10 +490,10 @@ def _sessions(r: SimpleNamespace) -> dict[str, Session | None]:
     ("principal_slack", True),
     ("email_poller", False),
     ("unattended", False),
-    ("teammate_web", False),
-    ("teammate_slack", False),
+    ("teammate_web", True),
+    ("teammate_slack", True),
 ])
-def test_email_to_a_contact_only_on_the_principals_turn(
+def test_email_to_a_contact_only_on_the_teams_turn(
     roster: SimpleNamespace, surface: str, allowed: bool
 ) -> None:
     out, sent = _send(CONTACT_EMAIL, _sessions(roster)[surface])
@@ -533,9 +533,9 @@ def test_with_no_turn_a_stranger_is_refused_with_the_roster_message(roster: Simp
 
 
 @pytest.mark.parametrize(("surface", "allowed"), [
-    ("principal_web", True), ("teammate_web", False), ("unattended", False),
+    ("principal_web", True), ("teammate_web", True), ("unattended", False),
 ])
-def test_calendar_invite_to_a_contact_only_on_the_principals_turn(
+def test_calendar_invite_to_a_contact_only_on_the_teams_turn(
     roster: SimpleNamespace, surface: str, allowed: bool
 ) -> None:
     args = {"action": "create", "summary": "Kickoff", "attendees": [CONTACT_EMAIL]}
@@ -567,12 +567,12 @@ def test_grant_lets_a_principal_action_outside_a_turn_reach_contacts(roster: Sim
     assert contacts_reachable_now() is False
 
 
-@pytest.mark.parametrize(("surface", "ok"), [("principal_web", True), ("teammate_web", False)])
+@pytest.mark.parametrize(("surface", "ok"), [("principal_web", True), ("teammate_web", True), ("email_poller", False)])
 def test_calendar_attendee_resolution(roster: SimpleNamespace, surface: str, ok: bool) -> None:
     from openexecutive.orchestrator.calendar_tools import _resolve_attendees
 
     with _turn(_sessions(roster)[surface]):
-        resolved = _resolve_attendees([roster.teammate, roster.contact], False, 5)
+        resolved = _resolve_attendees([roster.teammate, roster.contact], False)
     if ok:
         assert resolved == ([TEAM_EMAIL, CONTACT_EMAIL], [roster.teammate, roster.contact])
     else:
@@ -1034,10 +1034,8 @@ def _non_principal_sessions(r: SimpleNamespace) -> dict[str, Session | None]:
     }
 
 
-@pytest.mark.parametrize("surface", [
-    "teammate_web", "teammate_slack", "principal_by_email", "unattended",
-])
-def test_list_people_tool_hides_contacts_off_the_principals_turn(
+@pytest.mark.parametrize("surface", ["principal_by_email", "unattended"])
+def test_list_people_tool_hides_contacts_off_the_teams_turn(
     roster: SimpleNamespace, surface: str
 ) -> None:
     from openexecutive.orchestrator.people_tools import handle_list_people
@@ -1054,8 +1052,20 @@ def test_list_people_tool_hides_contacts_off_the_principals_turn(
 def test_lookup_person_hint_does_not_mention_contacts(roster: SimpleNamespace) -> None:
     from openexecutive.orchestrator.schedule_tools import handle_lookup_person
 
-    out = _tool(handle_lookup_person, {"query": "Jordan"}, _non_principal_sessions(roster)["teammate_web"])
+    out = _tool(handle_lookup_person, {"query": "Jordan"}, _non_principal_sessions(roster)["principal_by_email"])
     assert out["matches"] == [] and "contact" not in out["hint"]
+
+
+def test_a_teammate_on_their_own_turn_reaches_contacts(roster: SimpleNamespace) -> None:
+    """Contacts are the team's: a teammate on a verified surface lists and
+    looks them up like the owner does."""
+    from openexecutive.orchestrator.people_tools import handle_list_people
+    from openexecutive.orchestrator.schedule_tools import handle_lookup_person
+
+    session = _non_principal_sessions(roster)["teammate_web"]
+    names = {p["full_name"] for p in _tool(handle_list_people, {}, session)["people"]}
+    assert "Jordan Client" in names
+    assert _tool(handle_lookup_person, {"query": "Jordan"}, session)["matches"]
 
 
 @pytest.mark.parametrize(("session_key", "expected"), [
@@ -1118,7 +1128,7 @@ def test_a_contact_reads_as_unknown_to_a_raw_dm_off_the_principals_turn(
 ) -> None:
     from openexecutive.orchestrator import schedule_tools
 
-    with _turn(_non_principal_sessions(roster)["teammate_web"]):
+    with _turn(_non_principal_sessions(roster)["principal_by_email"]):
         recovered = schedule_tools._recover_channel_id_from_person_id(str(roster.contact), "telegram")
         on_roster = schedule_tools._dm_recipient_on_roster(
             people_store.find_person_by_telegram_chat_id, "6002"
@@ -1560,7 +1570,7 @@ def test_a_private_turn_messages_the_principal_and_nobody_else(
             people_store.find_person_by_telegram_chat_id, "5002")
         gate_principal = schedule_tools._dm_recipient_on_roster(
             people_store.find_person_by_telegram_chat_id, "5001")
-        invite = calendar_tools._resolve_attendees([roster.teammate], False, 5)
+        invite = calendar_tools._resolve_attendees([roster.teammate], False)
         slack = json.loads(asyncio.run(schedule_tools.handle_send_slack_dm(
             {"user_id": "U_BEN", "text": "Jordan emailed"})))
     assert to_teammate == {"error": PRIVATE_TURN_REFUSAL}
@@ -1811,11 +1821,11 @@ def test_ask_about_someone_who_shares_their_work_style(
     assert off["shared"] is False and "Olivia hasn't chosen to share" in off["note"]
 
 
-def test_a_shared_answer_never_names_the_principals_contacts(
+def test_a_shared_answer_may_name_contacts_to_the_team(
     roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Sharing the principal's work style doesn't open their contacts: a
-    question naming one isn't asked, an answer naming one is withheld."""
+    """Contacts are the team's: a teammate's question naming one is asked,
+    and an answer naming one is given."""
     from openexecutive.memory import history, workspace_settings
     from openexecutive.orchestrator import people_tools
 
@@ -1827,12 +1837,8 @@ def test_a_shared_answer_never_names_the_principals_contacts(
 
     named = _tool(people_tools.handle_ask_about_person,
                   {"person_id": roster.principal, "question": "What is she doing with Jordan Client?"}, teammate)
-    assert named["answer"] == "" and named["found"] is False
-    assert chat.await_count == 0
-
-    leaked = _tool(people_tools.handle_ask_about_person,
-                   {"person_id": roster.principal, "question": "What is she focused on?"}, teammate)
-    assert leaked["answer"] == "" and "outside what this person shares" in leaked["note"]
+    assert "Jordan Client" in named["answer"]
+    assert chat.await_count == 1
 
     # The principal asking about themselves sees their own memory as it is.
     own = _tool(people_tools.handle_ask_about_person,
@@ -1840,16 +1846,15 @@ def test_a_shared_answer_never_names_the_principals_contacts(
     assert "Jordan Client" in own["answer"]
 
 
-def test_not_shared_names_only_team_members(roster: SimpleNamespace) -> None:
-    """A contact reads exactly like an unknown id, so asking can't confirm one
-    exists or learn their name."""
+def test_off_the_teams_turn_a_contact_reads_like_an_unknown_id(roster: SimpleNamespace) -> None:
+    """Off the team's own turn a contact reads exactly like an unknown id, so
+    asking can't confirm one exists or learn their name."""
     from openexecutive.orchestrator import people_tools
 
-    teammate = Session(from_web_chat=True, caller_person_id=roster.teammate)
-    contact = _tool(people_tools.handle_ask_about_person, {"person_id": roster.contact, "question": "?"}, teammate)
-    unknown = _tool(people_tools.handle_ask_about_person, {"person_id": 99999, "question": "?"}, teammate)
-    assert contact["note"] == unknown["note"]
-    assert contact["note"].startswith("This person")
+    by_email = Session(session_id="email:t1", caller_person_id=roster.principal)
+    contact = _tool(people_tools.handle_ask_about_person, {"person_id": roster.contact, "question": "?"}, by_email)
+    unknown = _tool(people_tools.handle_ask_about_person, {"person_id": 99999, "question": "?"}, by_email)
+    assert contact.get("note") == unknown.get("note")
 
 
 def test_a_contact_cannot_share_their_work_style(
@@ -1940,9 +1945,7 @@ def test_lookup_person_finds_a_contact_with_details_on_the_principals_turn(
     assert match["details"] == [{"kind": "mobile", "value": "555-010-2030"}]
 
 
-@pytest.mark.parametrize("surface", [
-    "teammate_web", "teammate_slack", "principal_by_email", "unattended",
-])
+@pytest.mark.parametrize("surface", ["principal_by_email", "unattended"])
 def test_lookup_person_keeps_contacts_and_details_off_other_turns(
     roster: SimpleNamespace, surface: str
 ) -> None:

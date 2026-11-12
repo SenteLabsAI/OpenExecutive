@@ -20,7 +20,7 @@ from openexecutive.delegation.gmail import CalendarEvent
 from openexecutive.people import store as people_store
 
 from .test_delegation_inbox import NOW, FakeInbox, _msg
-from .test_delegation_inbox_routes import OWNER, TEAMMATE, client, db, gmail, ids  # noqa: F401
+from .test_delegation_inbox_routes import NOT_ON_TEAM, OWNER, TEAMMATE, client, db, gmail, ids  # noqa: F401
 
 # --------------------------------------------------------------------------- #
 # The composer's questions
@@ -276,7 +276,8 @@ def test_answering_rewrites_the_draft_and_marks_the_question(
     assert resp.status_code == 409 and resp.json()["detail"]["code"] == "caller_signing_required"
     assert rewriter == []
     monkeypatch.setenv("OE_LOCAL_LOGIN", "1")
-    assert client.post(url, json=body, headers=TEAMMATE).status_code == 403
+    assert client.post(url, json=body, headers=TEAMMATE).status_code == 404  # not their card
+    assert client.post(url, json=body, headers=NOT_ON_TEAM).status_code == 403
     assert client.post("/delegation/replies/9999/answer", json=body, headers=OWNER).status_code == 404
     resp = client.post(url, json=body, headers=OWNER)
     assert resp.status_code == 200, resp.text
@@ -339,7 +340,8 @@ def test_tell_me_what_to_change_rewrites_it_and_joins_the_conversation(
     resp = client.post(url, json=ask, headers=OWNER)
     assert resp.status_code == 409 and resp.json()["detail"]["code"] == "caller_signing_required"
     monkeypatch.setenv("OE_LOCAL_LOGIN", "1")
-    assert client.post(url, json=ask, headers=TEAMMATE).status_code == 403
+    assert client.post(url, json=ask, headers=TEAMMATE).status_code == 404  # not their card
+    assert client.post(url, json=ask, headers=NOT_ON_TEAM).status_code == 403
     assert client.post("/delegation/replies/9999/change", json=ask, headers=OWNER).status_code == 404
     assert client.post(url, json={"text": ""}, headers=OWNER).status_code == 422
     # Not a reply card, even their own: 404.

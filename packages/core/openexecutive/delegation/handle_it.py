@@ -32,8 +32,7 @@ with the reason recorded.
 - Gmail couldn't authenticate the sender;
 - the classifier wasn't sure enough (``MIN_CONFIDENCE``), or the email
   isn't one of the kinds that need a reply;
-- the reply goes to anyone the email didn't already go to;
-- the reply is longer than ``MAX_BODY_CHARS``;
+- below Hands-off, the reply goes to anyone the email didn't already go to;
 - one of the owner's Waits rules (Delegate → Approvals → Your rules,
   ``take_the_lead.rule_waits``) matches, on every level;
 - below Hands-off, the email or the reply touches money, contracts,
@@ -49,11 +48,10 @@ with the reason recorded.
   (``reply_send.send_on_its_own``), after any work the Executive did first;
 - it already sent one in this thread in the last day, or the last thing the
   person "said" in this thread was itself sent on its own;
-- the day's limit (``DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY``) is reached;
 - after all of these pass, the last look (``injection_check``) finds the
   email trying to steer an assistant, or can't tell.
 
-Never sent on its own: a reply to a new recipient. A reply the Executive
+Below Hands-off, never sent on its own: a reply to a new recipient. A reply the Executive
 rewrote after doing what the email asked (``delegation.card_work``), files
 and all, is checked again here once that work is on its card, with its new
 words (``content_hold``), and goes on its own only when they pass and the
@@ -99,10 +97,6 @@ DEFAULT_MODE = "balanced"
 
 # How sure the classifier must be that a simple reply is all it needs.
 MIN_CONFIDENCE = 0.8
-# The longest reply or follow-up it sends on its own.
-MAX_BODY_CHARS = 4000
-# A follow-up is a nudge: it stays short.
-FOLLOW_UP_MAX_CHARS = 600
 
 KNOWN_RELATIONS = frozenset({"team", "contact", "correspondent"})
 # The classifier kinds a reply may be sent for on its own.
@@ -463,10 +457,14 @@ def _refusal(
     # Executive: the sender first, then everyone else on it.
     allowed = {message.from_addr, *message.to, *message.cc} - own - ({exec_address} if exec_address else set())
     going = [*reply.to, *reply.cc]
-    if not going or len(going) > MAX_RECIPIENTS or not set(going) <= allowed or message.from_addr not in reply.to:
+    if not going:
         return "recipients"
-    if len(reply.body or "") > MAX_BODY_CHARS:
-        return "long"
+    # Anyone the email didn't go to waits on a card below Hands-off, as any
+    # send to someone new does (orchestrator.levels.NEW_PERSON).
+    if (
+        len(going) > MAX_RECIPIENTS or not set(going) <= allowed or message.from_addr not in reply.to
+    ) and not hands_off(db_path=db_path):
+        return "recipients"
     if any(f not in ALLOWED_FLAGS for f in reply.flags):
         return "flagged"
     held = content_hold(
@@ -538,10 +536,10 @@ def _follow_up_refusal(
     # Exactly the people their own email went to: nobody added, nobody left out.
     allowed = {*sent.to, *sent.cc} - own - ({exec_address} if exec_address else set())
     going = [*reply.to, *reply.cc]
-    if not going or len(going) > MAX_RECIPIENTS or set(going) != allowed:
+    if not going:
         return "recipients"
-    if len(reply.body or "") > FOLLOW_UP_MAX_CHARS:
-        return "long"
+    if (len(going) > MAX_RECIPIENTS or set(going) != allowed) and not hands_off(db_path=db_path):
+        return "recipients"
     if any(f not in ALLOWED_FLAGS for f in reply.flags):
         return "flagged"
     held = content_hold(
@@ -556,20 +554,16 @@ def _follow_up_refusal(
 def count_refusal(
     person_id: int, thread_id: str, now: datetime, *, db_path: Path | None = None,
 ) -> str | None:
-    """The counted rules, checked when the card is made and again just
-    before it sends: one reply on its own per thread a day, and the daily
-    limit. Anything it can't count is a refusal."""
-    from openexecutive.config import get_settings
-
+    """The loop guard, checked when the card is made and again just before
+    it sends: one reply on its own per thread a day, so two auto-replies
+    can't answer each other all day; past it the reply waits on its card.
+    Anything it can't count is a refusal (a card)."""
     try:
         handled = _handled_rows(person_id, "AND thread_id = ?", (thread_id,), db_path)
         if any((datetime.fromisoformat(r["sent_at"]) > now - THREAD_WINDOW) for r in handled):
             return "thread_recent"
-        today = sent_today(person_id, now, db_path=db_path)
     except Exception:
         return "uncountable"
-    if today >= get_settings().delegation_handle_it_max_sends_per_day:
-        return "daily_limit"
     return None
 
 

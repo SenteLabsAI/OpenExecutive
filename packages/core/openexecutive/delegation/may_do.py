@@ -117,10 +117,6 @@ class MayDo:
 # As you
 # --------------------------------------------------------------------------- #
 
-def _plural(n: int, one: str, many: str | None = None) -> str:
-    return f"{n} {one if n == 1 else (many or one + 's')}"
-
-
 def as_you(person_id: int, *, can_have_it: bool, signing: bool, is_principal: bool = False) -> Section:
     """What goes out as ``person_id``, from their own mailbox: what it
     writes as them, and Approvals, decide."""
@@ -241,15 +237,7 @@ def as_you(person_id: int, *, can_have_it: bool, signing: bool, is_principal: bo
             "Signed sign-ins are off on this server, so nothing goes out as you until they're on."
         )
 
-    footer = ""
-    if sends:
-        try:
-            from openexecutive.config import get_settings
-
-            cap = int(get_settings().delegation_handle_it_max_sends_per_day)
-            footer = f"Up to {_plural(cap, 'reply', 'replies')} a day go on their own, one per conversation."
-        except Exception:
-            footer = ""
+    footer = "One reply a day goes on its own per conversation." if sends else ""
     return Section(SECTION_AS_YOU, title, rows=rows, notes=notes, footer=footer)
 
 

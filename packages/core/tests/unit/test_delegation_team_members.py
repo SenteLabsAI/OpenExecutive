@@ -1,4 +1,4 @@
-"""Act as me for team members: the owner's switch, who may have it, and what
+"""Act as me for team members: who may have it (anyone on the team), and what
 stays a team member's alone — their audit rows, their reply cards and the
 conversation that read their mail, the principal included."""
 from __future__ import annotations
@@ -23,8 +23,6 @@ from openexecutive.delegation.settings import (
     enabled_for_install,
     pin_turn_delegation,
     set_enabled,
-    set_team_members,
-    team_members_enabled,
 )
 from openexecutive.memory import episodic, session_store
 from openexecutive.memory.decision_ledger import create_decision_instance
@@ -57,13 +55,6 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
 
 
 @pytest.fixture
-def available(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The install allows it (DELEGATION_TEAM_MEMBERS)."""
-    monkeypatch.setattr(dsettings, "team_members_available", lambda: True)
-    monkeypatch.setattr(route, "team_members_available", lambda: True)
-
-
-@pytest.fixture
 def roster() -> SimpleNamespace:
     principal = people_store.upsert_person(full_name="Olivia Owner", is_principal=True, email="olivia@co.example")
     teammate = people_store.upsert_person(full_name="Ben Teammate", email="ben@co.example", slack_user_id="U_BEN")
@@ -83,34 +74,20 @@ def _get(person_id: int) -> Any:
 # --------------------------------------------------------------------------- #
 
 
-def test_a_teammate_needs_the_install_and_the_owners_switch(
-    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_anyone_on_the_team_may_have_it(roster: SimpleNamespace) -> None:
     teammate = _get(roster.teammate)
     assert can_delegate(_get(roster.principal)) is True
-    assert can_delegate(teammate) is False
-    # The owner's switch alone does nothing while the install doesn't allow it.
-    set_team_members(True, updated_by="test")
-    assert team_members_enabled() is False and can_delegate(teammate) is False
-    monkeypatch.setattr(dsettings, "team_members_available", lambda: True)
     assert can_delegate(teammate) is True
     # Never a contact or an archived member.
     assert can_delegate(_get(roster.contact)) is False
     teammate.archived = True
     assert can_delegate(teammate) is False
-    set_team_members(False, updated_by="test")
-    assert can_delegate(_get(roster.teammate)) is False
 
 
-def test_the_install_flag_counts_a_teammate_only_while_allowed(
-    roster: SimpleNamespace, available: None
-) -> None:
+def test_a_teammate_turning_it_on_counts_for_the_install(roster: SimpleNamespace) -> None:
+    assert enabled_for_install() is False
     set_enabled(roster.teammate, True, updated_by="test")
-    assert enabled_for_install() is False
-    set_team_members(True, updated_by="test")
     assert enabled_for_install() is True
-    set_team_members(False, updated_by="test")
-    assert enabled_for_install() is False
 
 
 def _web(person_id: int) -> Session:
@@ -131,15 +108,13 @@ def _web(person_id: int) -> Session:
     ("an unattended run", lambda r: Session(caller_person_id=r.teammate, unattended=True), False),
 ])
 def test_who_on_the_team_is_offered_it(
-    roster: SimpleNamespace, available: None, name: str, make: Any, offered: bool
+    roster: SimpleNamespace, name: str, make: Any, offered: bool
 ) -> None:
-    set_team_members(True, updated_by="test")
     set_enabled(roster.teammate, True, updated_by="test")
     assert pin_turn_delegation(make(roster), "hi").offered is offered, name
 
 
-def test_a_teammates_pin_is_theirs_alone(roster: SimpleNamespace, available: None) -> None:
-    set_team_members(True, updated_by="test")
+def test_a_teammates_pin_is_theirs_alone(roster: SimpleNamespace) -> None:
     set_enabled(roster.teammate, True, updated_by="test")
     # The surface must say it is them: a teammate never passes as the principal.
     assert dsettings.speaker_surface_ok(_web(roster.principal), _get(roster.teammate)) is False
@@ -291,9 +266,8 @@ def stores_on(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_a_later_turn_in_their_conversation_stays_theirs(
-    roster: SimpleNamespace, available: None, stores_on: None, db: Path
+    roster: SimpleNamespace, stores_on: None, db: Path
 ) -> None:
-    set_team_members(True, updated_by="test")
     set_enabled(roster.teammate, True, updated_by="test")
     session = _web(roster.teammate)
     session.session_id = "s-ben"
@@ -308,7 +282,7 @@ def test_a_later_turn_in_their_conversation_stays_theirs(
 
 
 def test_nobody_else_drafts_in_a_conversation_that_is_someone_elses(
-    roster: SimpleNamespace, available: None, stores_on: None
+    roster: SimpleNamespace, stores_on: None
 ) -> None:
     set_enabled(roster.principal, True, updated_by="test")
     session = _web(roster.principal)
@@ -372,19 +346,12 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     return TestClient(app)
 
 
-def test_the_owner_turns_it_on_for_the_team(client: TestClient, roster: SimpleNamespace, available: None) -> None:
-    assert client.get("/delegation", headers=TEAMMATE).status_code == 403
+def test_a_teammate_has_their_own_card_and_the_owner_sees_counts(
+    client: TestClient, roster: SimpleNamespace
+) -> None:
     body = client.get("/delegation", headers=OWNER).json()
-    assert body["team"] == {"enabled": False, "members": []}
-    # Only the owner may change it.
-    set_team_members(True, updated_by="test")
-    assert client.put("/delegation/team", json={"enabled": False}, headers=TEAMMATE).json()["detail"]["code"] == (
-        "principal_only"
-    )
-    set_team_members(False, updated_by="test")
-    body = client.put("/delegation/team", json={"enabled": True}, headers=OWNER).json()
-    assert body["team"]["enabled"] is True
-    # Now the teammate has their own card, without the owner's switch.
+    assert body["team"] == {"enabled": True, "members": []}
+    # The teammate has their own card, with no switch of the owner's above it.
     mine = client.get("/delegation", headers=TEAMMATE).json()
     assert mine["enabled"] is False and mine["team"] is None
     assert client.put("/delegation", json={"enabled": True}, headers=TEAMMATE).json()["enabled"] is True
@@ -394,12 +361,5 @@ def test_the_owner_turns_it_on_for_the_team(client: TestClient, roster: SimpleNa
         "person_id": roster.teammate, "name": "Ben Teammate", "enabled": True, "inbox": False,
         "drafts_30d": 0, "sent_30d": 0,
     }]
-    # Off takes it away again.
-    client.put("/delegation/team", json={"enabled": False}, headers=OWNER)
-    assert client.get("/delegation", headers=TEAMMATE).status_code == 403
-
-
-def test_the_team_switch_needs_the_install(client: TestClient, roster: SimpleNamespace) -> None:
-    assert client.get("/delegation", headers=OWNER).json()["team"] is None
-    resp = client.put("/delegation/team", json={"enabled": True}, headers=OWNER)
-    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "not_available"
+    # There is no team switch to change.
+    assert client.put("/delegation/team", json={"enabled": False}, headers=OWNER).status_code in (404, 405)

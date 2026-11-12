@@ -281,8 +281,9 @@ def test_with_no_request_the_caller_is_who_a_request_naming_no_one_would_be(
 # ---------------------------------------------------------------------------
 # Who may read what.
 # ---------------------------------------------------------------------------
-_OWNER_ONLY = ["memory_decisions", "memory_initiatives", "memory_advice", "today_activity"]
-_ROSTER_ONLY = ["today_briefing", "people_roster"]
+_ROSTER_ONLY = [
+    "today_briefing", "people_roster", "memory_decisions", "memory_initiatives", "memory_advice", "today_activity",
+]
 
 
 def _read(name: str, who: Caller) -> str:
@@ -309,33 +310,16 @@ def _read(name: str, who: Caller) -> str:
     return asyncio.run(_go())
 
 
-@pytest.mark.parametrize("name", _OWNER_ONLY)
+@pytest.mark.parametrize("name", _ROSTER_ONLY)
 @pytest.mark.parametrize(
     "who", [Caller("open"), Caller("operator"), Caller("user", OWNER), Caller("open", OWNER)]
 )
-def test_the_owner_reads_their_own_records(roster: dict[str, int], name: str, who: Caller) -> None:
+def test_the_owner_reads_their_records(roster: dict[str, int], name: str, who: Caller) -> None:
     json.loads(_read(name, who))
 
 
-@pytest.mark.parametrize("name", _OWNER_ONLY)
-@pytest.mark.parametrize(
-    "who",
-    [
-        Caller("user", TEAMMATE),
-        Caller("open", TEAMMATE),
-        Caller("user", "stranger@else.example"),
-        Caller("service"),
-    ],
-)
-def test_no_one_else_reads_the_owners_records(
-    roster: dict[str, int], name: str, who: Caller
-) -> None:
-    with pytest.raises(mcp_server.CallerRefused, match="Only the owner can read this."):
-        _read(name, who)
-
-
 @pytest.mark.parametrize("name", _ROSTER_ONLY)
-def test_a_teammate_reads_the_briefing_and_roster_but_a_service_does_not(
+def test_a_teammate_reads_them_but_a_service_does_not(
     roster: dict[str, int], name: str
 ) -> None:
     json.loads(_read(name, Caller("user", TEAMMATE)))

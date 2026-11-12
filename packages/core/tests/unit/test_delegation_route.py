@@ -21,6 +21,8 @@ from openexecutive.people import store as people_store
 
 OWNER = {"x-caller-email": "olivia@co.example"}
 TEAMMATE = {"x-caller-email": "ben@co.example"}
+# Someone not on the team: Act as me answers only the team.
+NOT_ON_TEAM = {"x-caller-email": "nobody@x.example"}
 
 
 @pytest.fixture(autouse=True)
@@ -73,10 +75,10 @@ def client(audit: list[Any], gmail: dict[str, str]) -> TestClient:
     return TestClient(app)
 
 
-def test_only_the_owner_sees_it(client: TestClient, ids: dict[str, int]) -> None:
-    resp = client.get("/delegation", headers=TEAMMATE)
+def test_only_someone_on_the_team_sees_it(client: TestClient, ids: dict[str, int]) -> None:
+    assert client.get("/delegation", headers=TEAMMATE).status_code == 200
+    resp = client.get("/delegation", headers=NOT_ON_TEAM)
     assert resp.status_code == 403 and resp.json()["detail"]["code"] == "not_available_yet"
-    assert client.get("/delegation", headers={"x-caller-email": "nobody@x.example"}).status_code == 403
     body = client.get("/delegation", headers=OWNER).json()
     assert body["enabled"] is False
     assert body["gmail"]["status"] == "not_configured"
@@ -156,7 +158,7 @@ def test_on_and_off_are_audited_privately(
     assert types == ["delegation_gmail_verified", "delegation_settings_changed", "delegation_settings_changed"]
     assert all(kw["private"] is True for _, kw in audit)
     # A teammate cannot flip it.
-    assert client.put("/delegation", json={"enabled": True}, headers=TEAMMATE).status_code == 403
+    assert client.put("/delegation", json={"enabled": True}, headers=NOT_ON_TEAM).status_code == 403
 
 
 def test_turning_it_off_forgets_the_emails_it_opened(
@@ -252,7 +254,7 @@ def test_learning_needs_their_gmail(
     monkeypatch.setattr(route, "learn_from_sent_mail", locked)
     resp = client.post("/delegation/voice/learn", headers=OWNER)
     assert resp.status_code == 409 and resp.json()["detail"]["code"] == "locked"
-    assert client.post("/delegation/voice/learn", headers=TEAMMATE).status_code == 403
+    assert client.post("/delegation/voice/learn", headers=NOT_ON_TEAM).status_code == 403
 
 
 class _Mailbox:
@@ -377,7 +379,7 @@ def test_only_the_owner_takes_their_signature(
     client: TestClient, ids: dict[str, int], gmail: dict[str, str], mailbox: _Mailbox
 ) -> None:
     gmail["status"] = "connected"
-    assert client.post("/delegation/voice/signature", headers=TEAMMATE).status_code == 403
+    assert client.post("/delegation/voice/signature", headers=NOT_ON_TEAM).status_code == 403
     resp = client.post("/delegation/voice/signature")
     assert resp.status_code == 403 and resp.json()["detail"]["code"] == "sign_in_required"
     assert mailbox.asked == 0
@@ -415,7 +417,7 @@ def test_a_style_is_written_from_their_words_without_saving(
     monkeypatch.setattr(route, "describe_voice", refused)
     resp = client.post("/delegation/voice/describe", json={"description": "Short."}, headers=OWNER)
     assert resp.status_code == 409 and resp.json()["detail"]["code"] == "too_many"
-    assert client.post("/delegation/voice/describe", json={"description": "x"}, headers=TEAMMATE).status_code == 403
+    assert client.post("/delegation/voice/describe", json={"description": "x"}, headers=NOT_ON_TEAM).status_code == 403
     assert client.post("/delegation/voice/describe", json={"nope": 1}, headers=OWNER).status_code == 422
 
 

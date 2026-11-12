@@ -148,7 +148,6 @@ def test_a_card_is_approved_by_its_person_and_skipped_cards_do_nothing(
 def test_a_team_members_card_is_theirs_alone(
     roster: SimpleNamespace, sends: list[Any], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("openexecutive.delegation.settings.team_members_enabled", lambda **_: True)
     set_enabled(roster.teammate, True, updated_by="t")
     card = _card(_teammate_session(), [_message(roster.principal)])
     with pytest.raises(HTTPException) as refused:

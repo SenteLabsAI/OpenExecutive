@@ -663,7 +663,7 @@ async def _process_and_reply(
     # The sender's People row, by the Google account email on the event (the
     # JWT proves the event is Google's, so the email is Google's word). None
     # for someone who isn't on People: their turn is unverified, and the
-    # department gate holds their sends and edits for approval.
+    # sends and edits wait on the owner's card (levels.unrostered_speaker).
     sender_person = None
     if sender_email:
         try:
@@ -777,8 +777,8 @@ async def _answer(
             # is the Google account that sent it, never anything the message
             # says. So the turn is theirs, verified, in a space or a DM, and
             # their Approvals level decides what runs. Anyone else stays
-            # unverified, with no caller, and the department gate holds what
-            # they ask to send or change.
+            # unverified, with no caller, and what
+            # they ask to send or change waits on the owner's card.
             session.caller_person_id = sender_person.id
             session.speaker_verified = True
             # A DM between the app and the sender alone is read by them

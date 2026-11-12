@@ -17,10 +17,17 @@ it says:
   card (``hold``). Careful detects more (any outside read), Balanced less
   (only a read the check flagged): the outside-content check is the
   level's.
-- **Every level**: a tool only the owner may use never runs on someone
-  else's turn, and what mail from someone not in People asks for is never
-  done on that mail's say-so. The Executive answers them, and anything else
-  comes to the owner as an Approve card.
+- **Whose level**: the level belongs to whoever is asking. The owner's
+  turns and a teammate's turns (a shared chat they wrote in included) run
+  at the company's level. Someone not in People (mail from a stranger, a
+  page in another app, an AI app that isn't the owner's) gives no one's
+  level: what they ask for comes to the owner as an Approve card on every
+  level, as does a tool only the owner may use on anyone else's turn.
+
+These are the only holds. Nothing outside this module refuses or holds a
+step on its own: a check elsewhere only *notices* a reason, and
+``decide`` turns it into run or card (``scripts/pr_checks.py`` fails a
+change that adds a refusal anywhere else).
 
 A step that waits is never dropped. The card is a decision with a card on
 Today, under the reply in the web chat, and in the owner's chat app
@@ -58,9 +65,10 @@ STRANGER = "stranger_mail"
 NEW_PERSON = "new_person"
 FILE_PLACE = "file_place"
 URL_FETCH = "url_fetch"
+SCRIPT = "apps_script"
 REASONS: frozenset[str] = frozenset({
     OUTSIDE, OWN_MAIL, MAIL_FLAGGED, PRIVATE, SHARED, AI_APP, NOT_OWNER, UNATTENDED, STRANGER, NEW_PERSON,
-    FILE_PLACE, URL_FETCH,
+    FILE_PLACE, URL_FETCH, SCRIPT,
 })
 
 # What the card says it waited for, in the owner's words.
@@ -73,10 +81,11 @@ _WHY: dict[str, str] = {
     AI_APP: "another AI app asked for it",
     NOT_OWNER: "it changes how your Executive is set up",
     UNATTENDED: "it came up while nobody was chatting",
-    STRANGER: "someone who isn't in People asked for it by email",
+    STRANGER: "someone who isn't in People asked for it",
     NEW_PERSON: "it goes to someone who isn't in People",
     FILE_PLACE: "the folder it goes in is shared outside the company",
     URL_FETCH: "it has a service fetch a web address",
+    SCRIPT: "it runs a script as your Executive's Google account",
 }
 
 # A step the owner approved on a card is being carried out
@@ -186,9 +195,9 @@ def decide(reason: str, *, mode: str | None = None) -> str:
     from openexecutive.orchestrator import outside_mode
 
     try:
-        # Hands-off is the owner's trust in their own Executive: it gives no
-        # one else the owner's powers, and no stranger's mail its say-so.
-        if reason in (STRANGER, NOT_OWNER, SHARED):
+        # Someone not in People has no level of their own, and a tool only
+        # the owner may use is theirs alone: a card on every level.
+        if reason in (STRANGER, NOT_OWNER):
             return CARD
         if reason == AI_APP and not _owners_ai_app():
             # The owner's own AI app, signed in as them and allowed to act,
@@ -201,6 +210,52 @@ def decide(reason: str, *, mode: str | None = None) -> str:
     except Exception:
         logger.warning("levels: couldn't decide — putting it on a card", exc_info=True)
         return CARD
+
+
+def unrostered_speaker(session: Any) -> bool:
+    """Whether someone not in People is speaking on this turn: a web sign-in
+    on nobody's People entry (or an archived one), or a chat-app sender
+    matched to no one. They have no level of their own, so what they ask to
+    send or change is the owner's to approve (``STRANGER``). Email is left
+    out: its sender is marked by ``outside_content`` instead. Never raises:
+    an error is someone not in People."""
+    try:
+        if session is None or getattr(session, "unattended", False) is True:
+            return False
+        if getattr(session, "private_to_principal", False) is True:
+            return False
+        if getattr(session, "replay", False) is True:
+            # A graded turn replayed: its acting tools are faked.
+            return False
+        person_id = getattr(session, "caller_person_id", None)
+        if person_id is None:
+            if getattr(session, "from_web_chat", False) is True:
+                return getattr(session, "web_caller_signed_in", False) is True
+            channel = str(getattr(session, "origin_channel", "") or "")
+            return bool(channel) and channel != "email"
+        from openexecutive.people.store import get_person
+
+        person = get_person(int(person_id))
+        return person is None or person.archived or (not person.is_principal and person.kind != "team")
+    except Exception:
+        logger.warning("levels: couldn't tell who is speaking — treating them as not in People", exc_info=True)
+        return True
+
+
+def acts(tool: str, tool_input: Any) -> bool:
+    """Whether a step sends or changes something: an acting tool, or a
+    connected app's tool that may change something. Fails closed."""
+    from openexecutive.orchestrator import take_the_lead
+
+    try:
+        if tool in take_the_lead.ACTING_TOOLS:
+            return True
+        if tool == "call_tool":
+            named = tool_input.get("name") if isinstance(tool_input, dict) else None
+            return take_the_lead.mcp_tool_acts(str(named or ""))
+        return False
+    except Exception:
+        return True
 
 
 def _owners_ai_app() -> bool:
@@ -292,6 +347,29 @@ def _requester(session: Any) -> Any:
     return owner if owner is not None else Person(id=None, full_name="You")
 
 
+def _approver(requester: Any, reason: str, tool: str, tool_input: dict[str, Any]) -> int | None:
+    """Who taps Approve: the teammate who asked, on their own turn, for a
+    step that stays inside the team (their level is theirs, like the
+    owner's); the owner for anything someone not in People asked, a tool
+    only the owner may use, or a step that reaches outside the team. Never
+    raises: an error is the owner."""
+    from openexecutive.orchestrator import take_the_lead
+
+    try:
+        if (
+            reason not in (STRANGER, NOT_OWNER, AI_APP)
+            and getattr(requester, "id", None) is not None
+            and getattr(requester, "is_principal", False) is not True
+            and getattr(requester, "kind", "") == "team"
+            and getattr(requester, "archived", False) is not True
+            and take_the_lead._team_only(tool, tool_input)
+        ):
+            return int(requester.id)
+    except Exception:
+        logger.debug("levels: couldn't tell who approves — the owner", exc_info=True)
+    return take_the_lead._principal_id()
+
+
 def hold(
     tool: str,
     tool_input: dict[str, Any],
@@ -317,7 +395,7 @@ def hold_many(
     """``hold`` for several calls of one tool held together (fourteen
     renames in one round): one Approve card that lists them all, and one tap
     carries out each, in order. The tool result is the same for each call."""
-    from openexecutive.orchestrator import department_gate, take_the_lead
+    from openexecutive.orchestrator import department_gate
 
     steps = [dict(i or {}) for i in tool_inputs] or [{}]
     if mcp and not str(tool or "").strip():
@@ -328,14 +406,15 @@ def hold_many(
 
         session = current_session.get()
     why = _WHY.get(reason, "it needs your OK")
+    requester = _requester(session)
     verdict = department_gate.Verdict(
         run=False,
-        approver_person_id=take_the_lead._principal_id(),
+        approver_person_id=_approver(requester, reason, tool, steps[0]),
         reason=why,
     )
     try:
         decision_id = department_gate.hold(
-            _requester(session),
+            requester,
             tool,
             steps[0],
             verdict,

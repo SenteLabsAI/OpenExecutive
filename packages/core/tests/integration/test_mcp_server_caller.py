@@ -124,7 +124,7 @@ def _read(app: Any, endpoint: Any, uri: str, headers: dict[str, str]) -> dict[st
     [
         (lambda: _signed_as("user", OWNER), True),
         (lambda: _signed_as("operator"), True),
-        (lambda: _signed_as("user", TEAMMATE), False),
+        (lambda: _signed_as("user", TEAMMATE), True),
         (lambda: {}, False),  # a service: signed callers on, no assertion
     ],
 )
@@ -137,7 +137,7 @@ def test_signed_callers_reach_the_mcp_handlers(
     if allowed:
         assert json.loads(out["result"]["contents"][0]["text"]) == []
     else:
-        assert "Only the owner can read this." in out["error"]["message"]
+        assert "Only someone on the team can read this." in out["error"]["message"]
 
 
 def test_a_signed_in_teammate_reads_the_roster_and_a_service_does_not(
@@ -158,8 +158,9 @@ def test_open_mode_takes_the_caller_header_at_its_word(
     with patch("openexecutive.memory.episodic.list_advice", return_value=[]):
         mine = _read(app, endpoint, "oe://memory/advice", {})
         theirs = _read(app, endpoint, "oe://memory/advice", {"x-caller-email": TEAMMATE})
-    assert "result" in mine
-    assert "Only the owner can read this." in theirs["error"]["message"]
+        stranger = _read(app, endpoint, "oe://memory/advice", {"x-caller-email": "x@else.example"})
+    assert "result" in mine and "result" in theirs
+    assert "Only someone on the team can read this." in stranger["error"]["message"]
 
 
 @pytest.mark.parametrize(

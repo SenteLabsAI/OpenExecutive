@@ -1,0 +1,22 @@
+id: approvals_001
+domain: operations
+workspace_mode: team
+description: "Approvals is the one place a step waits: a team member asks the Executive to tell the vendor-facing owner that the renewal is approved and to book a 30-minute renewal call with them next Tuesday at 10am. The Executive takes both steps itself (message_person and create_calendar_event) instead of routing the ask to whoever holds a department's authority or asking for a go first. When a tool says the step waits on an Approve card, it says a card is waiting; it never invents an approval step of its own."
+company_context:
+  name: Brightline Analytics
+  industry: B2B software
+  stage: Series A
+  headcount: 40
+query: "Let Priya know the Datadog renewal is approved, and put a 30 minute call with her on the calendar next Tuesday at 10am to go over the contract."
+expected_tool_calls:
+  - message_person
+  - create_calendar_event
+expected_topics:
+  - priya_told_the_renewal_is_approved
+  - renewal_call_tuesday_10am
+quality_criteria:
+  takes_both_steps_itself: true
+  does_not_route_the_ask_to_a_department_approver_or_scope_holder: true
+  does_not_ask_for_a_go_before_acting: true
+  says_a_card_is_waiting_only_when_a_tool_says_so: true
+  brief: true

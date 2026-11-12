@@ -44,7 +44,6 @@ from openexecutive.memory.workspace_settings import (
 from openexecutive.orchestrator import (
     app_control_catalog,  # noqa: F401  (fills the app tools' catalog)
     claim_check,
-    department_gate,
     extensions,
     levels,
     outside_content,
@@ -93,6 +92,7 @@ from openexecutive.orchestrator.chat_search_tools import (
 )
 from openexecutive.orchestrator.content_trust import (
     principal_only_withheld,
+    principal_speaking,
 )
 from openexecutive.orchestrator.correction_tools import (
     CORRECTION_TOOL_HANDLERS,
@@ -2511,6 +2511,10 @@ class Executive:
             and getattr(current_session.get(), "others_spoke_last", False) is True
         )
         shared_withheld = SHARED_CHAT_WITHHELD_TOOLS if others_spoke else frozenset()
+        # Someone on no People entry (an unmatched Google Chat sender, a web
+        # sign-in on nobody's entry) has no level of their own: everything
+        # they ask to send or change waits on the owner's card at every level.
+        unrostered = levels.unrostered_speaker(current_session.get())
         # A replay of a graded turn (memory.replay): nothing that runs a
         # script or a job, or changes the install; its acting tools are
         # faked below, after the gates.
@@ -2577,16 +2581,8 @@ class Executive:
         leading = bool(unattended_withheld) and take_the_lead.executive_on()
         if leading:
             turn_handlers = take_the_lead.gated_handlers(turn_handlers, source="scheduled")
-        # A team member's turn (not the principal's): every send or edit goes
-        # through their department's authority first (department_gate), as
-        # unattended work goes through the scheduler's and Take the lead's.
-        # The owner set those ranges for their people, so Hands-off (the
-        # owner's own trust in their Executive) doesn't waive them; a step
-        # outside a range is an Approve card for its approver.
-        seat = None if unattended_withheld else department_gate.speaker(current_session.get())
-        seat_session_id = getattr(current_session.get(), "session_id", None)
-        if seat is not None:
-            turn_handlers = department_gate.gated_handlers(turn_handlers, seat, session_id=seat_session_id)
+        # A team member's turn runs like the owner's: Approvals decides each
+        # step (orchestrator.levels), and a held one is their own card.
         # A replay (memory.replay): outermost, so a tool that would send,
         # post, book, schedule, run or change stored state is recorded on the
         # session and answered "done" before any gate or handler sees it;
@@ -2938,6 +2934,8 @@ class Executive:
                 is_script = tu["id"] in script_ids
                 if name in unattended_withheld:
                     return levels.UNATTENDED
+                if unrostered and (is_script or levels.acts(name, given)):
+                    return levels.STRANGER
                 if name in principal_withheld:
                     return levels.NOT_OWNER
                 if private_turn and (
@@ -3400,10 +3398,6 @@ class Executive:
                 guarded_call_tool = typed_booking_only(booking_offered, guard_call_tool(
                     take_the_lead.gated_call_tool(self._mcp_gateway.call_tool, source="scheduled")
                     if leading
-                    else department_gate.gated_call_tool(
-                        self._mcp_gateway.call_tool, seat, session_id=seat_session_id,
-                    )
-                    if seat is not None
                     else self._mcp_gateway.call_tool
                 ))
                 _mcp_dispatch = {
@@ -3522,10 +3516,6 @@ class Executive:
                 script_call = typed_booking_only(booking_offered, guard_call_tool(
                     take_the_lead.gated_call_tool(self._mcp_gateway.call_tool, source="scheduled")
                     if leading
-                    else department_gate.gated_call_tool(
-                        self._mcp_gateway.call_tool, seat, session_id=seat_session_id,
-                    )
-                    if seat is not None
                     else self._mcp_gateway.call_tool
                 ))
                 # The Executive's own tools a script may call this turn: the
@@ -3562,7 +3552,11 @@ class Executive:
                         call_input["own"] = True
                     # Budgets for the whole turn: a direct call needs a
                     # tool_use each, a script could otherwise make thousands.
-                    cap = step_script.CHAT_OWN_TOOL_CAPS.get(tool) if own else None
+                    cap = (
+                        step_script.CHAT_OWN_TOOL_CAPS.get(tool)
+                        if own and not principal_speaking(current_session.get())
+                        else None
+                    )
                     if _counts.get("", 0) >= self._settings.chat_script_max_calls or (
                         cap is not None and _counts.get(tool, 0) >= cap
                     ):
@@ -3685,12 +3679,12 @@ class Executive:
                             tools=None,
                             call=_script_call,
                             origin="chat",
-                            # Saving only while the principal speaks on a
-                            # verified, interactive surface: a saved tool
-                            # runs on whoever's turn calls it later.
+                            # Saving and running while someone on the team
+                            # (the principal or a teammate) speaks on a
+                            # verified, interactive surface: each call a
+                            # saved tool makes is checked on the turn that
+                            # runs it, by that turn's level.
                             may_save=not principal_withheld and not unattended_withheld,
-                            # Running one too: someone else's turn would run
-                            # the principal's recipe with inputs they chose.
                             may_run_saved=not principal_withheld and not unattended_withheld,
                             wall_clock_s=script_clock,
                             own_tools=script_own,

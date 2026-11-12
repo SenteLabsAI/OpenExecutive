@@ -324,7 +324,7 @@ async def test_someone_elses_turn_cannot_run_a_saved_tool() -> None:
     calls = _Calls()
     body, is_error = await _tool({"tool": "count_files", "inputs": {"folder": "x"}}, call=calls,
                                  may_save=False, may_run_saved=False)
-    assert is_error and "principal's own turns" in body["error"] and calls.made == []
+    assert is_error and "someone on the team" in body["error"] and calls.made == []
 
 
 def test_descriptions_are_one_line_of_printable_text() -> None:
