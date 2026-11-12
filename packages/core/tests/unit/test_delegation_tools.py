@@ -291,6 +291,46 @@ def test_a_reply_to_someone_named_answers_their_message_in_the_thread(
     assert spec.in_reply_to == "<m1@mail.example>"
 
 
+def test_a_reply_to_their_own_message_goes_to_whoever_it_went_to(
+    roster: SimpleNamespace, composer: list[str]
+) -> None:
+    mailbox = FakeMailbox()
+    mailbox.threads["t1"] = MailThread(id="t1", messages=[
+        _msg(1, DANA, "Question?"),
+        MailMessage(
+            id="m2", thread_id="t1", from_addr=OWNER, to=[DANA], cc=["sam@co.example"], subject="Re: Pilot",
+            message_id_header="<m2@mail.example>", labels=["SENT"], text="Answer.",
+        ),
+        _msg(3, DANA, "draft", labels=["DRAFT"]),
+    ])
+    _run(_session(mailbox), {"intent": "One more thing.", "thread_id": "t1", "message_id": "m2", "reply_all": True})
+    spec = mailbox.drafts[0]
+    assert (spec.to, spec.cc, spec.in_reply_to) == ([DANA], ["sam@co.example"], "<m2@mail.example>")
+    # A draft isn't a message to answer.
+    assert "isn't a message of this thread" in _run(
+        _session(mailbox), {"intent": "x", "thread_id": "t1", "message_id": "m3"},
+    )["error"]
+
+
+def test_a_named_to_outside_the_thread_answers_the_newest_and_is_named_back(
+    roster: SimpleNamespace, composer: list[str]
+) -> None:
+    mailbox = FakeMailbox()
+    _forwarded_thread(mailbox)
+    result = _run(_session(mailbox), {
+        "intent": "Looping you in.", "thread_id": "t1", "to": ["kai@newclient.example", OWNER], "reply_all": True,
+    })
+    spec = mailbox.drafts[0]
+    # Their own address is never a recipient; the newest message is answered.
+    assert spec.to == ["kai@newclient.example"]
+    assert spec.in_reply_to == "<m2@mail.example>"
+    assert spec.cc == ["sam@co.example"]
+    assert result["not_in_people"] == ["kai@newclient.example"]
+    assert "Not an email address" in _run(
+        _session(mailbox), {"intent": "x", "thread_id": "t1", "to": ["nope"]},
+    )["error"]
+
+
 def test_a_reply_can_name_the_message_it_answers(roster: SimpleNamespace, composer: list[str]) -> None:
     mailbox = FakeMailbox()
     _forwarded_thread(mailbox)

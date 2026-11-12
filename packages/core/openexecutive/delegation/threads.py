@@ -88,7 +88,7 @@ def plan_reply(
     to the people that went to."""
     from openexecutive.delegation.gmail import references_header
 
-    wanted = [a.strip().lower() for a in to or [] if a.strip()]
+    wanted = [a for a in dict.fromkeys(a.strip().lower() for a in to or []) if a and a != own]
     shown = [m for m in thread.messages if "DRAFT" not in m.labels]
     received = [m for m in shown if m.from_addr and m.from_addr != own and "SENT" not in m.labels]
     target = None
