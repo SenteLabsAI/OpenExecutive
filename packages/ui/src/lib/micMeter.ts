@@ -6,17 +6,18 @@
 import { micLevel } from "@/lib/dictation";
 
 export function watchMicLevel(stream: MediaStream, onLevel: (level: number) => void): () => void {
-  let ctx: AudioContext;
+  let ctx: AudioContext | undefined;
   let frame = 0;
   try {
     const Ctx =
       window.AudioContext ??
       (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!Ctx) return () => {};
-    ctx = new Ctx();
-    const analyser = ctx.createAnalyser();
+    const audio = new Ctx();
+    ctx = audio;
+    const analyser = audio.createAnalyser();
     analyser.fftSize = 512;
-    ctx.createMediaStreamSource(stream).connect(analyser);
+    audio.createMediaStreamSource(stream).connect(analyser);
     const samples = new Uint8Array(analyser.fftSize);
     let level = 0;
     const tick = () => {
@@ -30,13 +31,15 @@ export function watchMicLevel(stream: MediaStream, onLevel: (level: number) => v
       onLevel(level);
       frame = requestAnimationFrame(tick);
     };
-    if (ctx.state === "suspended") void ctx.resume();
+    if (audio.state === "suspended") void audio.resume();
     frame = requestAnimationFrame(tick);
   } catch {
+    // A stream it can't read: let the context go.
+    void ctx?.close().catch(() => {});
     return () => {};
   }
   return () => {
     cancelAnimationFrame(frame);
-    void ctx.close().catch(() => {});
+    void ctx?.close().catch(() => {});
   };
 }
