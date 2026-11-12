@@ -16,7 +16,6 @@ export function greeting(firstName: string | undefined, now: Date = new Date()):
  * panels, or another route. */
 export type SummaryTarget =
   | { kind: "needsYou" }
-  | { kind: "doneForYou" }
   | { kind: "panel"; panel: "handled" | "people" | "departments" | "inFlight" | "monitoring" }
   | { kind: "href"; href: string };
 
@@ -123,19 +122,15 @@ export function proposalStatusChip(
   return age ? { label: `${age} old`, tone: "neutral" } : null;
 }
 
-/** Home's summary: what needs you, then what I did for you today. Each
- *  phrase opens its section; an empty list means all clear. */
-export function homeSummary(needsYou: number, done: number): SummaryPart[] {
-  const parts: SummaryPart[] = [];
-  if (needsYou > 0)
-    parts.push({
+/** Home's summary: what needs you. Done for you has its own list right
+ *  below, so the line doesn't repeat it. The phrase opens Needs you; an
+ *  empty list means all clear. */
+export function homeSummary(needsYou: number): SummaryPart[] {
+  if (needsYou <= 0) return [];
+  return [
+    {
       text: `${needsYou} ${plural(needsYou, "thing needs", "things need")} you`,
       target: { kind: "needsYou" },
-    });
-  if (done > 0)
-    parts.push({
-      text: `I did ${done} ${plural(done, "thing", "things")} for you today`,
-      target: { kind: "doneForYou" },
-    });
-  return parts;
+    },
+  ];
 }
