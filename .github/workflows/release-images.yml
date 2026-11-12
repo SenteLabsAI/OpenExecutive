@@ -10,8 +10,7 @@
 #
 # Publishing is not gated on ci.yml: the `main` tag is published in parallel
 # with CI, and a tag publishes whatever commit it points at. Tag only commits
-# on main that CI has passed. The two images are separate matrix jobs, so a
-# release is not atomic — if one job fails, the other's tags still exist.
+# on main that CI has passed.
 #
 # The job is guarded to this repository: a fork would otherwise run this on
 # every push to its own main and fail with a 403 pushing to the hardcoded
@@ -26,9 +25,16 @@
 # never shows under Releases. If the images fail, no release is created; if a
 # release for the tag already exists (made by hand), the job leaves it alone.
 #
-# linux/amd64 only. The API image bakes torch plus two embedding-model caches
-# (see docker/Dockerfile); building that under arm64 emulation is impractically
-# slow. Multi-arch is a follow-up.
+# linux/amd64 and linux/arm64. Each platform is built natively on its own
+# GitHub-hosted runner (ubuntu-24.04 / ubuntu-24.04-arm), never under QEMU:
+# the API image bakes torch plus two embedding-model caches (see
+# docker/Dockerfile), which is impractically slow to build under emulation.
+# The `build` jobs push each platform's image by digest only (no tag); the
+# `publish` jobs then join an image's two digests into one multi-platform
+# manifest list and attach the tags to that. So a tag never points at a
+# half-built set: it appears only once both platforms of that image built.
+# A failure in any build job skips both `publish` jobs, so a run publishes
+# both images or neither.
 name: Publish images
 
 # No workflow_dispatch: `type=ref,event=branch` below would publish a tag
@@ -58,13 +64,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: Publish ${{ matrix.name }}
+  build:
+    name: Build ${{ matrix.name }} (${{ matrix.arch }})
     if: github.repository == 'SenteLabsAI/OpenExecutive'
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
+        name: [api, ui]
+        arch: [amd64, arm64]
         include:
           - name: api
             dockerfile: docker/Dockerfile
@@ -72,10 +80,93 @@ jobs:
           - name: ui
             dockerfile: docker/Dockerfile.ui
             image: ghcr.io/sentelabsai/openexecutive-ui
+          # Native runners: arm64 builds on GitHub's arm64 Linux runner, which
+          # is free for public repositories. Pin the image versions rather
+          # than ubuntu-latest so both platforms move together.
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Only the labels are used here; tags are attached in `publish`.
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ matrix.image }}
+
+      # Pushed by digest: the per-platform image gets no tag of its own, so
+      # nothing tagged can point at one platform alone.
+      #
+      # Layer cache lives in the registry, not the Actions cache: the API
+      # image's dependency layers (torch, two baked embedding models, a
+      # second venv) still run to well over a GB even on the CPU-only torch
+      # build, and the Actions cache is 10 GB per repository shared across
+      # everything, so a `type=gha,mode=max` export would churn it and evict
+      # the UI's cache. One cache tag per platform (`buildcache-amd64`,
+      # `buildcache-arm64`), since the two never share layers past the base
+      # image and would overwrite each other's `mode=max` export.
+      # provenance=false keeps the attestation manifest out, which would
+      # otherwise show as an `unknown/unknown` row on the package page.
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/${{ matrix.arch }}
+          provenance: false
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=registry,ref=${{ matrix.image }}:buildcache-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ matrix.image }}:buildcache-${{ matrix.arch }},mode=max
+
+      # Hand the digest to `publish` as an empty file named after it.
+      - name: Export digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digests-${{ matrix.name }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Same name as the old single-platform job, so required-check settings that
+  # name "Publish api" / "Publish ui" keep matching.
+  publish:
+    name: Publish ${{ matrix.name }}
+    needs: build
+    if: github.repository == 'SenteLabsAI/OpenExecutive'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: api
+            image: ghcr.io/sentelabsai/openexecutive-api
+          - name: ui
+            image: ghcr.io/sentelabsai/openexecutive-ui
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: digests-${{ matrix.name }}-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/digests
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -101,26 +192,27 @@ jobs:
             type=ref,event=branch
             type=sha
 
-      # Layer cache lives in the registry under a `buildcache` tag, not the
-      # Actions cache: the API image's dependency layers (torch, two baked
-      # embedding models, a second venv) still run to well over a GB even on
-      # the CPU-only torch build, and the Actions cache is 10 GB per
-      # repository shared across everything, so a `type=gha,mode=max` export
-      # would churn it and evict the UI's cache.
-      # provenance=false keeps each tag a plain single-platform image; the
-      # default attestation manifest shows up as an `unknown/unknown` row on
-      # the package page.
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64
-          push: true
-          provenance: false
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=registry,ref=${{ matrix.image }}:buildcache
-          cache-to: type=registry,ref=${{ matrix.image }}:buildcache,mode=max
+      # One manifest list per tag, pointing at the amd64 and arm64 digests.
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          count=$(ls | wc -l)
+          if [ "$count" -ne 2 ]; then
+            echo "::error::expected 2 platform digests for $IMAGE, found $count"
+            exit 1
+          fi
+          # shellcheck disable=SC2046
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "$IMAGE@sha256:%s " *)
+
+      - name: Inspect image
+        env:
+          IMAGE: ${{ matrix.image }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: docker buildx imagetools inspect "$IMAGE:$VERSION"
 
   release:
     name: GitHub Release
