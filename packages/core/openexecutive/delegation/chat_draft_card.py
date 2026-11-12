@@ -192,6 +192,10 @@ async def _save(
             if current["status"] != OPEN:
                 raise SendRefused(409, "draft_gone", "That draft isn't in your Drafts any more.", state=current)
             written, note = await words_for(person, current)
+            if written == str(current.get("body") or ""):
+                # Nothing to change (a question, answered in the note): the
+                # draft in their mailbox stays as it is.
+                return {**current}, note
             words = _check_words(written)
             try:
                 version = await client.update_draft_text(row.draft_id, row.message_id, words)

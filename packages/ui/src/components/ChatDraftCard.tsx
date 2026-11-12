@@ -360,8 +360,8 @@ export default function ChatDraftCard({
                 >
                   <input
                     type="text"
-                    aria-label="Tell me what to change"
-                    placeholder="Tell me what to change…"
+                    aria-label="Ask me something, or tell me what to change"
+                    placeholder="Ask me something, or tell me what to change…"
                     value={ask}
                     maxLength={500}
                     disabled={busy}
@@ -370,7 +370,7 @@ export default function ChatDraftCard({
                   />
                   {ask.trim() && (
                     <Button type="submit" variant="secondary" disabled={busy}>
-                      {working === "Changing…" ? "Changing…" : "Change"}
+                      {working === "Changing…" ? "Working…" : "Go"}
                     </Button>
                   )}
                 </form>

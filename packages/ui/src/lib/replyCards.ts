@@ -188,3 +188,24 @@ export function highlightPieces(
   if (cursor < body.length) pieces.push({ text: body.slice(cursor), changed: false });
   return pieces;
 }
+
+/** Who an email goes to, by name only: "Brennan Monaco and Annamarie
+ * Braden", "A, B and C", "A, B and 2 more". An entry is "Name <address>",
+ * "Name (address)" (cut short or not), or a bare address. */
+export function recipientNames(list: readonly string[]): string {
+  const names = list
+    .map((entry) => {
+      const named = /^\s*"?([^"<(]*?)"?\s*[<(]/.exec(entry);
+      return (named && named[1].trim()) || entry.replace(/[<>()"]/g, "").trim();
+    })
+    .filter(Boolean);
+  if (names.length <= 1) return names[0] ?? "";
+  if (names.length <= 3) return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  return `${names.slice(0, 2).join(", ")} and ${names.length - 2} more`;
+}
+
+/** Right now's draft rows name who they go to as one line, "Name (address),
+ * Name (address)": the same as recipientNames, from that line. */
+export function namesFromLine(line: string): string {
+  return recipientNames(line.match(/[^,(]+\([^)]*\)?|[^,]+/g) ?? []);
+}
