@@ -329,6 +329,19 @@ def test_a_named_to_outside_the_thread_answers_the_newest_and_is_named_back(
     assert "Not an email address" in _run(
         _session(mailbox), {"intent": "x", "thread_id": "t1", "to": ["nope"]},
     )["error"]
+    assert "can't go only to them" in _run(
+        _session(mailbox), {"intent": "x", "thread_id": "t1", "to": [OWNER]},
+    )["error"]
+
+
+def test_a_named_sender_matches_whatever_case_their_address_came_in(
+    roster: SimpleNamespace, composer: list[str]
+) -> None:
+    mailbox = FakeMailbox()
+    _forwarded_thread(mailbox)
+    mailbox.threads["t1"].messages[0].from_addr = "Dana@NorthPeak.example"
+    _run(_session(mailbox), {"intent": "Yes.", "thread_id": "t1", "to": [DANA]})
+    assert mailbox.drafts[0].in_reply_to == "<m1@mail.example>"
 
 
 def test_a_reply_can_name_the_message_it_answers(roster: SimpleNamespace, composer: list[str]) -> None:

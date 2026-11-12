@@ -89,6 +89,8 @@ def plan_reply(
     from openexecutive.delegation.gmail import references_header
 
     wanted = [a for a in dict.fromkeys(a.strip().lower() for a in to or []) if a and a != own]
+    if to and not wanted:
+        return "A reply can't go only to them. Pass who it goes to in `to`."
     shown = [m for m in thread.messages if "DRAFT" not in m.labels]
     received = [m for m in shown if m.from_addr and m.from_addr != own and "SENT" not in m.labels]
     target = None
@@ -97,7 +99,7 @@ def plan_reply(
         if target is None:
             return "That message_id isn't a message of this thread. Leave it out, or pass one read_my_email listed."
     elif wanted:
-        target = next((m for m in reversed(shown) if m.from_addr in wanted), None)
+        target = next((m for m in reversed(shown) if (m.from_addr or "").lower() in wanted), None)
     if target is None:
         target = received[-1] if received else (shown[-1] if shown else None)
     if target is None:
