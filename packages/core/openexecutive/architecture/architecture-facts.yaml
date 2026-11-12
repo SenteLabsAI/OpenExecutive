@@ -10987,9 +10987,13 @@ delegation:
     Then it sets touched_mail BEFORE the first mailbox read and runs
     gmail_status. A search with several matches returns status choose with
     candidates (subject, sender, date; no text) and drafts nothing.
-    Recipients are decided in code: a reply goes to the last inbound From,
-    never Reply-To (flag reply_to_ignored), with cc only on reply_all (minus
-    the writer and the sender; beyond 10 trimmed and flagged cc_trimmed);
+    A reply stays in its thread and answers one message (threads.plan_reply):
+    the one message_id names, else the latest from someone to names, else the
+    newest inbound one (their own latest when there is none). It goes to that
+    message's From, never Reply-To (flag reply_to_ignored), or to the people
+    to names, with cc only on reply_all (minus the writer and the recipients;
+    beyond 10 trimmed and flagged cc_trimmed). Asked for a reply, the
+    Executive never writes a new email instead;
     References from gmail.references_header — whole ids only, the parent
     last, the oldest after the root dropped to fit one header; a new email
     or a forward may go to any well-formed address (_new_recipients): it is

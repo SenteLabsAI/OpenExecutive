@@ -2,9 +2,12 @@
 what the composer is shown of it, and who the reply goes to. Shared by chat
 (``orchestrator.delegation_tools``) and the inbox watcher (``delegation.inbox``).
 
-Recipients are decided here, never by a model: a reply goes to the last
-message's sender (never its ``Reply-To``), with the thread's other recipients
-only on ``reply_all``.
+Who a reply answers: the message they name (``message_id``), else the latest
+message from someone they named (``to``), else the newest message from
+someone else, as a mail app's Reply would. It goes to that message's sender
+(never its ``Reply-To``), or to the people they named, with the message's
+other recipients on ``reply_all``. It always stays in the thread. Sending is
+decided by Approvals, not here.
 
 The composer may restate what the writer already said in the thread, so which
 words are theirs is never written inside the thread text, where a sender's
@@ -73,40 +76,64 @@ def writer_said(thread: Any, own: str) -> str:
     return "\n\n".join(parts)
 
 
-def plan_reply(thread: Any, own: str, reply_all: bool) -> dict[str, Any] | str:
-    """Recipients, subject and threading headers for a reply, or why not."""
+def plan_reply(
+    thread: Any, own: str, reply_all: bool, *, to: list[str] | None = None, message_id: str | None = None,
+) -> dict[str, Any] | str:
+    """Recipients, subject and threading headers for a reply, or why not.
+
+    ``message_id`` picks the message of the thread it answers; ``to`` (already
+    checked addresses) names who it goes to and, without ``message_id``,
+    answers the latest message from one of them. Without either it answers the
+    newest message from someone else; with no such message, their own latest,
+    to the people that went to."""
     from openexecutive.delegation.gmail import references_header
 
-    received = [
-        m for m in thread.messages
-        if m.from_addr and m.from_addr != own and not {"SENT", "DRAFT"} & set(m.labels)
-    ]
-    if not received:
-        return "There's no message from anyone else in that thread to reply to."
-    last = received[-1]
+    wanted = [a.strip().lower() for a in to or [] if a.strip()]
+    shown = [m for m in thread.messages if "DRAFT" not in m.labels]
+    received = [m for m in shown if m.from_addr and m.from_addr != own and "SENT" not in m.labels]
+    target = None
+    if message_id:
+        target = next((m for m in shown if m.id == message_id), None)
+        if target is None:
+            return "That message_id isn't a message of this thread. Leave it out, or pass one read_my_email listed."
+    elif wanted:
+        target = next((m for m in reversed(shown) if m.from_addr in wanted), None)
+    if target is None:
+        target = received[-1] if received else (shown[-1] if shown else None)
+    if target is None:
+        return "There's no message in that thread to reply to."
+    from_me = target.from_addr == own
     flags: list[str] = []
-    if last.reply_to and last.reply_to != last.from_addr:
+    if not from_me and target.reply_to and target.reply_to != target.from_addr:
         flags.append("reply_to_ignored")
-    if last.mailing_list:
+    if target.mailing_list:
         flags.append("mailing_list")
-    newest = [m for m in thread.messages if "DRAFT" not in m.labels]
-    if newest and newest[-1].from_addr == own:
+    if shown and shown[-1].from_addr == own:
         flags.append("you_replied_last")
+    if wanted:
+        recipients = wanted
+    elif from_me:
+        recipients = [a for a in dict.fromkeys(target.to) if a != own]
+    else:
+        recipients = [target.from_addr]
+    if not recipients:
+        return "Nobody to send that reply to. Pass `to`."
     cc: list[str] = []
     if reply_all:
-        cc = [a for a in dict.fromkeys([*last.to, *last.cc]) if a not in (own, last.from_addr)]
+        everyone = [target.from_addr, *target.to, *target.cc]
+        cc = [a for a in dict.fromkeys(everyone) if a and a != own and a not in recipients]
         if len(cc) > MAX_RECIPIENTS:
             cc = cc[:MAX_RECIPIENTS]
             flags.append("cc_trimmed")
-    subject = last.subject or next((m.subject for m in thread.messages if m.subject), "")
+    subject = target.subject or next((m.subject for m in thread.messages if m.subject), "")
     if not subject.lower().startswith("re:"):
         subject = f"Re: {subject}".strip()
     return {
-        "to": [last.from_addr],
+        "to": recipients[:MAX_RECIPIENTS],
         "cc": cc,
         "subject": subject,
-        "in_reply_to": last.message_id_header or None,
-        "references": references_header(last.references, last.message_id_header),
+        "in_reply_to": target.message_id_header or None,
+        "references": references_header(target.references, target.message_id_header),
         "flags": flags,
-        "last_text": last.text,
+        "last_text": target.text,
     }

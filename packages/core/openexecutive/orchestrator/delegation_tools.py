@@ -67,8 +67,12 @@ GHOSTWRITE_EMAIL_TOOL: dict[str, Any] = {
         "words. To reply, pass `thread_id`, or `find` (a search in their "
         "mailbox, e.g. 'from:dana@example.com subject:pilot'); if several threads "
         "match you get `candidates` — ask them which one and call again with its "
-        "thread_id. To start a new email instead, pass `to` (any address; it is "
-        "only a draft). To forward an email, pass `forward` (its "
+        "thread_id. A reply stays in that thread and answers its newest message "
+        "from someone else; to answer someone else in it (\"reply to Dana\"), add "
+        "`to` with their address, or `message_id` for one message, and `reply_all` "
+        "to keep the others on it. When they ask for a reply, never write a new "
+        "email instead. To start a new email, pass `to` without a thread (any "
+        "address; it is only a draft). To forward an email, pass `forward` (its "
         "thread_id: its latest message is forwarded, with its files, unless "
         "`forward_message_id` names an earlier one) and `to`; "
         "`intent` is the note above it. To attach files to a new email or a reply, "
@@ -107,10 +111,20 @@ GHOSTWRITE_EMAIL_TOOL: dict[str, Any] = {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "For a NEW email or a forward: recipient addresses. Any address "
+                    "Recipient addresses. With `thread_id` / `find`: who the reply "
+                    "goes to, answering their latest message in that thread. Any address "
                     "works, since it is only a draft; one not in their People that "
                     "they didn't type comes back in `not_in_people`, so ask them to "
                     "check it before they send."
+                ),
+            },
+            "message_id": {
+                "type": "string",
+                "description": (
+                    "With `thread_id` / `find`: the message of that thread to reply "
+                    "to (a message_id read_my_email listed). It goes to that message's "
+                    "sender unless `to` says otherwise. Leave it out for the newest "
+                    "message from someone else."
                 ),
             },
             "reply_all": {
@@ -419,9 +433,21 @@ def _plan(writer: _Writer, thread: Any, tool_input: dict[str, Any], roster: dict
     if isinstance(cc, str):
         return _error(cc)
     if thread is not None:
-        plan = plan_reply(thread, writer.email, tool_input.get("reply_all") is True)
+        named: list[str] = []
+        if tool_input.get("to"):
+            checked_to = _new_recipients(tool_input.get("to"))
+            if isinstance(checked_to, str):
+                return _error(checked_to)
+            named = checked_to
+        message_id = tool_input.get("message_id")
+        plan = plan_reply(
+            thread, writer.email, tool_input.get("reply_all") is True,
+            to=named, message_id=message_id.strip() if isinstance(message_id, str) and message_id.strip() else None,
+        )
         if isinstance(plan, str):
             return _error(plan)
+        if named:
+            plan["not_in_people"] = not_in_people(named, writer.pinned.speaker_text, roster)
         if asks_if_ai(plan["last_text"]):
             plan["flags"].append("asks_if_ai")
         added = [a for a in cc if a not in plan["to"] and a not in plan["cc"] and a != writer.email]

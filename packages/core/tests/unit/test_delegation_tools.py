@@ -262,10 +262,45 @@ def test_a_question_about_being_an_ai_goes_back_to_them(
     assert any("AI" in q for q in result["open_questions"])
 
 
-def test_a_thread_with_nobody_else_in_it_is_refused(roster: SimpleNamespace, composer: list[str]) -> None:
+def test_a_thread_with_nobody_else_in_it_asks_who_to(roster: SimpleNamespace, composer: list[str]) -> None:
     mailbox = FakeMailbox()
     mailbox.threads["t1"] = MailThread(id="t1", messages=[_msg(1, OWNER, "note to self", labels=["SENT"])])
-    assert "no message from anyone else" in _run(_session(mailbox), {"intent": "x", "thread_id": "t1"})["error"]
+    assert "Pass `to`" in _run(_session(mailbox), {"intent": "x", "thread_id": "t1"})["error"]
+    result = _run(_session(mailbox), {"intent": "x", "thread_id": "t1", "to": [TEAM]})
+    assert result["status"] == "drafted"
+    assert (mailbox.drafts[0].to, mailbox.drafts[0].thread_id) == ([TEAM], "t1")
+
+
+def _forwarded_thread(mailbox: FakeMailbox) -> None:
+    """Dana asks the owner and Sam; Sam then writes "can you answer?"."""
+    mailbox.threads["t1"] = MailThread(id="t1", messages=[
+        _msg(1, DANA, "Is the HOME loan assumed in full?", cc=["sam@co.example"]),
+        _msg(2, "sam@co.example", "Can you respond?"),
+    ])
+
+
+def test_a_reply_to_someone_named_answers_their_message_in_the_thread(
+    roster: SimpleNamespace, composer: list[str]
+) -> None:
+    mailbox = FakeMailbox()
+    _forwarded_thread(mailbox)
+    result = _run(_session(mailbox), {"intent": "Yes.", "thread_id": "t1", "to": [DANA], "reply_all": True})
+    assert result["status"] == "drafted"
+    spec = mailbox.drafts[0]
+    assert (spec.to, spec.cc, spec.thread_id) == ([DANA], ["sam@co.example"], "t1")
+    assert spec.in_reply_to == "<m1@mail.example>"
+
+
+def test_a_reply_can_name_the_message_it_answers(roster: SimpleNamespace, composer: list[str]) -> None:
+    mailbox = FakeMailbox()
+    _forwarded_thread(mailbox)
+    _run(_session(mailbox), {"intent": "Yes.", "thread_id": "t1", "message_id": "m1"})
+    assert (mailbox.drafts[0].to, mailbox.drafts[0].in_reply_to) == ([DANA], "<m1@mail.example>")
+    _run(_session(mailbox), {"intent": "On it.", "thread_id": "t1"})
+    assert mailbox.drafts[1].to == ["sam@co.example"]
+    assert "isn't a message of this thread" in _run(
+        _session(mailbox), {"intent": "x", "thread_id": "t1", "message_id": "m9"},
+    )["error"]
 
 
 # --------------------------------------------------------------------------- #
