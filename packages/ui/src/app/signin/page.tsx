@@ -4,19 +4,12 @@ import { redirect } from "next/navigation";
 import { GOOGLE_SIGN_IN, LOCAL_LOGIN, OIDC, auth, sessionStillAllowed, signIn } from "@/auth";
 import { LOCAL_LOGIN_PROVIDER_ID } from "@/lib/localLogin";
 import { OIDC_PROVIDER_ID } from "@/lib/oidc";
+import { safeCallbackUrl } from "@/lib/callbackUrl";
 import { firstParam } from "@/lib/searchParam";
 import BrandMark from "@/components/BrandMark";
 import FrameSignIn from "@/components/embed/FrameSignIn";
 
 type SearchParams = Promise<{ callbackUrl?: string | string[]; error?: string | string[] }>;
-
-// Only same-origin paths allowed — a leading `/` followed by anything other
-// than another `/` (which would be protocol-relative, e.g. `//evil.com`).
-function safeCallbackUrl(raw: string | undefined): string {
-  if (!raw) return "/";
-  if (!raw.startsWith("/") || raw.startsWith("//") || raw.startsWith("/\\")) return "/";
-  return raw;
-}
 
 export default async function SignInPage({ searchParams }: { searchParams: SearchParams }) {
   const query = await searchParams;
