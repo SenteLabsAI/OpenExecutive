@@ -7,13 +7,15 @@
 // words show up while the person talks (`onLive`); when they stop, the
 // recording is written out as before and that version replaces the live
 // words. Without it (Firefox), and on Android, the words come after
-// stopping. Hidden when speech to text isn't set up or the browser can't
+// stopping. While it listens, bars in the button move with the sound it
+// hears. Hidden when speech to text isn't set up or the browser can't
 // record.
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import { getVoiceStatus, transcribeRecording } from "@/lib/api";
-import { clock, joinDictation, liveWordsAllowed, pickRecordingType, recordingFilename, splitHeard } from "@/lib/dictation";
+import { clock, joinDictation, liveWordsAllowed, micBars, pickRecordingType, recordingFilename, splitHeard } from "@/lib/dictation";
+import { watchMicLevel } from "@/lib/micMeter";
 import { playMicTone } from "@/lib/micTone";
 
 type Phase = "idle" | "listening" | "hearing";
@@ -55,6 +57,9 @@ export default function MicButton({ disabled, onLive, onText, onError }: Props) 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const recognitionRef = useRef<Recognition | null>(null);
+  // The bars that move with the sound, drawn without re-rendering.
+  const barsRef = useRef<(HTMLSpanElement | null)[]>([]);
+  const stopMeterRef = useRef<(() => void) | null>(null);
   // True from the start of a recording until it stops: a recognizer that
   // ends on its own starts again only while this holds.
   const wantLiveRef = useRef(false);
@@ -85,6 +90,8 @@ export default function MicButton({ disabled, onLive, onText, onError }: Props) 
   const clearTimer = () => {
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = null;
+    stopMeterRef.current?.();
+    stopMeterRef.current = null;
   };
 
   const stopRecognition = () => {
@@ -201,6 +208,7 @@ export default function MicButton({ disabled, onLive, onText, onError }: Props) 
       if (e.data.size > 0) chunks.push(e.data);
     };
     rec.onstop = async () => {
+      clearTimer();
       playMicTone("stop");
       stream.getTracks().forEach((t) => t.stop());
       recorderRef.current = null;
@@ -232,6 +240,12 @@ export default function MicButton({ disabled, onLive, onText, onError }: Props) 
     recorderRef.current = rec;
     heardRef.current = "";
     rec.start();
+    stopMeterRef.current = watchMicLevel(stream, (level) => {
+      micBars(level).forEach((h, i) => {
+        const bar = barsRef.current[i];
+        if (bar) bar.style.height = `${Math.round(h * 100)}%`;
+      });
+    });
     onLive?.("", "");
     listen();
     const began = Date.now();
@@ -255,7 +269,18 @@ export default function MicButton({ disabled, onLive, onText, onError }: Props) 
         title="Stop — your words go into the message box"
         className="flex-shrink-0 h-11 px-3 rounded-xl border border-red-500/50 text-fg flex items-center gap-2 cursor-pointer"
       >
-        <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse" aria-hidden />
+        <span className="flex items-center gap-[3px] h-4" aria-hidden>
+          {micBars(0).map((h, i) => (
+            <span
+              key={i}
+              ref={(el) => {
+                barsRef.current[i] = el;
+              }}
+              className="w-[3px] rounded-full bg-red-500 transition-[height] duration-75"
+              style={{ height: `${h * 100}%` }}
+            />
+          ))}
+        </span>
         <span className="text-sm tabular-nums">{clock(elapsed)}</span>
         <Icon name="stop" size="w-3.5 h-3.5" fill="currentColor" className="text-red-500" />
       </button>

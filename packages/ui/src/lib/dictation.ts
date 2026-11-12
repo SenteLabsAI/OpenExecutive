@@ -71,3 +71,21 @@ export const MIC_TONES: Record<"start" | "stop", readonly [number, number]> = {
   start: [660, 880],
   stop: [880, 660],
 };
+
+/** How loud the mic is, 0 to 1, from the loudness of the latest sound
+ *  (`rms`, 0 to 1). Speech is quiet next to full scale, so it is raised;
+ *  it rises at once and falls back slowly, so the bars don't flicker. */
+export function micLevel(rms: number, previous: number): number {
+  const now = Math.min(1, Math.max(0, rms) * 5);
+  return Math.max(now, previous * 0.85);
+}
+
+// The bars' shape at full voice: tallest in the middle.
+const BAR_SHAPE = [0.55, 0.8, 1, 0.8, 0.55];
+
+/** The five bars in the mic button while it listens, each a fraction of
+ *  its full height: short and even when quiet, growing with the voice. */
+export function micBars(level: number): number[] {
+  const l = Math.min(1, Math.max(0, level));
+  return BAR_SHAPE.map((s) => 0.2 + 0.8 * s * l);
+}
