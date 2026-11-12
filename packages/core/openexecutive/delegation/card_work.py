@@ -256,7 +256,9 @@ def prompt_for(person: Any, payload: dict[str, Any], card_id: int, *, ask: str =
     ]
     if ask:
         lines += ["", f"{first} asked for this on the card, in their words:",
-                  f"<their_ask>\n{no_tags(one_line(ask, 1000))}\n</their_ask>"]
+                  f"<their_ask>\n{no_tags(one_line(ask, 1000))}\n</their_ask>",
+                  "If it is a question rather than a change, find the answer and call "
+                  "update_reply_card with only a note that answers it: the reply stays as it is."]
     return "\n".join(lines)
 
 

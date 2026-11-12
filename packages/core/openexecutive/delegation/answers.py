@@ -133,6 +133,11 @@ writer, as their assistant ("I"), saying what you changed and why. With \
 reading a file, making a spreadsheet or document, looking something up, \
 booking or sending something), set needs_tools true and return the draft as \
 it was: the Executive does that work with its tools. Never say you can't.
+12. When <change> is a question to you rather than a change ("who signed \
+the LOI?", "what did we quote them?"), set question true and return the \
+draft as it was, word for word: a question never edits the reply. Answer it \
+in note, from what <draft>, <answers> and <recipients> say. When answering \
+needs looking something up, also set needs_tools true.
 
 Return the new body (and gist, note, questions) through rewrite_reply."""
 
@@ -146,6 +151,7 @@ _REWRITE_TOOL: dict[str, Any] = {
             "gist": {"type": "string"},
             "note": {"type": "string"},
             "needs_tools": {"type": "boolean"},
+            "question": {"type": "boolean"},
             "questions": {
                 "type": "array",
                 "items": {
@@ -165,7 +171,12 @@ _REWRITE_TOOL: dict[str, Any] = {
 
 class NeedsWork(Exception):
     """What the person typed on the card is work for the Executive's tools,
-    not a change of words (``delegation.card_work``)."""
+    not a change of words (``delegation.card_work``). ``question`` when it
+    asks something rather than asking for a change."""
+
+    def __init__(self, ask: str, *, question: bool = False) -> None:
+        super().__init__(ask)
+        self.question = question
 
 
 @dataclass(frozen=True)
@@ -476,7 +487,8 @@ async def rewrite(
     """The card's draft rewritten with ``answers``, with what the person
     asked to ``change``, or with ``news`` (newer email in the conversation,
     ``catch_up``): the new body, the payload fields to keep with it, and the
-    sentences that are new. Raises ``SendRefused``."""
+    sentences that are new. A ``change`` that is a question gets its answer
+    in the conversation and the body back unchanged. Raises ``SendRefused``."""
     from openexecutive.config import get_settings
     from openexecutive.delegation.ghostwriter import (
         _drop_name_before_signature,
@@ -532,8 +544,14 @@ async def rewrite(
     except Exception as exc:
         logger.warning("delegation.answers: the rewrite failed (%s)", type(exc).__name__)
         written = {}
+    asked_only = bool(change and not pairs and not news and written.get("question") is True)
     if change and not pairs and not news and written.get("needs_tools") is True:
-        raise NeedsWork(change)
+        raise NeedsWork(change, question=asked_only)
+    if asked_only:
+        # A question gets an answer and leaves the reply word for word.
+        if not str(written.get("note") or "").strip():
+            raise SendRefused(502, "rewrite_failed", "Couldn't answer that. Try asking again.")
+        return body, _turns(payload, written, change=change, news=[], now=now), []
     raw = written.get("body")
     if not isinstance(raw, str) or not raw.strip():
         raise SendRefused(502, "rewrite_failed", "Couldn't write that into your reply. Try again, or tap Edit.")

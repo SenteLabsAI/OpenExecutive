@@ -200,7 +200,7 @@ export function rowTarget(row: { source?: TimedPoint["source"] }): PointTarget {
 }
 
 /** The draft a "draft" row is about (its `draft:<id>` key), for the draft's
- * own Send, See draft and Delete; null for any other row. */
+ * own Send, Open and Don't send; null for any other row. */
 export function draftRowId(row: { kind: string; key: string }): number | null {
   if (row.kind !== "draft") return null;
   const m = /^draft:(\d+)$/.exec(row.key);
