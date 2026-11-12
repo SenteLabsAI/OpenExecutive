@@ -107,6 +107,7 @@ _NOT_YOURS = "Only the person this reply was written for can send it."
 _CONFIRM_TEXT = {
     "recipients_changed": "The draft's recipients changed since it was written.",
     "thread_moved_on": "A newer message arrived in this conversation after the draft was written.",
+    "changed_in_chat": "The reply was changed from chat since this card was shown.",
 }
 
 
@@ -362,11 +363,17 @@ async def _send_checked(
     # goes without asking again only when the card that was tapped showed
     # that version (edits.seen_caught_up_at).
     caught_up = str(payload.get(CAUGHT_UP_KEY) or "")
+    seen_caught_up, _, seen_chat = str(confirm.get("seen_caught_up_at") or "").partition("|")
     if (
-        caught_up and confirm.get("seen_caught_up_at") != caught_up
+        caught_up and seen_caught_up != caught_up
         and confirm.get("thread_moved_on") is not True and "thread_moved_on" not in reasons
     ):
         reasons.append("thread_moved_on")
+    # Changed from chat (card_drafts.from_chat): only a card that showed
+    # that version sends it, never one shown before, nor on its own.
+    chat = str(payload.get(card_drafts.CHANGED_IN_CHAT) or "")
+    if chat and seen_chat != chat:
+        reasons.append("changed_in_chat")
     if reasons:
         raise SendRefused(
             409, "confirm", " ".join(_CONFIRM_TEXT[r] for r in reasons),
