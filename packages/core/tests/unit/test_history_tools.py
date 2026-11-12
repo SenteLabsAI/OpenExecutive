@@ -21,7 +21,6 @@ from openexecutive.delegation import settings as dsettings
 from openexecutive.delegation.settings import (
     DelegationOverride,
     pin_turn_delegation,
-    set_team_members,
 )
 from openexecutive.memory import episodic, session_store
 from openexecutive.memory import history as h
@@ -66,8 +65,6 @@ def roster(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     principal = people_store.upsert_person(full_name="Olivia Owner", is_principal=True, email=OWNER)
     teammate = people_store.upsert_person(full_name="Ben Teammate", email=TEAM)
     people_registry.invalidate()
-    monkeypatch.setattr(dsettings, "team_members_available", lambda: True)
-    set_team_members(True, updated_by="test")
     return SimpleNamespace(principal=principal, teammate=teammate)
 
 
@@ -138,7 +135,6 @@ def test_never_off_the_speakers_own_private_surface(roster: SimpleNamespace, lab
 def test_a_teammate_needs_no_act_as_me(roster: SimpleNamespace) -> None:
     h.set_person_settings(roster.teammate, by="test", reply_notes=True)
     assert ht.recall_person(_web(roster.teammate)) is not None
-    set_team_members(False, updated_by="test")
     assert ht.recall_person(_web(roster.teammate)) is not None
 
 

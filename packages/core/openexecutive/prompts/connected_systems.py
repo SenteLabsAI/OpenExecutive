@@ -29,7 +29,7 @@ _SERVER_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 # The Google Workspace tools the Executive reaches for on most turns, by
 # service, as workspace-mcp 2.1.0 (pinned in docker/Dockerfile) names them.
 # A new workspace-mcp can rename tools: re-check this list when bumping the
-# pin. Apps Script tools stay out, since the gateway refuses them. Listing a
+# pin. Apps Script tools stay out: they are rarely the right tool. Listing a
 # name here never widens access: every call still runs the gateway's gates
 # and a private turn's allow-list (schedule_tools.PRIVATE_TURN_MCP_TOOLS).
 GOOGLE_TOOL_MANIFEST: dict[str, tuple[str, ...]] = {

@@ -123,7 +123,7 @@ system:
     - Specialists run in parallel via route_parallel() for cross-domain questions.
     - The untrusted-content policy (orchestrator.content_trust) is the one rule for text the principal did not write — inbound email, chat, attached files, watched pages. WHO SPEAKS - the principal only when the surface proved it (principal_speaking - web chat as the principal, CLI, their own Slack/Discord or secret-verified Telegram, their own address with Gmail dmarc=pass); an empty origin_channel is never read as trust. MEMORY - episodic extraction only then, and only on words outside <untrusted_content> blocks; peer memory and open loops are recorded under the speaker's own name, never as the principal's. TOOLS - writes on the principal's authority refuse others in their handlers; PRINCIPAL_ONLY_TOOLS (load_mcp_server - it connects the install to any URL; list_saved_tools and run_python_job - the principal's own automations and library files; run_script - it runs code the model just wrote, spending the turn's whole call budget) are not offered unless the principal is speaking on a verified surface (their own mail counts once their mail service authenticated it, Session.email_authenticated - they are signed in there as anywhere, so Approvals decides), and a call emitted anyway is refused with a not_principal audit row. LABEL - outside text sits in the user turn inside <untrusted_content source author author_verified> with a fixed no-authority notice; NFKC folds compatibility forms, control characters are dropped and the tag's name is renamed wherever the text carries it (any case, spacing, entity-escaped), so the text cannot close its block. The principal's authenticated mail is theirs, but what it quotes or forwards still goes in a block (source email_quoted). A new inbound surface is an entry in this module, not a gate invented at its call site.
     - Outside content (orchestrator.outside_content). Once a turn has read text from outside the team - any gateway read (a call_tool other than a Google or Microsoft 365 tool whose name starts with a write verb), an attachment on the message, a web search result, a synced Drive / OneDrive / Confluence / Notion excerpt (the retrieved context's synced headings, or retriever.retrieve returning one), read_document, run_executive_research, or an extension tool registered reads_outside (a vendor app) - for the rest of that turn the chat loop refuses what the Act as me lockdown refuses (mail_touched_withholds), every upsert_person but a contact the speaker named this message at an address they typed or one that sent the mail read (lockdown.speaker_named_contact, never on a SENDER turn; the refusal points to an add_contact card), and every call_tool but the reads in MCP_CLIENT_MCP_TOOLS and a OneDrive file read, so no mail, Docs, Sheets, Drive or calendar write. The company's own Drive is not outside text: before a round (and before each run_script call) vet_reads looks up the one item a Google read names by id (company_read_item and _COMPANY_READS - Drive file content and downloads, folder listings, Docs, Sheets, Slides and their comments; never searches, forms, mail or calendar, and never with a drive_id, query or URL argument), once per id a turn, through MCPGateway.company_drive_items; a read of an item that is the company's own (mcp_gateway._company_item) marks the turn COMPANY instead of GATEWAY. COMPANY holds the same calls (anyone who can edit a company file wrote its words), except that while every read so far is COMPANY a rename or move passes (_company_rename - update_drive_file with only file_id, name, add_parents, remove_parents; _company_only checks the round's pending reads too). The Executive's own files go through the same check, so one it shared outside is not the company's. A refusal tells the model a rename or move the person asked for can go on a drive_files approval card. A round that calls a read also holds that round's other such calls (they run together); the read itself runs and marks the turn once the round is done; a web search marks it as soon as the response arrives. Inside run_script each call is checked, and a read marks the turn for the calls after it. Handlers that reach outside re-check (lockdown.outside_reach_refusal), including the gateway's call_tool. The offered list never changes (the cached prefix stays the same) and the state lives in a context variable and on the session (session.turn_outside, found through current_session, because the web chat route resumes the generator in a fresh task per step), set by begin_turn and closed by end_turn, so nothing after the turn (the poller sending the reply) is held. Like the Act as me lockdown it lasts for the turn only; the next turn's history carries the reply, not what the tools returned. Mail to the Executive from someone not in People (a contact or a stranger) is outside text from its first word, so the email poller sets Session.sender_off_team, begin_turn marks the turn SENDER, and the whole turn is held; it may still raise an alert (create_alert), which is how that mail reaches the principal (private to them, routed to no one else, with the mail's real sender as its from), it may not send direct messages or remove watchlist entries (SENDER_WITHHELD_TOOLS), and a refusal on it tells the model to put the request in an alert rather than ask again. The poller's own audit rows still feed the brief. Separately, someone added to People this turn by upsert_person (or given a new address or chat account) is held until the next turn. _roster_allow_set leaves them out of the gateway's mail, calendar and Drive allow-list (the refusal says why, _block), and _guard_outbound, message_person and calendar attendees refuse them. What a turn held (outside_withheld_error and mail_touched_withheld_error call note_held) is kept in process, per conversation and speaker (never in a shared chat or a SENDER turn), for the next turn for HELD_TTL_SECONDS (an hour). When that message is a go (GO_RE - a short yes, or one opening with go, go ahead, do it or proceed as its own clause), begin_turn sets go_first, and the first round with a read has its reads (source_of, or a mailbox read tool) refused once with go_first_error, which names no tool and asks for nothing new (defers_read), so the approved writes run before a re-read holds them again; reads run from the next round. Nothing is replayed; the model makes the calls under every usual check. In the web chat the go is a tap - pending_held gives the held steps in plain words (step_words - only names it knows, else the app's generic label, as a tool name the model chose can carry planted words) to the chat stream's held_steps event and to the last reply in GET /sessions/{id}/messages, the UI shows Approve and Not now under the reply, and Approve sends Go ahead as the person's own message; a web turn's refusal (approve_hint, TurnOutside.web from Session.from_web_chat) points at Approve instead of asking for a typed go. Why - the owner asked for a tap instead of say go. A SENDER turn remembers nothing. What the owner's own authenticated mail quotes or forwards counts too - begin_turn queues its email_quoted block for the check like an attachment.
-    - Approvals, the one gate (orchestrator.levels). The owner picks one level for the company - Careful (ask), Balanced (outsiders, the default) or Hands-off (trust) - in Settings -> Approvals, and it applies the same way on every channel (web chat, email, Slack, Telegram, Google Chat, Discord, the phone, an AI app, a shared chat, scheduled work). The checks that notice why a step might wait (outside content, the owner's own mail read this turn, a private turn, a shared chat someone else wrote in, an AI app's turn, a tool that changes the install, an unattended run) only detect; levels.decide turns each into RUN or CARD. Hands-off runs it; Balanced and Careful put the exact call on an Approve card (levels.hold -> department_gate.hold with held=True, a department_action decision) shown under the reply in the web chat (action_taken chip with decision_id), on Today and in the owner's chat app (channel_cards); Approve runs it through take_the_lead.carry_out inside levels.approved(). A step that only messages the owner never waits (levels.only_to_owner). Hands-off is for the owner's own turns - a turn whose words may be someone else's (mail from someone not in People, a shared chat someone else wrote in since the owner, a host page, another AI app that isn't the owner's own, a teammate) runs at Balanced (outside_mode._someone_else); STRANGER, NOT_OWNER and SHARED are always a card, and AI_APP is too unless the AI app is the owner's own, signed in as them and allowed to act (outside_mode.owners_ai_app), which follows their level like the web app, and a teammate's department authority range (department_gate) applies at every level. A step a tap can't carry out (a script, a new server) gets levels.not_carriable_error, never a silent drop. Under Hands-off or inside an approved card (levels.relaxed) the gateway skips the checks that only protect the owner from their own Executive (recipients, attendees, shared folders, URL fetches, mailed text); below Hands-off those become cards (levels.card_or), refused only with no turn behind them. Company Drive and OneDrive reads, searches and listings are never outside content. Nothing is hidden from the offered tool list for these reasons. Why - every feature had grown its own gate and most held steps were refused silently (a Hands-off owner's email reply was dropped with no card); the owner asked for three levels people choose, enforced in one place, with anything held shown as a card.
+    - Approvals, the one gate (orchestrator.levels). The owner picks one level for the company - Careful (ask), Balanced (outsiders, the default) or Hands-off (trust) - in Settings -> Approvals, and it applies the same way on every channel (web chat, email, Slack, Telegram, Google Chat, Discord, the phone, an AI app, a shared chat, scheduled work). The checks that notice why a step might wait (outside content, the owner's own mail read this turn, a private turn, a shared chat someone else wrote in, an AI app's turn, a tool that changes the install, an unattended run) only detect; levels.decide turns each into RUN or CARD. Hands-off runs it; Balanced and Careful put the exact call on an Approve card (levels.hold -> department_gate.hold with held=True, a department_action decision) shown under the reply in the web chat (action_taken chip with decision_id), on Today and in the owner's chat app (channel_cards); Approve runs it through take_the_lead.carry_out inside levels.approved(). A step that only messages the owner never waits (levels.only_to_owner). The level belongs to whoever is asking - the owner gets theirs, a teammate gets their own (never above the owner's), and a step a teammate's level holds goes on their own card (levels._approver). Anyone not in People (mail from a stranger, a host page, another AI app that isn't the owner's own) runs at Balanced (outside_mode._someone_else); STRANGER and NOT_OWNER are always a card for the owner, and AI_APP is too unless the AI app is the owner's own, signed in as them and allowed to act (outside_mode.owners_ai_app), which follows their level like the web app. Someone speaking who is on no People entry (a Google Chat sender matched to no one, a web sign-in on nobody's entry or an archived one; levels.unrostered_speaker) gets STRANGER on every step that sends or changes something (levels.acts), so the owner approves it at every level, and a Google Chat space, where anyone may have written last, never runs Hands-off. A shared web chat follows the level of whoever wrote. Nothing outside levels.py refuses or holds for who is asking - scripts/pr_checks.py (one-gate) fails a change that adds one, and input checks carry the input-safety marker comment. A step a tap can't carry out (a script, a new server) gets levels.not_carriable_error, never a silent drop. Under Hands-off or inside an approved card (levels.relaxed) the gateway skips the checks that only protect the owner from their own Executive (recipients, attendees, shared folders, URL fetches, mailed text); below Hands-off those become cards (levels.card_or), refused only with no turn behind them. Company Drive and OneDrive reads, searches and listings are never outside content. Nothing is hidden from the offered tool list for these reasons. Why - every feature had grown its own gate and most held steps were refused silently (a Hands-off owner's email reply was dropped with no card); the owner asked for three levels people choose, enforced in one place, with anything held shown as a card.
     - Safety level, When should I check with you? (orchestrator.outside_mode, orchestrator.content_scan). The owner's level, one row in outside_content_mode with the company's one level for every channel (the channels JSON is kept empty), changed only by the principal (GET/PUT /executive/outside-content, Settings -> Your Executive), fixed per turn by begin_turn as TurnOutside.mode from the turn's channel (channel_of). Every outside read is checked at every level by content_scan - one small-model call (classifier_model) with no tools that reads the content as data and reports steers_assistant plus categories from a fixed list (CATEGORIES) - so no words of the content reach the person through the verdict; a failed call, an unreadable answer, content over MAX_CHARS or a turn past MAX_PER_TURN checks is unchecked; verdicts are cached by content hash. The check reads only the outside author's words (content_scan.checked_content, on every path) - our own words around a read are taken out first, every sentence-length string literal in the package's code (orchestrator.own_words, built from the source, so a new hint is covered without a list), with an app's own next-step notes (without_server_notes). It asks whether the content tries to turn the assistant against its owner or around its rules (ignore or reveal its rules, forward or reveal the owner's information, write to an address the owner didn't choose, pay, hand over a login, open a link on its own), never merely whether it talks to an assistant, so a person asking the Executive for work, one person asking another to forward or share, an app's usage notes and the Executive's own footer are not flags. A flag must quote the content (content_scan._quoted); one that doesn't is asked once more - a quoting second flag stands, a clean second answer drops it, and a second flag that quotes nothing either makes the read unchecked (holds nothing below Careful; the turn is told it couldn't be checked). Quotes match through JSON escapes, HTML tags and entities, Markdown emphasis, NFKC and invisible characters (content_scan._plain). An attachment's files can't be quoted, so its flag stands. Why - our own words (the untrusted-content label, a held step's status, empty-search hints, a synced folder's heading, the Executive's footer), apps' notes and people asking the Executive for work were all read as the content steering it, and fixing one phrase on one path at a time kept missing the next. Its test set is evals/content_scan_cases.yaml (python -m openexecutive.evals.content_scan, needs a model key). A search of the owner's own mail is checked entry by entry (content_scan.scan_list, items naming the flagged entries) - a flagged thread's subject and sender name are left out behind LEFT_OUT_NOTICE and the rest passes once a second check finds it clean, holding nothing below Careful; a flag naming no entry flags the whole list as before. A thread whose newest message the Executive itself sent is not checked - its own address, which the mail service authenticated on the search (ThreadSummary.sender_authenticated - Gmail's Authentication-Results, or Exchange's stamp on an Outlook search, the same proof as a message read; kept per turn in TurnDelegation.mail_verified), under a subject that is not a reply's or forward's, since those carry someone else's words (the Executive's own deal summary for a teammate was flagged as a forward request). A read whose text is in hand is checked in mark_read; an attachment or a synced excerpt is queued (mark_pending - the retriever runs in a thread) and checked by settle before each round's tools are dispatched and before each run_script call. ask (Careful) is the hold above - every read marks the turn. outsiders (Balanced, the default) marks it only when the check flags the read (Verdict.holds); a read it couldn't check reaches the model behind UNCHECKED_NOTICE and marks nothing (except content too big to read whole or read past the turn's MAX_PER_TURN checks, TOO_BIG, which marks like a flag, since padding or a pile of harmless reads is how content would dodge the check), and nor does a web search (its results arrive encrypted, so nothing checks them). Reads from the team are not even checked - a Gmail search showing only ids, a Gmail message read whose every sender is a teammate (not a contact) that Gmail authenticated (fact_confirmation.sender_authenticated on a raw read of each id, at most 10) with no other address in it, or a calendar read naming only the team where the Executive itself organized every event (a teammate's invite is outside, since an invite's organizer is what the mail that brought it says; Google get_events only when detailed or for one event; Microsoft 365 calendar reads) (from_the_team). trust (Hands-off) applies on every channel to the owner's own turns (outside_mode._someone_else), where no read marks the turn but an attachment or synced excerpt the check flagged (the model read it before its check), a round that reads holds none of its other calls, a result the check couldn't read reaches the model behind UNCHECKED_NOTICE, and reading their own mail locks nothing (delegation.lockdown.mail_lock_holds); anyone else gets Balanced. The owner's own mail is checked the same way (outside_content.check_mail_read after each round that reads the mailbox or notes, setting TurnDelegation.mail_held and mail_vetted) and the Act as me lockdown follows the level - Careful holds it after any mail read, Balanced only once a mail read was flagged or too big to check or while one is unchecked (the reading round holds its other calls), Hands-off not at all - while MAIL_PRIVATE_WITHHELD_TOOLS (broadcasts, department messages, alerts, roster and authority changes) and an upsert_person the speaker didn't name stay shut after any mail read below Hands-off, even one the check cleared (lockdown.mail_turn_withholds, used at dispatch, in outside_reach_refusal and by app_control). Why - the owner asked for the mail hold to follow the same level after the per-channel level freed almost every other read-then-act request. At every level a flagged read's result reaches the model behind FLAG_NOTICE (data, not to be followed; never brought up in the reply), each flag is logged as content_flagged with which item it was (a mail's subject and sender, private to the person), and the flag is kept in plain words (flag_words - the module's own words around that item; pending_flags, an hour, in process, per conversation and speaker, each turn replacing the last's). The web chat shows it only when the turn also held steps, as their reason on the Approve / Not now card (the flags event with held_steps, and the last reply in GET /sessions/{id}/messages). A flag that held nothing is only logged. Why - nearly every flag shown on its own was a false alarm (a connected app's own notes to the assistant, a newsletter), and a warning that changes nothing the person sees teaches them to ignore it. Mail from someone not in People runs at Balanced at most; below Hands-off a send to someone outside People, or to someone added this turn, waits on an Approve card. An unreadable setting is Careful. Why - the hold stopped almost every read-then-act request, and the owner asked for one lever the person sets anywhere from careful to hands-off, per channel, that cuts that friction (so Balanced stops only on a real flag, and the check flags only clear instructions to an assistant), with the content always checked and flagged. The test suite pins get_mode to ask (tests/conftest.py) and every check to unchecked (content_scan.scan).
     - A go after a hold (orchestrator.outside_content.go_turn). On the turn that answers a go to what the last turn held, at Careful and Balanced alike, only a read the content check flags holds the turn again; a read that is merely unchecked or too big to check (a scanned PDF) does not, so a re-read no longer undoes the go. The Act as me mail lockdown (delegation.lockdown.mail_lock_holds) follows: on that turn it holds only for a flagged mail read or a round whose mail read still waits for its check.
     - A follow-up to yourself (orchestrator.schedule_tools._speakers_own_ref). schedule_followup and suggest_workflow refuse a channel_ref the session has not seen, except the turn's speaker's own address on that channel (their People email, Slack, Discord or Telegram id). Why - Google Chat seeds no addresses, so on 10-22 "tell me when Andrew's email arrives" was refused three times.
@@ -4017,56 +4017,15 @@ departments:
     written by a model (triage reading inbound mail, the Executive's
     create_alert), and the review forwards an alert's tags onto a new gate
     card, so a forged tag could re-send a held or already-sent action.
-    CHAT TURNS (orchestrator.department_gate): a team member's attended turn
-    (caller is a team member, not the principal; not unattended, not private
-    to the principal; or a web caller signed in but on no People entry, such
-    as an archived teammate still let in, or a chat-channel turn (any
-    origin_channel but email) whose sender matched no one, gated as someone
-    in no department. Slack, Telegram and Discord reject unmatched senders
-    before the turn, so in practice that is Google Chat. Google Chat matches
-    its sender by the Google account email on its signed event, and a sender
-    on People is the turn's caller_person_id with Session.speaker_verified,
-    as on Slack (a DM with the app is also Session.private_chat), so the
-    principal there is not held and a teammate gets their own department's
-    authority. Email is left out: inbound senders are never
-    on People and the mailbox has its own recipient gates)
-    wraps its sends and edits with the gate, in
-    Executive._stream_agent_loop beside Take the lead's `leading` wrap:
-    `turn_handlers` for GATED_TOOLS (take_the_lead.ACTING_TOOLS less
-    assign_open_loop, which refuses any session but the asker's so a held one
-    could never run, and run_workflow, whose action steps are approved step
-    by step; under escalate those two are refused outright, since both lead
-    to sends later and neither can wait on a card), and `call_tool` (chat and run_script) for every name
-    `mcp_tool_acts` flags. The gate wrap sits inside guard_call_tool, so the
-    gateway's recipient and mailbox gates still run first. Level = strictest
-    of the speaker's department_slugs (escalate > propose_only >
-    auto_execute; unknown slug = propose_only; none = propose_only, routed
-    via _route_proposal). auto_execute runs; propose_only runs only when the
-    speaker holds a range from EVERY group of approval ranges it needs (one
-    group per kind the text touches: money, contract, people decision, board;
-    or WILDCARD), since they would be the approver anyway. Every group, not
-    the first: Take the lead's single-kind read let a $12 mention make a
-    petty-cash holder the approver of a termination letter; escalate always holds, and an
-    approver equal to the speaker is replaced by the next one
-    (find_approvers, else the principal). An action reaching anyone outside
-    the team goes to the principal (only their approval opens contact
-    egress). A message only to the principal runs (nothing to approve). Held
-    = decision class `department_action` (idempotency key per speaker+call,
-    same live card on a repeat), alert source decision_scheduling routed to
-    the approver, private tag when the approver is the principal (else the
-    card shows the unquoted line), audit department_action_held (actor
-    person:<speaker>, private to the principal or to the approver alone).
-    The payload keeps `details`, every field of the call in full, and the
-    UI's HeldActionCard loads it (GET /decisions/{id}) and keeps Approve off
-    until it is on screen: the summary keeps only the first 117 characters,
-    so an injected tail would otherwise be approved unseen. Approve (api.routes.decisions,
-    principal_and_approver) runs take_the_lead.carry_out once after
-    claim_for_execution and audits department_action_done/_failed;
-    reject audits department_action_declined. The activity rail skips the
-    class, since its payload quotes the conversation. Fails closed: a gate
-    error holds. Why: gate_action used to run only for unattended work and
-    propose_meeting, so a seat's Slack DM or Gmail send from chat skipped
-    propose_only and escalate.
+    CHAT TURNS: no department gate. A team member's turn runs at their own
+    Approvals level (orchestrator.levels: the level belongs to whoever asks,
+    a teammate's capped by the owner's), and a step it holds goes on the
+    teammate's own Approve card (levels._approver) unless it reaches someone
+    not in People or changes how the Executive is set up, which go to the
+    owner. orchestrator.department_gate keeps only DECISION_CLASS, Verdict,
+    speaker and hold, which levels.hold uses to write the card. Why: the
+    department authority ranges were a second dial beside Approvals, and the
+    owner asked for one gate.
   card_approvals: |
     openexecutive.alerts.approvals + POST /alerts/{id}/approve. Approve on
     a Today card is carried out on the server for every card. A
@@ -9782,12 +9741,14 @@ integrations:
       its notice through calendar_cancel_grant for that event id only. Take
       the lead counts a connected tool whose action deletes
       (manage_event action=delete) as deleting.
+    - Below Hands-off, every Apps Script tool (_BLOCKED_APPS_SCRIPT_TOOLS
+      plus the _is_apps_script_tool name pattern, scoped to the
+      google_workspace namespace) waits on an Approve card (levels.card_or,
+      reason levels.SCRIPT): code running as the Executive's account outside
+      these gates, and since workspace-mcp 1.29.0 schedulable to keep running
+      (manage_script_trigger). Under Hands-off it runs.
     - Refused outright (_refuse, audited as integration_outbound_blocked):
-      every Apps Script tool (_BLOCKED_APPS_SCRIPT_TOOLS plus the
-      _is_apps_script_tool name pattern, scoped to the google_workspace
-      namespace) — code running as the Executive's account outside these
-      gates, and since workspace-mcp 1.29.0 schedulable to keep running
-      (manage_script_trigger); and any argument that makes the server fetch a
+      any argument that makes the server fetch a
       URL (_URL_FETCH_ARGS: create_drive_file.fileUrl, which also takes
       file://; update_drive_file and import_to_google_* file_url;
       _URL_FETCH_KEYS on every tool and inside every Gmail attachment entry)
@@ -9880,10 +9841,14 @@ integrations:
       query_freebusy  — free/busy check across calendars
 
     Typed Executive tools wrapping the calendar MCP:
-      create_calendar_event  — propose (or auto-execute when promoted) a FUTURE
-        meeting; enforces caps (horizon, business-hours, roster, principal-protect,
-        max-events/day), writes a decision_instances ledger row, and routes
-        through gate_action(scope=MEETING_SCHEDULING). On the PROPOSE path it also
+      create_calendar_event  — book a FUTURE meeting, or propose it when
+        Approvals holds it (calendar_tools._meeting_gate): someone on the team
+        asking on a verified surface books it, and so does anything under
+        Hands-off; below Hands-off a time outside business hours or on a
+        weekend waits on the asker's own card, and anything nobody on the team
+        asked for goes to the principal (or a teammate holding the Meetings
+        range). Checks the roster and principal protection, no horizon, daily
+        or attendee caps, and writes a decision_instances ledger row. On the PROPOSE path it also
         surfaces a companion briefing alert (source='decision_scheduling',
         external_id='decision:{id}', routed to the approver, tagged
         decision_instance:{id} / decision_class:meeting_scheduling) so the proposal
@@ -9894,9 +9859,8 @@ integrations:
         /decisions endpoints.
       create_instant_meeting — book an impromptu meeting starting ~1 min from now
         and return the Google Meet link immediately. AUTO-EXECUTES (no approval
-        step — the user asked to meet now) and SKIPS the horizon + business-hours/
-        weekday caps; still enforces roster, principal-protect, max-attendees, and
-        max-events/day, and records an `executed` ledger row for audit.
+        step — the user asked to meet now); checks the roster and principal
+        protection, and records an `executed` ledger row for audit.
         Since nothing approves it, it (and cancel_calendar_event) runs only when
         someone on the team asked on a verified surface
         (calendar_tools._asked_on_a_verified_surface: the principal, or a
@@ -10079,7 +10043,7 @@ integrations:
         Careful, signed callers or local login, no drive_files / save_files,
         and below Hands-off every recipient settled on the roster (team or
         contact, at least action_cards.SETTLED_AFTER, 7 days, old) with no
-        add_contact; at most ON_ITS_OWN_PER_DAY a day. An invite is never
+        add_contact. An invite is never
         booked as approved (the meeting gate decides). Below Hands-off a
         turn that read outside text (outside_content.read_outside) or mail
         also waits. Otherwise the card waits for the person's tap on the
@@ -10905,15 +10869,10 @@ delegation:
     prompts, tool lists and prompt caches are byte-identical to an install
     without it.
   who: |
-    delegation.settings.can_delegate(person) is the single rule: a
-    non-archived team member (never a contact) who is the principal, or any
-    other one once team_members_enabled(): the install allows it
-    (DELEGATION_TEAM_MEMBERS, default off — it offers the owner the switch)
-    AND the owner turned on "Let team members use it" (PUT /delegation/team,
-    principal only; one row in delegation_team, absent = off). Off again
-    takes it away from every team member from their next message; their
-    inbox watchers stop at the next check (act_as_me_off), and their own
-    switches, drafts and cards are kept. The ghostwriter's prompt is a
+    delegation.settings.can_delegate(person) is the single rule: any
+    non-archived team member (never a contact). Teammates are full users;
+    there is no install or owner switch for them (DELEGATION_TEAM_MEMBERS
+    and PUT /delegation/team were removed). The ghostwriter's prompt is a
     constant outside the Council, so the /agents and /personas edit routes
     (no principal check) can't change how anyone's draft is written. A
     person turns it on for themselves (PUT /delegation); nobody turns it on
@@ -11936,11 +11895,11 @@ delegation:
     scheduling/introduction/follow_up), unsure (below MIN_CONFIDENCE 0.8),
     recipients (subset of the email's From/To/Cc less own and Executive
     addresses, sender included, at most MAX_RECIPIENTS), long (over
-    MAX_BODY_CHARS 4000), flagged (any flag but others_on_thread /
-    executive_on_thread), thread_recent (one auto-send per thread per day,
-    delegation_handled), in_a_row (last own message in the thread was an
-    auto-send), daily_limit (DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY,
-    default 20). Below Hands-off also stranger (not team, contact or past
+    flagged (any flag but others_on_thread / executive_on_thread; the
+    injection check, so the reply waits on a card), thread_recent (one
+    auto-send per thread per day, delegation_handled: the loop guard, a
+    card too), in_a_row (last own message in the thread was an auto-send).
+    No daily cap and no length limit. Below Hands-off also stranger (not team, contact or past
     correspondent), sensitive (SENSITIVE topics in the email, its subject or
     the reply), link and amount (handle_it.content_hold, also on follow-ups
     and, topic only, invite titles); Hands-off sends them. The owner's
@@ -12005,8 +11964,7 @@ delegation:
     every address (training), signing_ok, no
     drive_files / save_files (tap_only), below Hands-off
     _known_people_refusal (no add_contact, every recipient settled on the
-    roster for SETTLED_AFTER 7 days), at most ON_ITS_OWN_PER_DAY 10 actions
-    a day under one lock; run_on_its_own claims it, gate_mode auto_execute,
+    roster for SETTLED_AFTER 7 days), no daily cap; run_on_its_own claims it, gate_mode auto_execute,
     status executed; a refusal there hand_back()s it to an ordinary card.
     From another AI app, below Hands-off, a turn that read outside text or
     mail also waits. An invite run on its own skips
@@ -12185,8 +12143,7 @@ delegation:
     DELEGATION_MAX_DRAFTS_PER_DAY (1-1000, default 50),
     DELEGATION_INBOX_POLL_MINUTES (default 5),
     DELEGATION_INBOX_MAX_DRAFTS_PER_DAY (default 20, within the shared
-    limit), DELEGATION_CLASSIFIER_MODEL (default ROUTING_MODEL),
-    DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY (1-500, default 20).
+    limit), DELEGATION_CLASSIFIER_MODEL (default ROUTING_MODEL).
   take_the_lead: |
     Take the lead (As me, orchestrator.take_the_lead): the Executive's own
     background work acts, and Approvals decides each step. There is no
@@ -12502,8 +12459,8 @@ trust_ledger: |
     consumes the reliability card or cancel-from-UI anymore.
 
   Invariants:
-    1. Code caps (horizon, business-hours, roster, principal, max-events/day)
-       enforced in create_calendar_event handler regardless of class mode.
+    1. Roster and principal checks enforced in create_calendar_event;
+       Approvals (calendar_tools._meeting_gate) decides book or propose.
     2. Class mode default-absent = propose (fail-safe).
     3. Circuit breaker (Build 3) wins over evaluator on same-tick conflict.
     4. Status transitions only via compare-and-set (rowcount check).
@@ -12513,16 +12470,13 @@ trust_ledger: |
   AuthorityScope.MEETING_SCHEDULING added to people/models.py.
   Department: operations (default; changeable per org structure).
 
-  Solo mode: create_calendar_event gates on the class mode, with no
-  gate_action("operations", …) call, so it works with no operations
-  department (calendar_tools._solo_meeting_gate). auto_execute books now
-  ONLY when the turn was started by the principal on a verified surface
-  (people_tools.is_principal_on_verified_surface — the roster-write rule:
-  web chat, their own Slack/Discord, private Telegram with a valid webhook
-  secret; fails closed); an inbound email, a contact's turn or an
-  unattended run gets a proposal to the principal instead, so injected
-  text cannot book a meeting. A proposal goes to a non-principal team
-  member holding the Meetings range (meeting_scheduling, on People), else
-  the principal; a booking with a contact on it stays the principal's
-  (private). Team is
-  unchanged (department gate AND class mode).
+  Solo and team alike: create_calendar_event asks no department
+  (calendar_tools._meeting_gate). Someone on the team on a verified
+  surface books it (people_tools.is_principal_on_verified_surface or
+  teammate_on_verified_surface; fails closed), and so does anything under
+  Hands-off. Below Hands-off a time outside business hours waits on the
+  asker's own card; an inbound email, a contact's turn or an unattended
+  run gets a proposal to a non-principal team member holding the Meetings
+  range (meeting_scheduling, on People), else the principal, so injected
+  text cannot book a meeting. A booking with a contact on it stays the
+  principal's (private).

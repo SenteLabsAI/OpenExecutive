@@ -261,7 +261,7 @@ def test_it_knows_people_the_way_the_rest_of_the_app_does(
 
 def test_a_teammate_sees_their_own_and_the_departments(client: TestClient, ids: dict[str, int]) -> None:
     body = client.get("/what-it-may-do", headers=TEAMMATE).json()
-    assert _section(body, "as_you")["available"] is False
+    assert _section(body, "as_you")["available"] is True
     assert _section(body, "executive")["available"] is False
     assert _section(body, "departments")["available"] is True
 

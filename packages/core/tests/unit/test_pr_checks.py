@@ -540,3 +540,29 @@ def test_main_reports_missing_base(
     monkeypatch.chdir(tmp_path)
     assert pr_checks.main(["--base", "origin/nope"]) == 2
     assert "is 'origin/nope' fetched?" in capsys.readouterr().out
+
+
+# --- one-gate ----------------------------------------------------------------
+
+
+def _gate(lines: dict[str, list[str]], waiver: str = "") -> str:
+    return _level(pr_checks.check_one_gate, changed=set(lines), added_lines=lines, waiver_text=waiver)
+
+
+def test_one_gate_fails_on_a_new_refusal_outside_levels() -> None:
+    lines = {PKG + "api/routes/x.py": ['    raise HTTPException(status_code=403, detail="no")']}
+    assert _gate(lines) == "FAIL"
+    assert _gate({PKG + "delegation/x.py": ["MAX_SENDS_PER_DAY = 5"]}) == "FAIL"
+
+
+def test_one_gate_allows_levels_input_checks_comments_and_tests() -> None:
+    assert _gate({PKG + "orchestrator/levels.py": ["    status_code=403"]}) == "PASS"
+    marked = {PKG + "api/routes/x.py": ["    raise HTTPException(status_code=403)  # input-safety"]}
+    assert _gate(marked) == "PASS"
+    assert _gate({PKG + "api/routes/x.py": ["    # only the owner used to see this"]}) == "PASS"
+    assert _gate({"packages/core/tests/unit/test_x.py": ["assert r.status_code == 403"]}) == "PASS"
+
+
+def test_one_gate_waiver() -> None:
+    lines = {PKG + "api/routes/x.py": ["    status_code=403"]}
+    assert _gate(lines, "Gates: n/a - a route that was already refused moved files") == "PASS"

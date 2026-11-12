@@ -2531,17 +2531,6 @@ export async function setDelegationEnabled(enabled: boolean): Promise<Delegation
   return res.json();
 }
 
-export async function setDelegationTeam(enabled: boolean): Promise<DelegationSettings> {
-  const res = await fetch(`${API_BASE}/delegation/team`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ enabled }),
-  });
-  if (!res.ok) throw await delegationError(res, "Couldn't change As you for your team.");
-  delegationChanged();
-  return res.json();
-}
-
 export async function setInboxWatch(
   update: { enabled?: boolean; mailbox_drafts?: boolean },
 ): Promise<DelegationSettings> {

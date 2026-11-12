@@ -375,7 +375,8 @@ _GATED_DRIVE_TOOLS = frozenset({
 # Apps Script tools run code as the Executive's Google account, outside every
 # gate in this module: the code can mail anyone, read or share all of Drive
 # and Gmail, and (manage_script_trigger, workspace-mcp 1.29.0) keep running
-# after the turn ends. OE never calls them, so every one is refused. The set
+# after the turn ends. Below Hands-off every one waits on an Approve card
+# (levels.SCRIPT); under Hands-off they run. The set
 # holds the 1.29.0 names and the 1.21.1 names they replaced; the name-pattern
 # fallback in `_is_apps_script_tool` keeps a rename from reopening the path.
 _BLOCKED_APPS_SCRIPT_TOOLS = frozenset({
@@ -3873,9 +3874,21 @@ class MCPGateway:
             and mcp_client_withholds("call_tool", tool_input)
             and not levels.only_to_owner("call_tool", tool_input)
         ):
-            return mcp_client_withheld_error(
+            # A card for the owner, as the chat loop does (levels.AI_APP).
+            blocked_call = mcp_client_withheld_error(
                 str(tool_input.get("name") or "call_tool")[:200],
                 acting=mcp_client_acting(turn_session),
+            )
+            held_args = tool_input.get("arguments", {})
+            if isinstance(held_args, str):
+                try:
+                    held_args = json.loads(held_args)
+                except (json.JSONDecodeError, RecursionError):
+                    held_args = {}
+            if not isinstance(held_args, dict):
+                held_args = {}
+            return levels.card_or(
+                blocked_call, str(tool_input.get("name") or "call_tool"), held_args, reason=levels.AI_APP
             )
         session = self._require_session()
         arguments = tool_input.get("arguments", {})
@@ -3899,15 +3912,19 @@ class MCPGateway:
             return json.dumps({"error": _SAVED_FOLDER_REFUSAL.format(tool=str(tool_name)[:200])})
         attached_artifacts: list[str] = []
         # Every Google Workspace call acts as the Executive's own account.
-        if _is_apps_script_tool(tool_name):
-            return _refuse(
+        if _is_apps_script_tool(tool_name) and not relaxed:
+            # Apps Script runs code as the Executive's Google account, past
+            # every check below: below Hands-off it waits on a card.
+            script_refusal = _refuse(
                 tool_name, "tool", "<apps-script>",
                 reason=(
-                    f"{tool_name} is not available: Apps Script runs code as "
-                    "the Executive's Google account outside the outbound "
-                    "gates. Do not retry with another script tool."
+                    f"{tool_name} is Apps Script: it runs code as the Executive's "
+                    "Google account, so it waits for an OK below Hands-off."
                 ),
             )
+            if isinstance(arguments, dict):
+                return levels.card_or(script_refusal, str(tool_name), arguments, reason=levels.SCRIPT)
+            return script_refusal
         if _is_blocked_m365_auth_tool(tool_name):
             return _refuse(
                 tool_name, "tool", "<m365-account>",

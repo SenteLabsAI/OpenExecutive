@@ -17,7 +17,6 @@ import {
   learnVoiceProfile,
   refreshVoiceSignature,
   resetVoiceProfile,
-  setDelegationTeam,
   setInboxWatch,
   setReadMyCalendar,
   updateVoiceProfile,
@@ -37,12 +36,11 @@ import { PageSpinner } from "@/components/ui/Spinner";
 // own mailbox, when you ask it to and, at Your inbox, for mail that needs
 // you; Approvals and In training decide which of those go on their own.
 // Backed by GET /delegation, PUT /delegation/reach (ReachCard) and
-// /delegation/voice. Not offered to anyone who can't have it (the owner can,
-// and team members once the owner lets them: PUT /delegation/team).
+// /delegation/voice. Offered to everyone on the team.
 //
 // The As you tab, in two columns: How far it goes as you (the mailbox on its
 // first line, the inbox watcher's status under Your inbox), Read my calendar
-// and the page's `side` (Let team members use it, Say it was written with
+// and the page's `side` (Team members, Say it was written with
 // AI, what it sent); then In training (the switch, who goes on their own,
 // Learn from my edits) and How it learns from you (How you write, how you
 // write to each person).
@@ -126,8 +124,7 @@ export default function ActAsMeCard({
     return (
       <SettingsCard>
         <p className="text-[15px] text-fg-muted leading-relaxed">
-          As you isn&apos;t available to you here. The owner of this Open Executive can turn it
-          on for team members.
+          As you isn&apos;t available to you here. It&apos;s for people on the team.
         </p>
       </SettingsCard>
     );
@@ -284,51 +281,21 @@ function HowItLearnsCard({
   );
 }
 
-// The owner's "Let team members use Act as me" (PUT /delegation/team), shown
-// only to the owner and only where the install allows it. Each member
-// connects their own Gmail and turns it on for themselves; the owner sees
-// counts only, never their mail, drafts or reply cards.
+// Who on the team uses As you, shown only to the owner. Each member
+// connects their own Gmail or Outlook and turns it on for themselves; the
+// owner sees counts only, never their mail, drafts or reply cards.
 export function TeamSection({
   team,
-  onSettings,
 }: {
   team: DelegationTeam;
-  onSettings: (next: DelegationSettings) => void;
 }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const toggle = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      onSettings(await setDelegationTeam(!team.enabled));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save the setting.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
     <SettingsCard
-      title="Let team members use it"
+      title="Team members"
       titleId="act-as-me-team-label"
-      description={
-        team.enabled
-          ? "On: each team member can connect their own Gmail or Outlook and turn it on for themselves. Their mail, drafts and replies stay theirs alone. You see only who uses it and how much."
-          : "Off: only you can use As you."
-      }
-      action={
-        <Switch
-          checked={team.enabled}
-          onChange={() => void toggle()}
-          disabled={busy}
-          labelledBy="act-as-me-team-label"
-        />
-      }
+      description="Each team member can connect their own Gmail or Outlook and turn it on for themselves. Their mail, drafts and replies stay theirs alone. You see only who uses it and how much."
     >
-      {team.enabled && team.members.length > 0 && (
+      {team.members.length > 0 && (
         <ul className="divide-y divide-line">
           {team.members.map((m) => (
             <li key={m.person_id} className="py-2 text-sm text-fg-muted">
@@ -339,7 +306,6 @@ export function TeamSection({
           ))}
         </ul>
       )}
-      {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
     </SettingsCard>
   );
 }

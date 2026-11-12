@@ -453,7 +453,7 @@ def test_someone_elses_turn_is_not_offered_or_run_saved_tools(
     ])
     _run(provider, gateway)
     assert "can't wait on a card" in json.loads(_any_result(provider, "tu-l"))["error"]
-    assert "principal's own turns" in json.loads(_any_result(provider, "tu-r"))["error"]
+    assert "someone on the team" in json.loads(_any_result(provider, "tu-r"))["error"]
     assert gateway.calls == []
 
 

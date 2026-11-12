@@ -18,6 +18,9 @@ Checks (see CLAUDE.md -> "Architecture Docs" and "PR Requirements"):
 - tests-present   WARN  openexecutive/ code changed with no tests/ change
 - pinned-actions  FAIL  a workflow line added under .github/ uses an action by
                         tag or branch instead of a full commit SHA
+- one-gate        FAIL  an added line refuses or holds a step outside
+                        orchestrator/levels.py (an owner-only check, a daily
+                        cap, a 403): Approvals is the only gate
 
 A release-please version bump is not a code change: when a file release-please
 manages only has the version number rewritten on its marked lines (the release
@@ -32,6 +35,13 @@ The user guide is what Ask OE answers product questions from, so a change to a
 screen updates its guide section too, or says why not:
 
     Guide: n/a - <reason>
+
+Approvals (orchestrator/levels.py) is the one place a step is held or refused
+for who is asking. A line that checks its input rather than the asker (a
+malformed argument, an address that isn't one) ends with ``# input-safety``;
+any other exception is waived for the whole change with:
+
+    Gates: n/a - <reason>
 
 Stdlib only, so it runs without the project's virtualenv.
 """
@@ -185,6 +195,27 @@ _SHA_RE = re.compile(r"@[0-9a-f]{40}$")
 
 # These files name the stub patterns themselves.
 STUB_EXEMPT = {"scripts/pr_checks.py", TESTS + "unit/test_pr_checks.py"}
+
+# Approvals is the only gate: every hold or refusal for who is asking goes
+# through orchestrator/levels.py (decide, hold, card_or). A new line elsewhere
+# that refuses a person, caps how often something runs, or answers 403 is a
+# second gate. Input checks carry the marker; anything else needs the waiver.
+LEVELS_PY = PKG + "orchestrator/levels.py"
+GATE_MARKER = "# input-safety"
+GATE_WAIVER_RE = re.compile(
+    r"^[ \t]*Gates:[ \t]*n/?a\b[ \t]*[-\u2013\u2014:][ \t]*\S.*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+GATE_RE = re.compile(
+    r"status_code\s*=\s*403"
+    r"|\bprincipal_only\b|\bPRINCIPAL_ONLY\b|\bOWNER_ONLY\b"
+    r"|_PER_DAY\b|_per_day\b"
+    r"|only the (?:account )?(?:owner|principal)\b"
+    r"|\b(?:daily|per-day|per day) (?:cap|limit)\b"
+    r"|\b(?:cap|limit) reached\b"
+    r"|\bnot (?:allowed|permitted)\b|\bisn't allowed\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -409,7 +440,33 @@ def check_pinned_actions(c: Change) -> Result:
     return Result("pinned-actions", "PASS", "added workflow steps pin actions by SHA")
 
 
-CHECKS = (check_arch_drift, check_guide_drift, check_no_stubs, check_eval_scenarios, check_tests_present, check_pinned_actions)
+def check_one_gate(c: Change) -> Result:
+    if GATE_WAIVER_RE.search(c.waiver_text):
+        return Result("one-gate", "PASS", "waived (Gates: n/a)")
+    hits = [
+        f"{path}: {line.strip()[:80]}"
+        for path, lines in sorted(c.added_lines.items())
+        if path.startswith(PKG) and path.endswith(".py") and path != LEVELS_PY
+        for line in lines
+        if GATE_RE.search(line)
+        and GATE_MARKER not in line
+        and not line.lstrip().startswith("#")
+    ]
+    if hits:
+        return Result(
+            "one-gate",
+            "FAIL",
+            "a new refusal or hold outside orchestrator/levels.py (Approvals is the only "
+            f"gate; end an input check with '{GATE_MARKER}', or add 'Gates: n/a - <reason>' "
+            "to a commit message or the PR description): " + " | ".join(hits[:5]),
+        )
+    return Result("one-gate", "PASS", "no new refusal or hold outside Approvals")
+
+
+CHECKS = (
+    check_arch_drift, check_guide_drift, check_no_stubs, check_eval_scenarios, check_tests_present,
+    check_pinned_actions, check_one_gate,
+)
 
 
 def run_checks(c: Change) -> list[Result]:

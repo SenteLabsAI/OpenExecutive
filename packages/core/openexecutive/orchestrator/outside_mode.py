@@ -21,12 +21,12 @@ stored beside it; a channel not set follows the company's level):
 - ``trust`` (Hands-off): on the principal's own turn on an interactive
   surface (``content_trust.principal_only_withheld`` offers them everything),
   no read holds; a flagged one is still flagged to them, and the model is
-  told not to follow it. Anyone else's turn falls back to ``outsiders``.
+  told not to follow it. A teammate's turn runs at it too; a turn whose
+  words may come from someone not in People falls back to ``outsiders``.
 
 Whatever the setting, a turn answering mail from someone not in People is
-held from the start, a shared chat or another AI app's turn is ``ask``,
-mail and messages still go only to people on People, and someone added to
-People this turn is reached no earlier than the next one.
+held from the start, someone else's AI app's turn is ``ask``, and someone
+added to People this turn is reached no earlier than the next one.
 
 What Balanced trusts without checking rests on Gmail's sender authentication and
 on the Executive's own address: a company whose domain doesn't enforce DMARC
@@ -229,27 +229,31 @@ def channel_of(session: Any) -> str | None:
 
 
 def _someone_else(session: Any) -> bool:
-    """Whether the turn's words may be someone other than the owner's: mail
-    from someone not in People, a shared chat someone else wrote in since the
-    owner did, a host page, another AI app that isn't the owner's own
-    (``owners_ai_app``), or a teammate. Hands-off is the
-    owner's trust in their own Executive, so it never covers these."""
+    """Whether the turn's words may come from someone not in People: mail
+    from someone not in People, a page in another app, or another AI app
+    that isn't the owner's own (``owners_ai_app``). The level belongs to
+    whoever asks, and they have none: Hands-off never covers them. Nor a
+    Google Chat space, where anyone may have written last (a speaker on no
+    People entry waits on the owner's card anyway:
+    ``levels.unrostered_speaker``). A teammate's turn, and a
+    shared web chat a teammate wrote in, run at the company's level like the
+    owner's."""
     if getattr(session, "sender_off_team", False) is True:
         return True
-    if getattr(session, "shared_chat", False) is True and getattr(session, "others_spoke_last", False) is True:
-        return True
     if getattr(session, "from_host", False) is True:
+        return True
+    if (
+        getattr(session, "origin_channel", "") == "google_chat"
+        and getattr(session, "shared_chat", False) is True
+        and getattr(session, "others_spoke_last", False) is True
+    ):
+        # A Google Chat space turns no one away, so its last words may be
+        # from someone not in People.
         return True
     if getattr(session, "from_mcp_client", False) is True:
         # The owner's own AI app, signed in as them and allowed to act, is
         # them: their level applies as in the web app. Any other is not.
         return not owners_ai_app(session)
-    caller = getattr(session, "caller_person_id", None)
-    if isinstance(caller, int) and not isinstance(caller, bool):
-        from openexecutive.people.store import get_person
-
-        person = get_person(caller)
-        return person is not None and not person.is_principal
     return False
 
 

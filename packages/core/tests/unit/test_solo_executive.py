@@ -50,7 +50,9 @@ from ._agent_loop_fakes import FinalMsg, ScriptedProvider, TextBlock, ToolUseBlo
 # the wording was tightened (same rules, ~27% shorter) to cut the cached prefix.
 # And again: People is checked first when asked how to reach someone.
 # And again: a name that fits more than one person is never picked silently.
-TEAM_PERSONA_SHA256 = "86ed4f8ebf8a1040978dd63d30a507a71cc4abe4e498c709fd56f0c5a43c1b73"
+# And again: Approvals is the one gate (no department authority, no "propose,
+# do not wait").
+TEAM_PERSONA_SHA256 = "9aa9634ee0ecb566ec976b15689650d5ef09641928aa8c84bbc5f469ffc5cb67"
 
 SOLO_HEADINGS = (
     "## You Work for One Person",
@@ -146,7 +148,7 @@ def test_solo_persona_speaks_to_one_principal_of_any_role() -> None:
     assert "not that they work without people" in solo
     for person in ("their manager", "direct reports", "board"):
         assert person in solo
-    assert "Treat them as contacts." in solo
+    assert "Treat them as contacts" in solo
     # The goal-update discipline carries over word for word where it matters.
     assert "Update goals **one at a time, each backed by a specific thing that happened.**" in solo
     assert "Do not sweep." in solo

@@ -444,19 +444,32 @@ def contacts_reachable_now() -> bool:
     """Whether contacts exist for this turn at all — may be listed, named,
     emailed, invited or messaged.
 
-    Contacts are private to the principal: only a turn the principal started
-    on a verified surface (the web app, their own Slack or Discord, a verified
-    private Telegram chat), or code inside ``grant_contact_egress``, sees them.
-    Everywhere else — an inbound email (a From header proves nothing), a
-    teammate's turn, an unattended run (scheduler, workflows, alert review) —
-    a contact is indistinguishable from someone who is not on the roster, so
-    no refusal, listing or error message can reveal that one exists.
+    Contacts are the team's: a turn someone on the team started on a
+    verified surface (the principal or a teammate: the web app, their own
+    Slack or Discord, a verified private Telegram chat), an unattended run
+    (Approvals decides what it sends, as Take the lead's gate does), or code
+    inside ``grant_contact_egress`` sees them. A turn whose words may come
+    from someone not in People (an inbound email from outside — a From header
+    proves nothing — a page in another app, someone else's AI app) does not:
+    there a contact is indistinguishable from someone who is not on the
+    roster, so no refusal, listing or error message can reveal that one
+    exists.
     """
     if _contact_egress_granted.get():
         return True
     from openexecutive.orchestrator.schedule_tools import current_session
 
-    return is_principal_on_verified_surface(current_session.get())
+    session = current_session.get()
+    if is_principal_on_verified_surface(session):
+        return True
+    if session is None:
+        return False
+    if getattr(session, "unattended", False) is True:
+        return not (
+            getattr(session, "sender_off_team", False) is True
+            or bool(getattr(session, "email_from", None))
+        )
+    return teammate_on_verified_surface(session) is not None
 
 
 def turn_is_private_to_principal() -> bool:

@@ -209,6 +209,27 @@ def _own_outreach() -> bool:
         return True
 
 
+def _team_asked() -> bool:
+    """Whether someone on the team started this turn on a surface that
+    verified who they are (the principal or a rostered teammate). Fails
+    closed."""
+    try:
+        from openexecutive.orchestrator.people_tools import (
+            is_principal_on_verified_surface,
+            teammate_on_verified_surface,
+        )
+
+        session = current_session.get()
+        if session is None:
+            return False
+        return bool(
+            is_principal_on_verified_surface(session)
+            or teammate_on_verified_surface(session) is not None
+        )
+    except Exception:
+        return False
+
+
 def _guard_outbound(*, tool: str, channel: str, channel_ref: str, text: str) -> str | None:
     """Run the outbound anti-spam guard before a direct send.
 
@@ -225,11 +246,15 @@ def _guard_outbound(*, tool: str, channel: str, channel_ref: str, text: str) -> 
     if outside_content.added_ref(channel_ref):
         # On the roster only since this turn (outside_content).
         return outside_content.added_person_error(f"{channel_ref!r}")
-    # The duplicate and rate checks stop a runaway loop whoever started the
-    # turn (a stranger's mail could steer a burst of sends). Quiet hours are
-    # for the Executive's own outreach (a tagged proactive send, or a run
-    # nobody is in): what a person asks for in the turn isn't refused for them.
-    reason = check_outbound_allowed(channel, channel_ref, text, availability=_own_outreach())
+    # What someone on the team asks for in the turn goes as they asked:
+    # Approvals already decided it. The guard is for the Executive's own
+    # outreach (a tagged proactive send, or a run nobody is in) and for a turn
+    # nobody on the team started (a stranger's mail could steer a burst of
+    # sends); quiet hours only for its own outreach.
+    own = _own_outreach()
+    if not own and _team_asked():
+        return _hold_outbound(tool=tool, channel=channel, channel_ref=channel_ref, text=text)
+    reason = check_outbound_allowed(channel, channel_ref, text, availability=own)
     if reason is None:
         return _hold_outbound(tool=tool, channel=channel, channel_ref=channel_ref, text=text)
     from openexecutive.audit import log_event as audit_log

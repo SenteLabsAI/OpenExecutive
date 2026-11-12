@@ -910,21 +910,17 @@ class Settings(BaseSettings):
     _mcp_enabled_explicit: bool = PrivateAttr(default=False)
 
     # ---- Calendar booking (first-climb autonomy, Build 1) ------------------
-    # When true, the `create_calendar_event` / `cancel_calendar_event` tools
-    # are surfaced to the Executive and calendar operations route through the
-    # Google Workspace MCP (workspace-mcp at --tool-tier complete).
-    # Fail-soft: disabled when unconfigured. No hard validator — the project
-    # was burned by required-when-X validators crashing boot (honcho).
-    calendar_booking_enabled: bool = Field(False, alias="CALENDAR_BOOKING_ENABLED")
-    # Code-enforced caps applied regardless of trust-ledger promotion state.
+    # On by default: the `create_calendar_event` / `cancel_calendar_event`
+    # tools are surfaced to the Executive whenever the MCP gateway runs, and
+    # calendar operations route through the configured workspace backend.
+    # Approvals decides whether a booking goes or waits. Set false to take the
+    # tools away. No hard validator — the project was burned by
+    # required-when-X validators crashing boot (honcho).
+    calendar_booking_enabled: bool = Field(True, alias="CALENDAR_BOOKING_ENABLED")
+    # Outside these hours, or on a weekend, a booking waits on a card below
+    # Hands-off.
     calendar_business_hours_start: str = Field("09:00", alias="CALENDAR_BUSINESS_HOURS_START")
     calendar_business_hours_end: str = Field("18:00", alias="CALENDAR_BUSINESS_HOURS_END")
-    # Maximum days in the future an event can be booked.
-    calendar_horizon_days: int = Field(30, alias="CALENDAR_HORIZON_DAYS")
-    # Hard ceiling on bookings created per calendar-day for this class.
-    calendar_max_events_per_day: int = Field(10, alias="CALENDAR_MAX_EVENTS_PER_DAY")
-    # Maximum number of attendees per event (inclusive of organizer).
-    calendar_max_attendees: int = Field(8, alias="CALENDAR_MAX_ATTENDEES")
     # When true, every booking requests a video-meeting link — Google Meet
     # (add_google_meet on the manage_event MCP call) or Microsoft Teams
     # (isOnlineMeeting on the Graph event), per CALENDAR_PROVIDER. The model can
@@ -1243,22 +1239,12 @@ class Settings(BaseSettings):
         20, alias="DELEGATION_INBOX_MAX_DRAFTS_PER_DAY", ge=1, le=1000
     )
     delegation_classifier_model: str | None = Field(None, alias="DELEGATION_CLASSIFIER_MODEL")
-    # Handle it for me (delegation.handle_it): the most replies the inbox
-    # watcher may send on its own as one person per UTC day, within its
-    # drafts limit above. Past it, replies wait on cards as before.
-    delegation_handle_it_max_sends_per_day: int = Field(
-        20, alias="DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY", ge=1, le=500
-    )
     # Workflows that send email as their creator (delegation.workflow_email,
     # oe__send_email_as_me): the most such emails a day per person, within
     # the drafts limit above. Past it the step is told to stop.
     delegation_workflow_max_sends_per_day: int = Field(
         20, alias="DELEGATION_WORKFLOW_MAX_SENDS_PER_DAY", ge=1, le=500
     )
-    # Whether the owner may let team members use Act as me for themselves
-    # (Delegate → Advanced → "Let team members use it", off until they turn
-    # it on). Off: the owner alone, as before (delegation.settings).
-    delegation_team_members: bool = Field(False, alias="DELEGATION_TEAM_MEMBERS")
 
     # External-condition monitoring — heartbeat that polls source adapters
     # (vendor_status in PR-A; RSS + stock in PR-B) and emits external_signals

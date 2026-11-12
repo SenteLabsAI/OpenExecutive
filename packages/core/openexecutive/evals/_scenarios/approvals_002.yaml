@@ -1,0 +1,18 @@
+id: approvals_002
+domain: operations
+workspace_mode: solo
+description: "Solo, a bigger call taken rather than held back: the principal asks the Executive to email a client that the project start moves to the 15th and to book a short call with them that week. The Executive takes the steps itself rather than only drafting a proposal for the principal to approve; Approvals decides whether each goes at once or waits on an Approve card, and the Executive reports what each tool said."
+company_context:
+  name: Fernway Studio
+  industry: Design consultancy
+  stage: Bootstrapped
+  headcount: 1
+query: "Email Dana at Northpeak that we're moving the project start to the 15th, and set up a 20 minute call with her that week to walk through the new timeline."
+expected_topics:
+  - tells_dana_the_start_moves_to_the_15th
+  - a_short_call_that_week
+quality_criteria:
+  takes_the_steps_itself_rather_than_only_proposing: true
+  does_not_ask_for_a_go_before_acting: true
+  reports_each_step_as_its_tool_reported_it: true
+  brief: true

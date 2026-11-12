@@ -29,10 +29,8 @@ are those of the person the run is for (``artifact_records.current_viewer``),
 and a tool the workspace mode doesn't offer is refused
 (``filter_tools_for_workspace_mode``). Take the lead does not gate these
 calls: a saved workflow is its creator's own instruction, approved tool by
-tool when they saved it, as for the gateway tools. A workflow a team member
-created goes through their department's approval level, as their own chat
-turn would (``department_gate``). One with no creator on record (saved
-before creators were) runs as the principal's, as its tools always did.
+tool when they saved it, as for the gateway tools, whether the owner or a
+teammate made it.
 
 **Long and nested runs.** ``run_workflow`` and ``run_executive_research``
 get a longer timeout than other calls (``TIMEOUT_S``), and a workflow may not
@@ -295,22 +293,9 @@ def _session(mode: str) -> Any:
     )
 
 
-def _team_member(person_id: int | None) -> Any:
-    """The creator when they are a team member other than the principal."""
-    from openexecutive.people.store import get_person
-
-    if person_id is None:
-        return None
-    person = get_person(person_id)
-    if person is None or person.is_principal or person.kind != "team":
-        return None
-    return person
-
-
 async def run_chat_tool(name: str, tool_input: dict[str, Any]) -> str:
     """Run the chat tool ``name`` for a workflow step (module docstring)."""
     from openexecutive.memory.workspace_settings import effective_workspace_mode
-    from openexecutive.orchestrator import department_gate
     from openexecutive.orchestrator.schedule_tools import (
         current_session,
         filter_tools_for_workspace_mode,
@@ -331,9 +316,6 @@ async def run_chat_tool(name: str, tool_input: dict[str, Any]) -> str:
         return withheld_tool_error(name, mode)
     session = _session(mode)
     handlers: dict[str, Any] = {name: handler}
-    seat = _team_member(_creator.get())
-    if seat is not None:
-        handlers = department_gate.gated_handlers(handlers, seat, session_id=session.session_id)
     token = current_session.set(session)
     try:
         return str(await handlers[name](tool_input))

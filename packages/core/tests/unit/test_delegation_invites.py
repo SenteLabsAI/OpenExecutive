@@ -273,16 +273,12 @@ def test_handle_it_leaves_a_card_when_something_is_against_it(
         assert card.can_answer is False and "--calendar" in card.connect_command
 
 
-def test_it_never_declines_on_its_own_and_counts_the_daily_limit(
-    person: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_an_accept_on_its_own_has_no_daily_limit(person: Any, models: dict[str, Any]) -> None:
     _on(person)
-    monkeypatch.setenv("DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY", "1")
-    handle_it.record_handled(person.id, "t-earlier", None, "s1", now=NOW - timedelta(hours=1))
+    for n in range(25):
+        handle_it.record_handled(person.id, f"t-earlier-{n}", None, f"s{n}", now=NOW - timedelta(hours=1))
     mailbox = _mailbox()
-    _scan(person, mailbox)
-    (card,) = invites.cards(person)
-    assert card.waited_because == handle_it.REASONS["daily_limit"] and mailbox.answers == []
+    assert _scan(person, mailbox).handled == 1 and mailbox.answers == [("ev1", True)]
 
 
 def test_an_accept_that_fails_hands_the_card_back(person: Any, models: dict[str, Any]) -> None:

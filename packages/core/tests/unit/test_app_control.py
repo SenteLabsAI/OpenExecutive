@@ -138,12 +138,12 @@ def test_nobody_verified_is_refused(roster: dict[str, Any]) -> None:
     assert "error" in _run(app_control.handle_do_in_app, {"action": "pin_chat", "id": sid}, unverified)
 
 
-def test_owner_only_kinds_are_refused_for_a_teammate(roster: dict[str, Any]) -> None:
+def test_a_teammate_works_with_departments(roster: dict[str, Any]) -> None:
     out = _run(app_control.handle_find_in_app, {"kind": "department"}, _web(roster["ben"], "s-b"))
-    assert "error" in out
+    assert "error" not in out and out["kind"] == "department"
     out = _run(app_control.handle_do_in_app, {"action": "add_department", "id": "new", "value": "Ops"},
                _web(roster["ben"], "s-b"))
-    assert "error" in out
+    assert out["status"] == "done"
 
 
 def test_a_value_is_required_where_the_action_takes_one(roster: dict[str, Any]) -> None:

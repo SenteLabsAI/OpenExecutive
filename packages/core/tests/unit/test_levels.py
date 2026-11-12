@@ -49,7 +49,7 @@ def test_a_strangers_mail_is_a_card_at_every_level(mode: str) -> None:
     assert levels.decide(levels.STRANGER, mode=mode) == levels.CARD
 
 
-@pytest.mark.parametrize("reason", [levels.NOT_OWNER, levels.SHARED, levels.AI_APP])
+@pytest.mark.parametrize("reason", [levels.NOT_OWNER, levels.AI_APP])
 @pytest.mark.parametrize("mode", sorted(outside_mode.MODES))
 def test_someone_elses_words_are_a_card_at_every_level(mode: str, reason: str) -> None:
     assert levels.decide(reason, mode=mode) == levels.CARD
@@ -58,20 +58,27 @@ def test_someone_elses_words_are_a_card_at_every_level(mode: str, reason: str) -
 @pytest.mark.parametrize("session", [
     Session(from_mcp_client=True),
     Session(from_web_chat=True, from_host=True),
-    Session(shared_chat=True, others_spoke_last=True),
 ])
-def test_hands_off_is_the_owners_own_turns(monkeypatch: pytest.MonkeyPatch, session: Session) -> None:
+def test_hands_off_is_not_for_anyone_outside_people(monkeypatch: pytest.MonkeyPatch, session: Session) -> None:
     monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.TRUST)
     assert outside_mode.for_turn(session) == outside_mode.OUTSIDERS
 
 
-def test_a_teammates_turn_is_not_hands_off(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_level_belongs_to_whoever_asks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A teammate's turn runs at their level like the owner's, and a shared
+    chat someone else wrote in follows that person's level too."""
     owner = people_store.upsert_person(full_name="Olivia Owner", is_principal=True, email=OWNER)
     mate = people_store.upsert_person(full_name="Ben Teammate", email="ben@co.example")
     people_registry.invalidate()
     monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.TRUST)
-    assert outside_mode.for_turn(Session(from_web_chat=True, caller_person_id=mate)) == outside_mode.OUTSIDERS
+    assert outside_mode.for_turn(Session(from_web_chat=True, caller_person_id=mate)) == outside_mode.TRUST
     assert outside_mode.for_turn(Session(session_id="email:t", caller_person_id=owner)) == outside_mode.TRUST
+    assert outside_mode.for_turn(Session(shared_chat=True, others_spoke_last=True)) == outside_mode.TRUST
+
+
+def test_a_shared_chat_follows_the_level(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.TRUST)
+    assert levels.decide(levels.SHARED, mode=outside_mode.TRUST) == levels.RUN
 
 
 def test_an_error_deciding_is_a_card(monkeypatch: pytest.MonkeyPatch) -> None:

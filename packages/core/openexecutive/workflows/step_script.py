@@ -243,12 +243,11 @@ CHAT_OWN_TOOLS: tuple[str, ...] = (
     "upsert_person",
 )
 
-# Per-turn caps on own tools a chat script could otherwise call in bulk:
-# messaging everyone on the roster is a broadcast, which scripts don't get.
+# Messaging ten or more people from one script is a company-wide post, which
+# is administration: on anyone's turn but the principal's, a chat script may
+# message at most nine. Nothing else is capped beyond the turn's budget.
 CHAT_OWN_TOOL_CAPS: dict[str, int] = {
-    "create_alert": 50,
-    "message_person": 10,
-    "upsert_person": 25,
+    "message_person": 9,
 }
 
 # Added to a chat round's results (the user turn, never a cached block) when
@@ -650,7 +649,7 @@ async def run_script_tool(
             yield _done({"error": "save_as goes with a new script, not a saved tool"}, True)
             return
         if not may_run_saved:
-            yield _done({"error": "saved tools run only on the principal's own turns"}, True)
+            yield _done({"error": "saved tools run only on a turn someone on the team is in"}, True)
             return
         try:
             saved = (

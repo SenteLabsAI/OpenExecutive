@@ -265,16 +265,16 @@ def test_a_card_is_private_in_its_payload_too(roster: SimpleNamespace) -> None:
     assert json.loads(card.proposed_payload_json)["private"] is True
 
 
-def test_a_team_member_the_owner_no_longer_lets_use_act_as_me_cant_approve(
-    roster: SimpleNamespace, sends: list[Any], signed: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+def test_a_team_member_archived_since_cant_approve(
+    roster: SimpleNamespace, sends: list[Any], signed: dict[str, Any],
 ) -> None:
-    monkeypatch.setattr("openexecutive.delegation.settings.team_members_enabled", lambda **_: True)
     set_enabled(roster.teammate, True, updated_by="t")
     card = _card(_teammate_session(), [_message(roster.principal)])
-    monkeypatch.setattr("openexecutive.delegation.settings.team_members_enabled", lambda **_: False)
+    people_store.archive_person(roster.teammate)
+    people_registry.invalidate()
     with pytest.raises(action_cards.ApproveRefused) as refused:
         _approve(card)
-    assert refused.value.code == "act_as_me_off" and sends == []
+    assert refused.value.code in ("act_as_me_off", "gone") and sends == []
 
 
 def test_a_message_that_reaches_nobody_is_not_turned_into_an_alert(
@@ -329,8 +329,6 @@ def test_an_old_card_is_not_listed_or_approved(
 def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     for var in ("OE_LOCAL_LOGIN", "OE_PUBLIC_DEPLOYMENT"):
         monkeypatch.delenv(var, raising=False)
-    # Team members may have Act as me on this install.
-    monkeypatch.setattr("openexecutive.delegation.settings.team_members_enabled", lambda **_: True)
     app = FastAPI()
     app.include_router(delegation_route.router)
     app.include_router(decisions_route.router)
@@ -478,15 +476,14 @@ def test_careful_or_the_inbox_watcher_off_waits(
     assert result["status"] == "waiting_for_approval" and sends == []
 
 
-def test_the_daily_limit_holds_on_its_own(
-    actions_on: SimpleNamespace, sends: list[Any], signed: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+def test_there_is_no_daily_limit_on_its_own(
+    actions_on: SimpleNamespace, sends: list[Any], signed: dict[str, Any],
 ) -> None:
     roster = actions_on
-    monkeypatch.setattr(action_cards, "ON_ITS_OWN_PER_DAY", 1)
-    first = _propose(_session(FakeMailbox()), {"why": "y", "actions": [_message(roster.teammate)]})
-    assert first["status"] == "done_on_its_own"
-    second = _propose(_session(FakeMailbox()), {"why": "z", "actions": [_message(roster.teammate, "And Friday?")]})
-    assert second["status"] == "waiting_for_approval" and len(sends) == 1
+    for n in range(12):
+        done = _propose(_session(FakeMailbox()), {"why": f"y{n}", "actions": [_message(roster.teammate, f"Note {n}")]})
+        assert done["status"] == "done_on_its_own"
+    assert len(sends) == 12
 
 
 def test_an_invite_on_its_own_goes_through_the_meeting_gate(

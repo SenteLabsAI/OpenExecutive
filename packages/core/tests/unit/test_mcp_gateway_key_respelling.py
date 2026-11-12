@@ -224,7 +224,7 @@ def test_non_object_arguments_refused_for_workspace_tools(arguments: Any) -> Non
     assert "JSON object" in json.loads(result)["error"]
 
 
-def test_apps_script_refused_whatever_the_arguments() -> None:
+def test_apps_script_waits_whatever_the_arguments() -> None:
     gateway, session_call = _make_gateway()
     result = _call(gateway, "google_workspace__run_script_function",
                    '"{\\"script_id\\": \\"x\\", \\"function_name\\": \\"f\\"}"')

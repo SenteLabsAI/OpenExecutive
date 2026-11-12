@@ -48,6 +48,8 @@ def test_the_tool_errors_carry_the_wording() -> None:
         assert "just say \\\"go\\\"" in json.dumps(json.loads(error)["error"])
 
 
-def test_the_persona_words_the_mail_hold_as_a_yes() -> None:
-    assert 'answer with a yes, never "I can\'t"' in DELEGATION_ADDENDUM
-    assert 'just say "go" in their next message' in DELEGATION_ADDENDUM
+def test_the_persona_lets_approvals_decide_after_reading_mail() -> None:
+    """After reading their mail a step goes or waits on a card as Approvals
+    decides: the persona never asks them to say go or ask again."""
+    assert "Approvals decides whether a step goes at once or waits on an Approve card" in DELEGATION_ADDENDUM
+    assert 'never ask them to say "go" or ask again' in DELEGATION_ADDENDUM

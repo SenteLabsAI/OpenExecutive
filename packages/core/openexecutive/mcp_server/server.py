@@ -23,9 +23,9 @@ Design notes
   gets per-person answers by the web app's rules: a signed-in email is that
   person (no one when off the roster); open mode with no ``x-caller-email``,
   or an operator, is the principal; a service (signed callers on, no
-  assertion) is no one. The principal's own records (episodic memory, the
-  activity feed) go to the principal alone; the briefing and roster to a
-  rostered caller, the briefing narrowed as ``GET /today`` narrows it; the
+  assertion) is no one. Episodic memory, the activity feed, the briefing and
+  the roster go to a rostered caller, as the web app gives them to anyone on
+  the team, the briefing narrowed as ``GET /today`` narrows it; the
   company profile, departments, specialists, knowledge and the workflow
   catalog to anyone who reached ``/mcp``.
 
@@ -91,8 +91,8 @@ _INSTRUCTIONS = (
     "council of specialist analysts, answered as the person signed in.\n\n"
     "Resources (read-only): the company profile, today's briefing and recent "
     "activity, the people roster, department state, and episodic memory (past "
-    "decisions, initiatives, advice). Recent activity and episodic memory are "
-    "the owner's alone; the briefing and roster need someone on the roster.\n\n"
+    "decisions, initiatives, advice). The briefing, recent activity, the "
+    "roster and episodic memory need someone on the roster.\n\n"
     "Tools: `consult_specialist` (domain analysis from one specialist, grounded "
     "in company knowledge), `search_knowledge` (retrieval over the curated "
     "business knowledge base and company documents), `list_workflows` (the "
@@ -146,7 +146,6 @@ def _json(payload: Any) -> str:
 # ---------------------------------------------------------------------------
 # Who is asking.
 # ---------------------------------------------------------------------------
-OWNER_ONLY = "Only the owner can read this."
 ROSTER_ONLY = "Only someone on the team can read this."
 
 
@@ -258,13 +257,6 @@ async def current_caller() -> McpCaller:
     return await asyncio.to_thread(_resolve, who)
 
 
-async def _require_principal() -> McpCaller:
-    resolved = await current_caller()
-    if not resolved.is_principal:
-        raise CallerRefused(OWNER_ONLY)
-    return resolved
-
-
 async def _require_person() -> McpCaller:
     """The principal, or someone on the roster; a service or an unrostered
     caller names no one, so reads nothing about the people here."""
@@ -320,13 +312,13 @@ async def today_briefing() -> str:
 @mcp.resource(
     "oe://today/activity",
     name="Recent activity",
-    description="Recent self-initiated Executive activity (last 20 actions). The owner's alone.",
+    description="Recent self-initiated Executive activity (last 20 actions). For someone on the roster.",
     mime_type="application/json",
 )
 async def today_activity() -> str:
     from openexecutive.api.routes.today import _build_activity
 
-    await _require_principal()
+    await _require_person()
     activity = await asyncio.to_thread(_build_activity, 20)
     return _json(activity.model_dump(mode="json"))
 
@@ -362,13 +354,13 @@ async def departments_state() -> str:
 @mcp.resource(
     "oe://memory/decisions",
     name="Episodic memory: decisions",
-    description="Past decisions recorded in episodic memory. The owner's alone.",
+    description="Past decisions recorded in episodic memory. For someone on the roster.",
     mime_type="application/json",
 )
 async def memory_decisions() -> str:
     from openexecutive.memory.episodic import list_decisions
 
-    await _require_principal()
+    await _require_person()
     rows = await asyncio.to_thread(list_decisions)
     return _json([r.model_dump(mode="json") for r in rows])
 
@@ -376,13 +368,13 @@ async def memory_decisions() -> str:
 @mcp.resource(
     "oe://memory/initiatives",
     name="Episodic memory: initiatives",
-    description="Tracked initiatives recorded in episodic memory. The owner's alone.",
+    description="Tracked initiatives recorded in episodic memory. For someone on the roster.",
     mime_type="application/json",
 )
 async def memory_initiatives() -> str:
     from openexecutive.memory.episodic import list_initiatives
 
-    await _require_principal()
+    await _require_person()
     rows = await asyncio.to_thread(list_initiatives)
     return _json([r.model_dump(mode="json") for r in rows])
 
@@ -390,13 +382,13 @@ async def memory_initiatives() -> str:
 @mcp.resource(
     "oe://memory/advice",
     name="Episodic memory: advice",
-    description="Advice given, recorded in episodic memory. The owner's alone.",
+    description="Advice given, recorded in episodic memory. For someone on the roster.",
     mime_type="application/json",
 )
 async def memory_advice() -> str:
     from openexecutive.memory.episodic import list_advice
 
-    await _require_principal()
+    await _require_person()
     rows = await asyncio.to_thread(list_advice)
     return _json([r.model_dump(mode="json") for r in rows])
 

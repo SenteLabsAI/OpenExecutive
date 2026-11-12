@@ -875,8 +875,7 @@ def _calendar_settings() -> Any:
     return SimpleNamespace(
         calendar_booking_enabled=True, mcp_enabled=True,
         calendar_business_hours_start="09:00", calendar_business_hours_end="18:00",
-        calendar_horizon_days=30, calendar_max_events_per_day=10,
-        calendar_max_attendees=8, calendar_meet_links_enabled=True,
+        calendar_meet_links_enabled=True,
         calendar_instant_meeting_minutes=30, calendar_post_meeting_followup_enabled=True,
         slack_bot_token=None, discord_bot_token=None, telegram_bot_token=None,
         telegram_webhook_secret_valid=False,
@@ -938,7 +937,7 @@ def test_solo_auto_execute_proposes_unless_the_principal_asked_on_a_verified_sur
 
     _solo()
     pid = _principal()
-    contact = people_store.upsert_person(full_name="Client Contact", email="client@example.com")
+    contact = people_store.upsert_person(full_name="Client Contact", email="client@example.com", kind="contact")
     session = {
         "email_poller": Session(caller_person_id=pid),
         "contact_on_web": Session(from_web_chat=True, caller_person_id=contact),

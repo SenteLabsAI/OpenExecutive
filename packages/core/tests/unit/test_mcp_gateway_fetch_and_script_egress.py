@@ -1,7 +1,8 @@
-"""Two refusals that close paths around the recipient gates:
+"""Two checks that close paths around the recipient gates:
 
 - every Apps Script tool (code running as the Executive's Google account,
-  outside the gates — and, since workspace-mcp 1.29.0, schedulable);
+  outside the gates — and, since workspace-mcp 1.29.0, schedulable) waits on
+  an Approve card below Hands-off, and runs under Hands-off;
 - any argument that makes workspace-mcp fetch a URL the model chose
   (Drive `fileUrl` / `file_url`, an attachment given as a `url`): the fetch
   can carry data out in the query string before any recipient gate matters.
@@ -62,20 +63,20 @@ def _call(gateway: MCPGateway, tool_name: str, arguments: dict[str, Any]) -> str
 @pytest.mark.parametrize("bare", sorted(
     t[len("google_workspace__"):] for t in gw_module._BLOCKED_APPS_SCRIPT_TOOLS
 ))
-def test_every_known_apps_script_tool_is_refused(bare: str) -> None:
+def test_every_known_apps_script_tool_waits_below_hands_off(bare: str) -> None:
     gateway, session_call = _make_gateway()
     result = _call(gateway, f"google_workspace__{bare}", {"script_id": "abc"})
     assert session_call.await_count == 0
-    assert "Apps Script" in json.loads(result)["error"]
+    assert "Google account" in json.loads(result)["error"]
 
 
 @pytest.mark.parametrize("bare", ["manage_script_thing", "list_deployment_targets", "run_script"])
-def test_unknown_script_or_deployment_name_is_refused(bare: str) -> None:
+def test_unknown_script_or_deployment_name_waits_too(bare: str) -> None:
     """A rename in a future workspace-mcp must not reopen the path."""
     gateway, session_call = _make_gateway()
     result = _call(gateway, f"google_workspace__{bare}", {})
     assert session_call.await_count == 0
-    assert "Apps Script" in json.loads(result)["error"]
+    assert "Google account" in json.loads(result)["error"]
 
 
 @pytest.mark.parametrize("bare", [
@@ -95,11 +96,38 @@ def test_other_servers_are_not_pattern_matched() -> None:
     assert session_call.await_count == 1
 
 
-def test_apps_script_refused_before_any_argument_check() -> None:
+def test_apps_script_waits_before_any_argument_check() -> None:
     gateway, session_call = _make_gateway()
     result = _call(gateway, "google_workspace__run_script_function", {"fileUrl": "https://x/"})
     assert session_call.await_count == 0
-    assert "Apps Script" in json.loads(result)["error"]
+    assert "Google account" in json.loads(result)["error"]
+
+
+def test_apps_script_below_hands_off_is_a_card(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import levels
+
+    cards: list[tuple[str, str]] = []
+
+    def card(blocked: str, tool: str, _args: dict[str, Any], *, reason: str, mcp: bool = True) -> str:
+        cards.append((tool, reason))
+        return json.dumps({"status": "waiting_for_approval"})
+
+    monkeypatch.setattr(levels, "relaxed", lambda: False)
+    monkeypatch.setattr(levels, "card_or", card)
+    gateway, session_call = _make_gateway()
+    result = _call(gateway, "google_workspace__run_script_function", {"script_id": "abc"})
+    assert json.loads(result)["status"] == "waiting_for_approval"
+    assert cards == [("google_workspace__run_script_function", levels.SCRIPT)]
+    assert session_call.await_count == 0
+
+
+def test_apps_script_on_hands_off_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import levels
+
+    monkeypatch.setattr(levels, "relaxed", lambda: True)
+    gateway, session_call = _make_gateway()
+    _call(gateway, "google_workspace__run_script_function", {"script_id": "abc"})
+    assert session_call.await_count == 1
 
 
 # ---------------------------------------------------------------------------

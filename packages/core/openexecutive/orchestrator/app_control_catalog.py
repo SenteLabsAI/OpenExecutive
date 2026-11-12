@@ -773,27 +773,30 @@ async def _nothing(request: Any) -> list[Item]:
     return []
 
 
+# Company memory, synced sources (a connection) and the whole Today board are
+# administration: the owner's alone. Everything else is open to anyone on the
+# team, and Approvals decides whether a change runs or waits.
 _KINDS = (
     Kind("chat", "chat", _find_chats),
     Kind("topic", "chat topic", _find_topics),
     Kind("topic_area", "topic area", _find_areas),
     Kind("document", "document", _find_documents),
-    Kind("file", "uploaded file", _find_files, principal_only=True),
+    Kind("file", "uploaded file", _find_files),
     Kind("source", "synced source", _find_sources, principal_only=True),
     Kind("alert", "card on Today", _find_alerts),
     Kind("alert_board", "the cards on Today", _nothing, principal_only=True, no_item=True),
-    Kind("watch_suggestion", "suggested watch", _find_watch_suggestions, principal_only=True),
-    Kind("workflow", "workflow", _find_workflows, principal_only=True),
+    Kind("watch_suggestion", "suggested watch", _find_watch_suggestions),
+    Kind("workflow", "workflow", _find_workflows),
     Kind("workflow_run", "workflow run", _find_runs),
     Kind("memory", "memory (decision, initiative or advice)", _find_memories, principal_only=True),
     Kind("suggested_fact", "suggested fact", _find_suggested_facts, principal_only=True),
-    Kind("department", "department", _find_departments, principal_only=True),
-    Kind("new_department", "new department", _nothing, principal_only=True, no_item=True),
-    Kind("skill", "skill", _find_skills, principal_only=True),
+    Kind("department", "department", _find_departments),
+    Kind("new_department", "new department", _nothing, no_item=True),
+    Kind("skill", "skill", _find_skills),
     Kind("setting", "setting", _find_settings),
     Kind("inbox", "inbox", _nothing, no_item=True),
-    Kind("standing_job", "standing job (something As me keeps doing)", _find_jobs, principal_only=True),
-    Kind("new_standing_job", "new standing job", _nothing, principal_only=True, no_item=True),
+    Kind("standing_job", "standing job (something As me keeps doing)", _find_jobs),
+    Kind("new_standing_job", "new standing job", _nothing, no_item=True),
 )
 
 _ACTIONS = (

@@ -23,7 +23,6 @@ from openexecutive.departments import store as dept_store
 from openexecutive.memory import episodic
 from openexecutive.orchestrator.schedule_tools import (
     MCP_CLIENT_MCP_TOOLS,
-    MCP_CLIENT_REFUSAL,
     MCP_CLIENT_WITHHELD_TOOLS,
     PRIVATE_TURN_MCP_TOOLS,
     PRIVATE_TURN_WITHHELD_TOOLS,
@@ -340,7 +339,7 @@ def test_an_mcp_client_turn_reaches_gateway_reads_only(roster: SimpleNamespace) 
     assert called == ["google_workspace__send_gmail_message", "google_workspace__search_drive_files"]
 
 
-def test_the_gateway_itself_refuses_a_send_on_an_mcp_client_turn(roster: SimpleNamespace) -> None:
+def test_the_gateway_itself_puts_a_send_on_a_card_on_an_mcp_client_turn(roster: SimpleNamespace) -> None:
     from openexecutive.orchestrator.schedule_tools import set_session
 
     gateway, reached = _real_gateway()
@@ -353,7 +352,7 @@ def test_the_gateway_itself_refuses_a_send_on_an_mcp_client_turn(roster: SimpleN
             }))
 
     out = asyncio.run(_go())
-    assert MCP_CLIENT_REFUSAL in json.loads(out)["error"]
+    assert json.loads(out)["status"] == "waiting_for_approval"
     assert reached == []
 
 

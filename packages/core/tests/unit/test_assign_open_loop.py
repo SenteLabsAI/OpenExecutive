@@ -400,13 +400,13 @@ async def test_a_lookalike_closing_tag_in_the_backstory_is_not_the_speakers_word
     assert open_loops.count_open_loops(team.ben) == 0
 
 
-async def test_a_teammate_cannot_tell_a_contact_from_no_one(team: SimpleNamespace) -> None:
+async def test_a_teammate_hears_a_contact_is_a_contact(team: SimpleNamespace) -> None:
     _speak(team.sara)
     contact = await _tool(person_id=team.carl, task="send me the Q3 numbers")
     _speak(team.sara)
     nobody = await _tool(person_id=9999, task="send me the Q3 numbers")
-    assert contact == nobody
-    assert contact["reason"] == "unknown_owner"
+    assert contact["reason"] == "owner_is_contact"
+    assert nobody["reason"] == "unknown_owner"
 
 
 # --------------------------------------------------------------------------- #

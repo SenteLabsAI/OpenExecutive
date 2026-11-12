@@ -92,8 +92,8 @@ def test_each_person_sees_only_their_own(client: TestClient, ids: dict[str, int]
     assert mine["can_set_company_retention"] is True
     theirs = client.get("/memories/history", headers=TEAMMATE).json()
     assert len(theirs["notes"]) == 1 and theirs["notes"][0]["id"] != mine["notes"][0]["id"]
-    # A teammate keeps notes from chat without Act as me; email ones need it.
-    assert theirs["can_keep_notes"] is True and theirs["can_note_replies"] is False
+    # A teammate keeps notes from chat and from their own approved replies.
+    assert theirs["can_keep_notes"] is True and theirs["can_note_replies"] is True
     assert theirs["reply_notes"] is True
     assert theirs["can_set_company_retention"] is False
     assert client.get("/memories/history?q=venue", headers=OWNER).json()["notes"] == []

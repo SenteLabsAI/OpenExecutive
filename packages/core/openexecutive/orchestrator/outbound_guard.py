@@ -34,9 +34,10 @@ is no new table. The guard is *fail-open*: any internal lookup failure returns
 ``None`` (allow), because an anti-spam helper must never turn a working send
 into a dropped message or a crash.
 
-Scope note: the send handlers are the same tools the Executive uses for both
-autonomous proactive DMs and sends a human explicitly asked for, so the guard
-applies to both — by design. Suppression is non-destructive: it returns a
+Scope note: a send someone on the team asked for in the turn, on a surface
+that verified who they are, skips the guard (``schedule_tools._guard_outbound``):
+Approvals already decided it. The guard covers the Executive's own outreach and
+turns nobody on the team started. Suppression is non-destructive: it returns a
 reason the Executive reads, so a genuinely-wanted resend can be reworded, or
 held / ``schedule_followup``-ed for the recipient's next window. Operators who
 want to send identical/off-hours messages can widen the knobs or set

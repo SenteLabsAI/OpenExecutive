@@ -127,7 +127,7 @@ export default function DelegatePage() {
                   level={level}
                   side={
                     <>
-                      {settings.team && <TeamSection team={settings.team} onSettings={delegation.setSettings} />}
+                      {settings.team && <TeamSection team={settings.team} />}
                       {settings.handle_it?.enabled && <SentCard handleIt={settings.handle_it} />}
                     </>
                   }

@@ -36,13 +36,12 @@ person; a card is dropped after ``CARD_TTL``.
 **On their own.** With Handle it for me on and Approvals above Careful, a
 card is carried out as soon as it is proposed (``run_on_its_own``), with no
 tap, when plain code finds nothing against it (``on_its_own_refusal``): Act
-as me on, a server that can tie the switch to the person, and fewer than
-``ON_ITS_OWN_PER_DAY`` actions today. On Balanced it also reaches nobody new:
+as me on, and a server that can tie the switch to the person. On Balanced
+it also reaches nobody new:
 a new contact, or anyone whose roster entry is under ``SETTLED_AFTER`` old,
 waits on its card (``_known_people_refusal``), so someone added or planted
-lately is never reached without a tap. On Hands-off that check lifts. A
-Drive change or a save into a shared folder always waits: the tap is what
-makes it. Anything refused waits on its card as before. An invite carried
+lately is never reached without a tap, and a Drive change or a save into a
+shared folder waits too. On Hands-off those checks lift. Anything refused waits on its card as before. An invite carried
 out on its own is never booked as already approved: the meeting gate
 decides as for any meeting nobody tapped, so it may go to the approver as a
 proposal. A card another AI app asked for names the app (``via``) on every
@@ -64,7 +63,7 @@ logger = logging.getLogger(__name__)
 
 DECISION_CLASS = "delegation_actions"
 KINDS: tuple[str, ...] = ("invite", "message", "add_contact", "drive_files", "save_files")
-# Kinds that never run without the person's tap.
+# Kinds that wait for the person's tap below Hands-off.
 TAP_ONLY_KINDS = frozenset({"add_contact", "drive_files", "save_files"})
 HANDLE_MAX = 300
 # Most people outside the team a save_files card lists; a folder open to
@@ -84,8 +83,6 @@ NAME_MAX = 120
 WHY_MAX = 300
 MAX_ATTENDEES = 20
 HORIZON = timedelta(days=366)
-# Carried out on their own: at most this many actions a day.
-ON_ITS_OWN_PER_DAY = 10
 # Below Hands-off, a card reaches no one on its own whose roster entry is
 # newer than this: it waits for a tap.
 SETTLED_AFTER = timedelta(days=7)
@@ -657,7 +654,6 @@ def _settled(person_id: Any, speaker_id: int, now: datetime) -> bool:
 def _on_its_own_refusal(person: Any, actions: list[dict[str, Any]], now: datetime) -> str | None:
     from openexecutive.delegation import handle_it
     from openexecutive.delegation.settings import can_delegate, is_enabled
-    from openexecutive.memory.decision_ledger import STATUS_EXECUTED, list_instances
 
     if person is None or person.id is None:
         return "handle_it_off"
@@ -671,8 +667,6 @@ def _on_its_own_refusal(person: Any, actions: list[dict[str, Any]], now: datetim
         return "signing_off"
     if not actions:
         return "not_allowed"
-    if any(a.get("kind") in ("drive_files", "save_files") for a in actions):
-        return "tap_only"
     # In training, only people they allowed, every one on the card;
     # otherwise, below Hands-off, nobody new.
     held = handle_it.training_hold(person.id, _addresses(actions) or [""])
@@ -682,19 +676,10 @@ def _on_its_own_refusal(person: Any, actions: list[dict[str, Any]], now: datetim
         refused = _known_people_refusal(person, actions, now)
         if refused is not None:
             return refused
-    day = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-    done_today = list_instances(
-        DECISION_CLASS, status=STATUS_EXECUTED, approver_person_id=person.id,
-        resolved_since=day.isoformat(), limit=1000,
-    )
-    done = sum(len(_payload(card).get("actions") or []) for card in done_today)
-    if done + len(actions) > ON_ITS_OWN_PER_DAY:
-        return "daily_limit"
     return None
 
 
-# One card carried out on its own at a time, so two turns can't both pass
-# the daily limit before either is counted.
+# One card carried out on its own at a time.
 _ON_ITS_OWN_LOCK = asyncio.Lock()
 
 

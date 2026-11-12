@@ -210,15 +210,17 @@ def _nudge(**over: Any) -> inbox.Reply:
     return inbox.Reply(**fields)
 
 
-@pytest.mark.parametrize(("reply", "code"), [
-    (_nudge(cc=[LEE]), "recipients"),
-    (_nudge(to=[LEE]), "recipients"),
-    (_nudge(body="Hi Dana, " + "just checking in. " * 300), "long"),
-    (_nudge(flags=["asks_if_ai"]), "flagged"),
-])
-def test_what_a_follow_up_never_sends(owner: Any, reply: Any, code: str) -> None:
+def test_a_flagged_follow_up_never_sends(owner: Any) -> None:
     _on(owner, "hands_off")
-    assert _check(owner, reply) == code
+    assert _check(owner, _nudge(flags=["asks_if_ai"])) == "flagged"
+
+
+@pytest.mark.parametrize("reply", [_nudge(cc=[LEE]), _nudge(to=[LEE])])
+def test_someone_new_on_a_follow_up_waits_below_hands_off(owner: Any, reply: Any) -> None:
+    _on(owner, "balanced")
+    assert _check(owner, reply) == "recipients"
+    _on(owner, "hands_off")
+    assert _check(owner, reply) is None
 
 
 def test_below_hands_off_a_follow_up_to_a_stranger_waits(owner: Any) -> None:
@@ -228,11 +230,11 @@ def test_below_hands_off_a_follow_up_to_a_stranger_waits(owner: Any) -> None:
     assert _check(owner, _nudge(), relation="stranger") is None
 
 
-def test_a_follow_up_counts_toward_the_day(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_follow_up_has_no_daily_limit(owner: Any) -> None:
     _on(owner, "hands_off")
-    monkeypatch.setenv("DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY", "1")
-    handle_it.record_handled(owner.id, "other", 1, "x", now=NOW - timedelta(hours=1))
-    assert _check(owner, _nudge()) == "daily_limit"
+    for n in range(25):
+        handle_it.record_handled(owner.id, f"other-{n}", 1, "x", now=NOW - timedelta(hours=1))
+    assert _check(owner, _nudge()) is None
 
 
 def test_the_send_path_rechecks_the_setting(owner: Any, models: dict[str, Any]) -> None:
@@ -280,6 +282,6 @@ def test_on_balanced_a_link_amount_or_topic_waits(owner: Any, body: str, code: s
     assert _check(owner, _nudge(body=body)) is None
 
 
-def test_a_nudge_stays_short(owner: Any) -> None:
+def test_a_long_nudge_is_not_refused_for_its_length(owner: Any) -> None:
     _on(owner, "hands_off")
-    assert _check(owner, _nudge(body="Hi Dana, " + "x" * 700)) == "long"
+    assert _check(owner, _nudge(body="Hi Dana, " + "just checking in. " * 300)) is None

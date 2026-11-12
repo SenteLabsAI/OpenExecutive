@@ -19,9 +19,9 @@ produces can reach other people, so it is fenced in code, as chat is:
   history, its report (a scheduled one is delivered to them, never to
   someone else) and every audit row the read writes. A run started from chat
   marks the conversation as one that read their mail.
-- **The run is locked down.** As a chat turn that read the mail is for the
-  rest of the turn (``delegation.lockdown``), a workflow that reads is for
-  all of its steps: it may only list tools ``MAIL_TOUCHED_ALLOWED_TOOLS``
+- **The run is locked down below Hands-off.** As a chat turn that read the
+  mail is for the rest of the turn (``delegation.lockdown``), a workflow that
+  reads is for all of its steps unless Approvals is on Hands-off: it may only list tools ``MAIL_TOUCHED_ALLOWED_TOOLS``
   lets run after a read, email as them (``workflow_email.TOOLS``) and these
   reads; no gateway tool, web search, script or workflow run; no approval
   gate asking anyone but its creator. An email it sends goes without asking
@@ -77,6 +77,17 @@ def _allowed_alongside(tool: str) -> bool:
     return entry is not None and entry[0] == USE and name in MAIL_TOUCHED_ALLOWED_TOOLS
 
 
+def hands_off() -> bool:
+    """Whether Approvals is on Hands-off. Never raises: unreadable is no."""
+    try:
+        from openexecutive.orchestrator import outside_mode
+
+        return outside_mode.get_mode() == outside_mode.TRUST
+    except Exception:
+        logger.warning("workflow reads: couldn't read Approvals — checking as usual", exc_info=True)
+        return False
+
+
 def definition_refusal(defn: Any, owner_id: int | None) -> str | None:
     """Why ``defn``, created by ``owner_id``, may not read its creator's mail
     as it stands, or None (also when it doesn't read). Plain code: fails closed."""
@@ -84,7 +95,10 @@ def definition_refusal(defn: Any, owner_id: int | None) -> str | None:
         return None
     if owner_id is None:
         return "A workflow that reads someone's email needs a creator on record."
-    outside = sorted({
+    # Below Hands-off, Approvals keeps the lockdown a chat turn gets after a
+    # mail read (delegation.lockdown) for every step; on Hands-off it lifts,
+    # as it does in chat.
+    outside = [] if hands_off() else sorted({
         t for step in getattr(defn, "steps", []) for t in (getattr(step, "tools", None) or [])
         if not _allowed_alongside(t)
     })
