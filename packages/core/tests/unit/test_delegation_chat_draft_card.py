@@ -321,3 +321,23 @@ def test_a_question_leaves_the_draft_in_the_mailbox_as_it_is(
     ))
     assert note == "You offered Friday at 10." and new == []
     assert saved["body"] == before and "update:d1" not in mailbox.calls
+
+
+def test_an_ask_that_needs_looking_up_is_refused_and_leaves_the_draft(
+    db: Path, owner: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.delegation.answers import NeedsWork
+
+    mailbox, row = _chat_draft(owner)
+
+    async def needs_tools(*_a: Any, **kw: Any) -> Any:
+        raise NeedsWork(kw["change"], question=True)
+
+    monkeypatch.setattr("openexecutive.delegation.answers.rewrite", needs_tools)
+    refused = _refused(chat_draft_card.change(
+        owner, row, "What did we quote them last quarter?", caller=LOCAL, gmail=mailbox, now=LATER,
+    ))
+    assert (refused.status, refused.code) == (409, "needs_work")
+    assert "Ask me in the chat" in refused.message
+    assert "update:d1" not in mailbox.calls
+    assert row not in chat_draft_card._CHANGING

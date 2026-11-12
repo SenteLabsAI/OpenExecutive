@@ -250,7 +250,13 @@ async def change(
     (``text``: "drop Lisa's name", or a tone pill's "Make it shorter"), on
     their tap. Returns its state, the sentences that are new, and a short
     line on what changed. Raises ``SendRefused``. Sends nothing."""
-    from openexecutive.delegation.answers import CONVERSATION_KEY, changed_sentences, rewrite
+    from openexecutive.delegation.answers import (
+        CONVERSATION_KEY,
+        NeedsWork,
+        changed_sentences,
+        rewrite,
+    )
+    from openexecutive.delegation.reply_send import SendRefused
 
     new: list[str] = []
 
@@ -264,7 +270,15 @@ async def change(
         note = str(last.get("text") or "") if isinstance(last, dict) and last.get("kind") == "note" else ""
         return words, note or "I changed the email."
 
-    saved, note = await _save(person, row_id, caller=caller, gmail=gmail, now=now, words_for=rewritten)
+    try:
+        saved, note = await _save(person, row_id, caller=caller, gmail=gmail, now=now, words_for=rewritten)
+    except NeedsWork as work:
+        # Looking things up takes the Executive's tools, which this card
+        # doesn't have: the draft stays as it is.
+        what = "answer that" if work.question else "do that"
+        raise SendRefused(
+            409, "needs_work", f"I need to look things up to {what}. Ask me in the chat, and the draft stays as it is.",
+        ) from None
     return saved, new, note
 
 
