@@ -9,6 +9,21 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.7.3](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.7.2...v0.7.3) (2026-11-12)
+
+
+### Added
+
+* **integrations:** add Approve and Skip buttons to Google Chat cards ([#806](https://github.com/SenteLabsAI/OpenExecutive/issues/806)) ([9f0c9dc](https://github.com/SenteLabsAI/OpenExecutive/commit/9f0c9dccd1d6d38318920e4cee1115fa03bbb062))
+* **ui:** give email cards one set of buttons and answer questions on them ([#811](https://github.com/SenteLabsAI/OpenExecutive/issues/811)) ([33073d0](https://github.com/SenteLabsAI/OpenExecutive/commit/33073d0d5e98346e710e2c739070a114d9bfa701))
+
+
+### Fixed
+
+* **delegation:** reply in the thread to whoever they ask, on the waiting card when there is one ([#810](https://github.com/SenteLabsAI/OpenExecutive/issues/810)) ([5df30ac](https://github.com/SenteLabsAI/OpenExecutive/commit/5df30ac61682ec0df81eab67efd48be67721bba4))
+* **integrations:** check a Google Chat tap before its buttons come off ([#808](https://github.com/SenteLabsAI/OpenExecutive/issues/808)) ([6639fd5](https://github.com/SenteLabsAI/OpenExecutive/commit/6639fd5fa78820a54cfe3079413549fec2ffd7f6))
+* **integrations:** move Google Workspace MCP to 2.4.2 ([#812](https://github.com/SenteLabsAI/OpenExecutive/issues/812)) ([95ebc8e](https://github.com/SenteLabsAI/OpenExecutive/commit/95ebc8e2067ca193dce43d8b546e45257dd2f3d0))
+
 ## [0.7.2](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.7.1...v0.7.2) (2026-11-11)
 
 
