@@ -536,3 +536,43 @@ def test_a_reply_written_in_chat_goes_onto_the_waiting_card(
     # Changed in their Drafts too, and still the one card.
     assert mailbox.drafts["d1"].message.text == payload["draft_body"]
     assert [c.id for c in inbox.open_cards(ids["principal"])] == [card_id]
+
+
+def test_a_question_on_the_card_gets_an_answer_and_leaves_the_reply(
+    client: TestClient, ids: dict[str, int], monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+) -> None:
+    answers._ANSWERED.clear()
+
+    async def fake(model: str, system: str, turn: str) -> dict[str, Any]:
+        # Even a body that differs is ignored: a question never edits the reply.
+        return {"body": "Something else entirely.", "question": True, "note": "You offered Thursday at 2."}
+
+    monkeypatch.setattr(answers, "_call_model", fake)
+    mailbox, card_id = _card(ids["principal"], monkeypatch)
+    monkeypatch.setattr("openexecutive.delegation.gmail.gmail_for", lambda email: mailbox)
+    monkeypatch.setenv("OE_LOCAL_LOGIN", "1")
+    before = mailbox.drafts["d1"].message.text
+    resp = client.post(f"/delegation/replies/{card_id}/change", json={"text": "What time did I offer?"}, headers=OWNER)
+    assert resp.status_code == 200, resp.text
+    card = resp.json()
+    assert card["draft_body"] == before and card["changed_sentences"] == []
+    assert mailbox.drafts["d1"].message.text == before
+    assert [(t["kind"], t["text"]) for t in card["conversation"]] == [
+        ("asked", "What time did I offer?"),
+        ("note", "You offered Thursday at 2."),
+    ]
+    assert "a question never edits the reply" in answers.REWRITE_PROMPT
+
+
+def test_a_question_that_needs_looking_up_goes_to_the_executive_as_a_question(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake(model: str, system: str, turn: str) -> dict[str, Any]:
+        return {"body": "Hi", "question": True, "needs_tools": True}
+
+    monkeypatch.setattr(answers, "_call_model", fake)
+    monkeypatch.setattr(answers, "_check_rate", lambda *a: None)
+    person = type("P", (), {"id": 1, "full_name": "Rae Moss", "email": "rae@example.com"})()
+    with pytest.raises(answers.NeedsWork) as raised:
+        asyncio.run(answers.rewrite(person, {"draft_body": "Hi"}, [], change="Who signed the LOI?"))
+    assert raised.value.question is True

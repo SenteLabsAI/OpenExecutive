@@ -16,6 +16,8 @@ import {
   senderLine,
   senderShort,
   draftIsLong,
+  namesFromLine,
+  recipientNames,
 } from "../src/lib/replyCards.ts";
 
 test("relationLabel names who the sender is, and nothing for an unknown relation", () => {
@@ -144,4 +146,20 @@ test("toDecideLabel counts what's left, and is empty when nothing is", () => {
   assert.equal(toDecideLabel(1), "1 to decide");
   assert.equal(toDecideLabel(3), "3 to decide");
   assert.equal(toDecideLabel(0), "");
+});
+
+test("recipientNames gives names only, joined in plain words", () => {
+  assert.equal(recipientNames(["Brennan Monaco <brennan@example.com>"]), "Brennan Monaco");
+  assert.equal(recipientNames(["Ann Lee (ann@example.com)", "bo@example.com"]), "Ann Lee and bo@example.com");
+  assert.equal(recipientNames(["A <a@x.co>", "B <b@x.co>", "C <c@x.co>"]), "A, B and C");
+  assert.equal(recipientNames(["A <a@x.co>", "B <b@x.co>", "C <c@x.co>", "D <d@x.co>"]), "A, B and 2 more");
+  assert.equal(recipientNames([]), "");
+});
+
+test("namesFromLine reads a draft row's line, even one cut short", () => {
+  assert.equal(
+    namesFromLine("Brennan Monaco (brennan.monaco@example.com), Annamarie Braden (annamarie@…"),
+    "Brennan Monaco and Annamarie Braden",
+  );
+  assert.equal(namesFromLine("dana@example.com"), "dana@example.com");
 });

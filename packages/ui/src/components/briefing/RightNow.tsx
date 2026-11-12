@@ -15,7 +15,8 @@ import {
   type RightNowRow,
 } from "@/lib/api";
 import { clockLabel, draftRowId, rowTarget, rowWhen, type PointTarget } from "@/lib/rightNow";
-import { mailboxName, safeGmailLink } from "@/lib/replyCards";
+import FeatureName from "@/components/FeatureName";
+import { mailboxName, namesFromLine, safeGmailLink } from "@/lib/replyCards";
 
 import { buildNarrativeSeed, type ContinueHandler } from "./shared";
 
@@ -26,8 +27,8 @@ import { buildNarrativeSeed, type ContinueHandler } from "./shared";
 // something. Built from the records on every load, never written by a
 // model, so a row reads the same each time. An email row has View email and
 // Reply (GET /delegation/mail, POST /delegation/mail/reply), a draft row has
-// Send, See draft (the same card as under the chat, to change it first) and
-// Delete (/delegation/drafts/{row}), a chat row
+// Send, Open (the same card as under the chat, to change it first) and
+// Don't send, which deletes it (/delegation/drafts/{row}), a chat row
 // opens the message in its app, and every row has a ✕ (POST
 // /today/right-now/dismiss) that keeps it gone until something newer lands
 // on it.
@@ -69,6 +70,29 @@ function ListRow({ row, actions }: { row: RightNowRow; actions?: RowActions }) {
   const talk = onContinue ? () => onContinue(buildNarrativeSeed(label)) : undefined;
   const mailTarget = target?.kind === "mail" && actions?.replies ? target : null;
   const draftId = draftRowId(row);
+  if (row.kind === "draft" && draftId !== null) {
+    // A draft in their own mailbox reads like a reply card: As you, the
+    // subject, who it goes to by name, and the same Send, Open, Don't send.
+    return (
+      <li className="py-4 sm:py-5">
+        <div className="flex items-baseline gap-2">
+          <FeatureName feature="act_as_me" className="shrink-0 text-[12px]" />
+          <p className="min-w-0 flex-1 text-base sm:text-[17px] font-semibold leading-snug text-fg break-words">
+            <span className="sr-only">{KIND_LABEL[row.kind]}: </span>
+            {row.subject}
+          </p>
+          {when && <span className="shrink-0 text-sm tabular-nums text-fg-subtle">{when}</span>}
+        </div>
+        <p className="mt-1 text-sm text-fg-muted break-words">To {namesFromLine(row.who)}</p>
+        <DraftActions
+          row={row}
+          draftId={draftId}
+          onGone={actions?.onGone}
+          indent={false}
+        />
+      </li>
+    );
+  }
   return (
     <li className="border-t border-line py-2.5 first:border-t-0">
       <div className="flex items-start gap-3">
@@ -125,18 +149,22 @@ const DRAFT_DONE: Record<string, string> = {
   you_replied: "You've already replied in this conversation.",
 };
 
-// A draft row's buttons: Send and Delete right here, or See draft to read and
+// A draft row's buttons: Send and Don't send right here, or Open to read and
 // change it first. Anything Send needs a second yes for, or a draft changed in
 // the mailbox, opens the draft so its card can say so.
 function DraftActions({
   row,
   draftId,
   onGone,
+  indent = true,
 }: {
   row: RightNowRow;
   draftId: number;
   onGone?: (row: RightNowRow) => void;
+  // Lined up under the row's text; a draft shown as a card sits flush.
+  indent?: boolean;
 }) {
+  const pad = indent ? "ml-11 " : "";
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState<"send" | "delete" | null>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -183,14 +211,14 @@ function DraftActions({
 
   if (done) {
     return (
-      <p className="ml-11 mt-2 text-sm font-semibold text-emerald-700 dark:text-emerald-300" role="status">
+      <p className={`${pad}mt-2 text-sm font-semibold text-emerald-700 dark:text-emerald-300`} role="status">
         {done}
       </p>
     );
   }
   if (open) {
     return (
-      <div className="ml-11">
+      <div className={pad || undefined}>
         <ChatDraftCard
           draft={{ row: draftId, to: [row.who], cc: [], subject: row.subject, preview: "" }}
           canDelete
@@ -203,14 +231,14 @@ function DraftActions({
     );
   }
   return (
-    <div className="ml-11 mt-2">
-      <div className="flex flex-wrap gap-2">
-        <Button size="sm" variant="primary" disabled={busy !== null} onClick={() => void run("send")}>
+    <div className={`${pad}mt-3`}>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button variant="primary" disabled={busy !== null} onClick={() => void run("send")}>
           {busy === "send" ? "Sending…" : "Send"}
         </Button>
-        <Button size="sm" disabled={busy !== null} onClick={() => setOpen(true)}>See draft</Button>
-        <Button size="sm" disabled={busy !== null} onClick={() => void run("delete")}>
-          <span className="text-rose-500">{busy === "delete" ? "Deleting…" : "Delete"}</span>
+        <Button variant="secondary" disabled={busy !== null} onClick={() => setOpen(true)}>Open</Button>
+        <Button variant="ghost" className="ml-auto" disabled={busy !== null} onClick={() => void run("delete")}>
+          {busy === "delete" ? "Removing…" : "Don't send"}
         </Button>
       </div>
       {error && <p className="mt-2 text-sm text-rose-500" role="alert">{error}</p>}

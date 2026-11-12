@@ -20,7 +20,6 @@ import {
   toDecideLabel,
   highlightPieces,
   questionsLeft,
-  relationLabel,
   replyFlagLines,
   replyToChoice,
   mailboxName,
@@ -28,7 +27,7 @@ import {
   sendLeftNothing,
   sendQuestion,
   senderLine,
-  senderShort,
+  recipientNames,
 } from "@/lib/replyCards";
 import FeatureName from "@/components/FeatureName";
 import GoOnItsOwnOffer from "@/components/briefing/GoOnItsOwnOffer";
@@ -52,7 +51,7 @@ import NextTimeTick from "@/components/NextTimeTick";
 // you chose to keep replies in your Drafts too. Send waits until each
 // question with answers to tap is answered, or you changed the words
 // yourself, and sends it from your own mailbox after you confirm who it goes
-// to; Open in Gmail (when it's in your Drafts) and Dismiss sit beside it.
+// to; Open in Gmail (when it's in your Drafts) and Don't send sit beside it.
 // GET /delegation/replies answers only the owner, so nothing shows for
 // everyone else, on a backend without it, and when nothing is waiting.
 
@@ -109,7 +108,7 @@ export const REPLIES_WAITING_TIP =
   "Mail that needs you, with a first reply the Executive wrote in your voice. Tap an answer " +
   "under Decide before sending to write it in, or tap Edit to change it yourself. Nothing is " +
   "sent until you tap Send. If you keep replies " +
-  "in your Drafts too, Dismiss deletes that draft unless you changed it in your mailbox. " +
+  "in your Drafts too, Don't send deletes that draft unless you changed it in your mailbox. " +
   "Only you see these.";
 
 // What the row is doing: idle, asking before sending (first or second
@@ -169,7 +168,6 @@ export function ReplyCardItem({
   // Being settled: Gmail didn't confirm a send. The server says so, and the
   // section reads the cards again until it's settled.
   const unconfirmed = card.status === "executing";
-  const relation = relationLabel(card.relation);
   const choice = replyToChoice(card);
   // The Reply to choice says who else was on it, so the warning doesn't.
   const warnings = replyFlagLines(choice ? card.flags.filter((f) => f !== "others_on_thread") : card.flags);
@@ -184,7 +182,7 @@ export function ReplyCardItem({
   const [nextTime, setNextTime] = useState(false);
 
   const dismiss = async () => {
-    setStep({ kind: "busy", label: "Dismissing…" });
+    setStep({ kind: "busy", label: "Removing…" });
     setError(null);
     try {
       await dismissReplyCard(card.decision_id);
@@ -312,8 +310,10 @@ export function ReplyCardItem({
   // button; it opens on a tap, and stays open while you edit or confirm.
   const expanded = open || confirming || editing !== null || typing !== null || ask.trim() !== "";
   const gist = cardGist(card);
+  // Who the reply goes to, by name; a follow-up says nobody answered yet.
+  const toNames = recipientNames(card.draft_to?.length ? card.draft_to : [who]);
+  const toLine = followUp ? `Nobody answered your email to ${toNames}` : `To ${toNames}`;
   const toDecide = toDecideLabel(left);
-  const replyToNow = choice ? (choice.toEveryone ? choice.everyone : choice.sender) : "";
   const tappable = questions.some((q) => q.choices.length > 0);
   // Open, everything shows at once, as a conversation: what they wrote, the
   // Executive's word on the reply with what's left to decide, anything that
@@ -345,10 +345,10 @@ export function ReplyCardItem({
   // comes straight here), so what it says is read as it is now.
   const allowNow = step.kind === "ask" ? Boolean(card.can_allow) && nextTime : confirming && step.allow;
   const dismissButton = (
-    // Dismiss is its own button, set apart on the right, so it's never
+    // Don't send is its own button, set apart on the right, so it's never
     // hunted for in a menu next to Send.
     <Button variant="ghost" className="ml-auto" onClick={() => void dismiss()} disabled={busy}>
-      Dismiss
+      Don&apos;t send
     </Button>
   );
 
@@ -471,41 +471,29 @@ export function ReplyCardItem({
         className="flex w-full cursor-pointer items-start gap-3 text-left disabled:cursor-default"
       >
         <span className="block min-w-0 flex-1">
-          <span className="mb-2 flex items-center gap-2">
-            <span className="inline-flex items-center rounded-lg bg-surface-overlay px-2 py-0.5 text-[13px] font-medium text-fg-muted">
-              {followUp ? "Follow-up waiting" : "Reply waiting"}
+          <span className="flex items-baseline gap-2">
+            <FeatureName feature="act_as_me" className="shrink-0 text-[12px]" />
+            <span className="min-w-0 flex-1 text-base sm:text-[17px] font-semibold leading-snug text-fg break-words">
+              {card.subject || "(no subject)"}
             </span>
-            <FeatureName feature="act_as_me" className="text-[12px]" />
-            {received && <span className="text-sm text-fg-subtle tabular-nums">{received}</span>}
-          </span>
-          <span className="block text-base sm:text-[17px] font-semibold leading-snug text-fg break-words">
-            {card.subject || "(no subject)"}
+            {received && !expanded && <span className="shrink-0 text-sm text-fg-subtle tabular-nums">{received}</span>}
           </span>
           <span className="mt-1 block text-sm text-fg-muted break-words">
-            {followUp ? `Nobody answered your email to ${who}` : senderShort(card)}
-            {[relation, card.sender_verified ? "" : "Address not verified"]
-              .filter(Boolean)
-              .map((part) => ` · ${part}`)
-              .join("")}
+            {toLine}
+            {card.sender_verified ? "" : " · Address not verified"}
           </span>
           {/* Plain text: the summary is written from a stranger's email too. */}
-          {gist && <span className="mt-2 block text-[15px] leading-snug text-fg break-words">{gist}</span>}
+          {gist && !expanded && <span className="mt-2 block text-[15px] leading-snug text-fg break-words">{gist}</span>}
         </span>
-        <span className="flex shrink-0 items-center gap-1 pt-0.5 text-sm text-fg-muted">
-          <span className="hidden sm:inline">{expanded ? "Close" : "Open"}</span>
-          <span aria-hidden="true">{expanded ? "▴" : "▾"}</span>
-        </span>
+        {expanded && <span className="shrink-0 pt-0.5 text-sm font-medium text-accent">Close</span>}
       </button>
 
       {!expanded ? (
         <>
-          {(toDecide || replyToNow || warnings.length > 0) && !unconfirmed && (
+          {(toDecide || warnings.length > 0) && !unconfirmed && (
             <div className="mt-2.5 flex flex-wrap gap-2">
               {toDecide && (
                 <span className="rounded-full border border-accent/60 px-2.5 py-0.5 text-[13px] text-accent">{toDecide}</span>
-              )}
-              {replyToNow && (
-                <span className="rounded-full border border-line-strong px-2.5 py-0.5 text-[13px] text-fg-muted">{replyToNow}</span>
               )}
               {warnings.length > 0 && (
                 <span className="rounded-full border border-amber-500/50 px-2.5 py-0.5 text-[13px] text-amber-700 dark:text-amber-300">
@@ -522,20 +510,18 @@ export function ReplyCardItem({
           ) : (
             <>
               <div className="mt-3 flex flex-wrap items-center gap-2">
-                {left > 0 ? (
-                  <Button variant="primary" onClick={() => setOpen(true)} disabled={busy}>
-                    Review
-                  </Button>
-                ) : (
-                  <>
-                    <Button variant="primary" onClick={askToSend} disabled={busy || card.working}>
-                      Send
-                    </Button>
-                    <Button variant="secondary" onClick={() => setOpen(true)} disabled={busy}>
-                      Review
-                    </Button>
-                  </>
-                )}
+                {/* The same three buttons on every email card. With something
+                    left to decide, Send opens the card on it first. */}
+                <Button
+                  variant="primary"
+                  onClick={left > 0 ? () => setOpen(true) : askToSend}
+                  disabled={busy || card.working}
+                >
+                  Send
+                </Button>
+                <Button variant="secondary" onClick={() => setOpen(true)} disabled={busy}>
+                  Open
+                </Button>
                 {dismissButton}
               </div>
             </>
@@ -634,7 +620,7 @@ export function ReplyCardItem({
             </div>
           )}
         </div>
-        <div className="mt-1 text-xs text-fg-subtle break-words">To: {card.draft_to.join(", ")}</div>
+        <div className="mt-1 text-xs text-fg-subtle break-words" title={card.draft_to.join(", ")}>To {recipientNames(card.draft_to)}</div>
         {editing !== null ? (
           <div className="mt-1.5">
             <textarea
@@ -713,8 +699,8 @@ export function ReplyCardItem({
         >
           <input
             type="text"
-            aria-label="Tell me what to change"
-            placeholder="Tell me what to change…"
+            aria-label="Ask me something, or tell me what to change"
+            placeholder="Ask me something, or tell me what to change…"
             value={ask}
             maxLength={500}
             disabled={busy}
@@ -723,7 +709,7 @@ export function ReplyCardItem({
           />
           {ask.trim() && (
             <Button type="submit" variant="secondary" disabled={busy}>
-              Change
+              Go
             </Button>
           )}
         </form>
