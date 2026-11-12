@@ -63,7 +63,7 @@ import {
   MonitoringPanelBody,
   PracticeClientsPanelBody,
 } from "./briefing/AwarenessPanels";
-import DoneForYou, { DONE_FOR_YOU_ID } from "./briefing/DoneForYou";
+import DoneForYou from "./briefing/DoneForYou";
 import { anyWorking } from "@/lib/doneForYou";
 import FirstWeekCard from "./briefing/FirstWeekCard";
 import { useGlance } from "./briefing/Glance";
@@ -533,9 +533,10 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
   const needsYouCount =
     rightNowRows.length + mineProposals.length + replies.cards.length + inviteCards.cards.length +
     actionCards.cards.length + elsewhere.length;
-  // Home's summary says only what its two lists hold; the rest (people,
-  // departments, under way, monitoring) is one quiet line at the bottom.
-  const summary: SummaryPart[] = today ? homeSummary(needsYouCount, doneRows.length) : [];
+  // Home's summary says only what needs you (Done for you is its own list
+  // right below); the rest (people, departments, under way, monitoring) is
+  // one quiet line at the bottom.
+  const summary: SummaryPart[] = today ? homeSummary(needsYouCount) : [];
 
   // At a glance — one quiet line, only the items with something to show,
   // what's yours first. Each item reads on its own: the line has no headings.
@@ -820,8 +821,6 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
   const onSummaryPart = (part: SummaryPart) => {
     if (part.target.kind === "needsYou") {
       document.getElementById(NEEDS_YOU_ID)?.scrollIntoView({ behavior: "smooth", block: "start" });
-    } else if (part.target.kind === "doneForYou") {
-      document.getElementById(DONE_FOR_YOU_ID)?.scrollIntoView({ behavior: "smooth", block: "start" });
     } else if (part.target.kind === "panel") {
       setOpenPanel(part.target.panel);
     }
@@ -847,7 +846,7 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
                 {summary.length === 0
                   ? firstWeekCard
                     ? "Your first week. Start below."
-                    : "All clear — nothing needs you right now."
+                    : "Nothing needs you right now."
                   : summary.map((part, i) => (
                       <span key={part.text}>
                         {part.target.kind === "href" ? (
