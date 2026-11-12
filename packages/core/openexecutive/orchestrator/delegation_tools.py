@@ -638,14 +638,28 @@ _CHECK_ADDRESS = (
 )
 
 
+def _same_reply(payload: dict[str, Any], plan: dict[str, Any], message_id: str) -> bool:
+    """Whether the reply ``plan`` makes is the one on the card: it answers the
+    card's message, or (with no message named) goes only to people the card's
+    reply already goes to. Otherwise a reply to someone else in the thread
+    would replace the card's."""
+    card_message = str(payload.get("message_id") or "")
+    if str(plan.get("message_id") or "") == card_message:
+        return True
+    if message_id:
+        return False
+    on_card = {str(a).lower() for a in payload.get("draft_to") or []}
+    return bool(plan["to"]) and all(a.lower() in on_card for a in plan["to"])
+
+
 async def _onto_open_card(
     writer: _Writer, thread: Any, plan: dict[str, Any], composed: Any, *, message_id: str = "",
 ) -> str | None:
     """A reply to an email that already has a reply card waiting (the inbox
     watcher's) goes onto that card instead of a second draft: one reply per
-    email. None when there is no such card, ``message_id`` names another
-    message of the thread than the card answers, or the card can't take the
-    change right now; the caller then saves a draft of its own."""
+    email. None when there is no such card, the reply isn't the card's
+    (``_same_reply``), or the card can't take the change right now; the
+    caller then saves a draft of its own."""
     from openexecutive.delegation import card_drafts
     from openexecutive.delegation.inbox import FOLLOW_UP_SOURCE, card_payload, open_cards
     from openexecutive.delegation.reply_send import SendRefused
@@ -661,7 +675,7 @@ async def _onto_open_card(
         return None
     if card is None:
         return None
-    if message_id and message_id != str(card_payload(card).get("message_id") or ""):
+    if not _same_reply(card_payload(card), plan, message_id):
         return None
     try:
         await card_drafts.from_chat(card, writer.person, writer.mailbox, words=composed.body, to=plan["to"], cc=plan["cc"])

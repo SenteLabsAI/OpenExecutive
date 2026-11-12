@@ -932,11 +932,13 @@ def test_cc_goes_on_a_new_email_and_a_reply(roster: SimpleNamespace, composer: l
 
 
 def _waiting_card(
-    monkeypatch: pytest.MonkeyPatch, thread_id: str = "t1", message_id: str = "m1",
+    monkeypatch: pytest.MonkeyPatch, thread_id: str = "t1", message_id: str = "m1", draft_to: tuple[str, ...] = (),
 ) -> list[dict[str, Any]]:
     from openexecutive.delegation import card_drafts, inbox
 
-    card = SimpleNamespace(id=81, proposed_payload_json=json.dumps({"thread_id": thread_id, "message_id": message_id}))
+    card = SimpleNamespace(id=81, proposed_payload_json=json.dumps(
+        {"thread_id": thread_id, "message_id": message_id, "draft_to": list(draft_to)},
+    ))
     monkeypatch.setattr(inbox, "open_cards", lambda person_id: [card])
     calls: list[dict[str, Any]] = []
 
@@ -996,3 +998,16 @@ def test_a_reply_on_the_card_to_someone_new_says_to_check_the_address(
     result = _run(_session(FakeMailbox()), {"intent": "Yes.", "thread_id": "t1", "to": ["stranger@else.example"]})
     assert result["on_card"] == 81
     assert result["not_in_people"] == ["stranger@else.example"] and "check it" in result["check_address"]
+
+
+def test_a_reply_to_someone_else_in_the_thread_leaves_the_card_alone(
+    roster: SimpleNamespace, composer: list[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The card answers an earlier message, to Bob; this reply answers Dana's.
+    calls = _waiting_card(monkeypatch, message_id="m0", draft_to=("bob@northpeak.example",))
+    mailbox = FakeMailbox()
+    result = _run(_session(mailbox), {"intent": "Yes.", "thread_id": "t1"})
+    assert "on_card" not in result and len(mailbox.drafts) == 1 and calls == []
+    # The card's reply already goes to Dana: it is the same reply, so it goes there.
+    _waiting_card(monkeypatch, message_id="m0", draft_to=(DANA.upper(),))
+    assert _run(_session(mailbox), {"intent": "Yes.", "thread_id": "t1"})["on_card"] == 81

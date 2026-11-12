@@ -138,4 +138,5 @@ def plan_reply(
         "references": references_header(target.references, target.message_id_header),
         "flags": flags,
         "last_text": target.text,
+        "message_id": target.id,
     }
