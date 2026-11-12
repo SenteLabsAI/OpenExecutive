@@ -81,8 +81,9 @@ CREATE INDEX IF NOT EXISTS idx_session_drive_searches
     ON session_drive_searches(session_id, person_id, query);
 """
 
-# workspace-mcp output shapes (gdrive/drive_tools.py), as of 2.1.0. Since 2.0
+# workspace-mcp output shapes (gdrive/drive_tools.py), as of 2.4.2. Since 2.0
 # a search Drive did not finish ends in a WARNING line, which matches no item.
+# Since 2.4 an opened file's header names its Drive version after the type.
 _EMPTY_SEARCH_PREFIX = "No files found for '"
 _SEARCH_HEADER_RE = re.compile(r"^Found \d+ files for ")
 # workspace-mcp interpolates the file's name and type unescaped, so a name
@@ -100,7 +101,7 @@ _SEARCH_ITEM_RE = re.compile(
     r"(?:.*\sLink: (?P<link>\S+))?\s*$"
 )
 _CONTENT_RE = re.compile(
-    r'\AFile: "(?P<name>.*)" \(ID: (?P<id>[^,\s)]+), Type: (?P<mime>[^)]*)\)\n'
+    r'\AFile: "(?P<name>.*)" \(ID: (?P<id>[^,\s)]+), Type: (?P<mime>[^)]*?)(?:, Version: \d+)?\)\n'
     r"Link: (?P<link>\S*)\n\n--- CONTENT ---\n(?P<body>.*)\Z",
     re.DOTALL,
 )
