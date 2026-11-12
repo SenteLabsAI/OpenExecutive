@@ -663,7 +663,13 @@ async def _onto_open_card(
     from openexecutive.delegation import card_drafts
     from openexecutive.delegation.inbox import FOLLOW_UP_SOURCE, card_payload, open_cards
     from openexecutive.delegation.reply_send import SendRefused
+    from openexecutive.orchestrator import reply_card_tools
+    from openexecutive.orchestrator.schedule_tools import current_session
 
+    # The inbox's own work on a card hands back through update_reply_card;
+    # a turn driven by an email's text never readdresses a card.
+    if reply_card_tools.offered(current_session.get()):
+        return None
     try:
         card = next((
             c for c in open_cards(writer.person.id)

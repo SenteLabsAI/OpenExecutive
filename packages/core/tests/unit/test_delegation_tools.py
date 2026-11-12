@@ -1011,3 +1011,13 @@ def test_a_reply_to_someone_else_in_the_thread_leaves_the_card_alone(
     # The card's reply already goes to Dana: it is the same reply, so it goes there.
     _waiting_card(monkeypatch, message_id="m0", draft_to=(DANA.upper(),))
     assert _run(_session(mailbox), {"intent": "Yes.", "thread_id": "t1"})["on_card"] == 81
+
+
+def test_the_inbox_work_turn_never_readdresses_a_card(
+    roster: SimpleNamespace, composer: list[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _waiting_card(monkeypatch)
+    session = _session(FakeMailbox())
+    session.reply_card_work = 81
+    result = _run(session, {"intent": "Yes.", "thread_id": "t1", "to": ["ap@else.example"]})
+    assert "on_card" not in result and calls == []

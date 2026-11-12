@@ -236,6 +236,24 @@ def test_a_draft_brought_up_to_date_asks_again_unless_that_version_was_shown(
     assert _status(card) == "approved_unchanged"
 
 
+def test_a_reply_changed_from_chat_asks_again_unless_that_version_was_shown(
+    owner: Any, models: dict[str, Any],
+) -> None:
+    from openexecutive.delegation import card_drafts
+
+    mailbox, card = _card(owner)
+    asyncio.run(card_drafts.from_chat(card, owner, mailbox, words="Hi Dana,\n\nMonday works.", to=[DANA], cc=[]))
+    card = ledger.get_decision_instance(card.id)
+    shown = card_drafts.version(inbox.card_payload(card))
+    # A card shown before (a chat app's Send, a page not reloaded): a second yes.
+    for confirm in ({}, {"seen_caught_up_at": ""}):
+        first = _refused(card, mailbox, owner, confirm=confirm)
+        assert first.code == "confirm" and first.extra["reasons"] == ["changed_in_chat"]
+    assert mailbox.sent == []
+    _send(card, mailbox, owner, confirm={"seen_caught_up_at": shown})
+    assert mailbox.sent == ["d1"]
+
+
 def test_a_draft_gone_or_answered_closes_the_card(owner: Any, models: dict[str, Any]) -> None:
     mailbox, card = _card(owner)
     del mailbox.drafts["d1"]

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,9 @@ EDITED_VERSION = "edited_version"
 # Set once the person changed the words by hand: what is left of "Decide
 # before sending" no longer holds Send back (``delegation.answers``).
 QUESTIONS_SETTLED = "questions_settled"
+# When a reply asked for in chat last replaced the card's (``from_chat``). A
+# card shown before then sends only once it was shown again (``version``).
+CHANGED_IN_CHAT = "changed_in_chat_at"
 
 # Cards whose draft is being made right now in this process, so two taps
 # never make two.
@@ -345,6 +349,18 @@ async def redraft(instance: Any, person: Any, gmail: Any, rewrite: Rewrite) -> d
         _EDITING.discard(instance.id)
 
 
+def version(payload: dict[str, Any]) -> str:
+    """The card's version as the person last saw it changed without them:
+    caught up with newer mail (``answers.CAUGHT_UP_KEY``) and changed from
+    chat (``CHANGED_IN_CHAT``). The card hands it out as ``caught_up_at``
+    and Send gets it back as ``seen_caught_up_at``."""
+    from openexecutive.delegation.answers import CAUGHT_UP_KEY
+
+    caught_up = str(payload.get(CAUGHT_UP_KEY) or "")
+    chat = str(payload.get(CHANGED_IN_CHAT) or "")
+    return f"{caught_up}|{chat}" if chat else caught_up
+
+
 async def from_chat(
     instance: Any, person: Any, gmail: Any, *, words: str, to: list[str], cc: list[str],
 ) -> dict[str, Any]:
@@ -352,7 +368,9 @@ async def from_chat(
     the reply card already waiting for that email, in place of a second
     draft: its words, and who it goes to. The same card checks as
     ``redraft``; the card's open questions are settled, since the person
-    said what goes. Returns the payload as it now is; raises ``SendRefused``.
+    said what goes. Stamped ``CHANGED_IN_CHAT``, so a card shown before
+    (a chat app's, a page not reloaded) asks again at Send, and it doesn't go
+    on its own. Returns the payload as it now is; raises ``SendRefused``.
     Sends nothing."""
     from openexecutive.delegation import disclosure as ai_disclosure
     from openexecutive.delegation.inbox import SENDING, card_payload
@@ -372,7 +390,7 @@ async def from_chat(
     _EDITING.add(instance.id)
     try:
         signed = ai_disclosure.sign(person.id, words, on_its_own=False)
-        extra = {QUESTIONS_SETTLED: True, "gist": ""}
+        extra = {QUESTIONS_SETTLED: True, "gist": "", CHANGED_IN_CHAT: datetime.now(UTC).isoformat()}
         return await _edit(
             instance, person, payload, _check_words(signed), gmail, extra, (list(to), list(cc)), by_hand=False,
         )
