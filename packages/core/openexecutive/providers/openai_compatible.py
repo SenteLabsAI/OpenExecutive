@@ -104,6 +104,7 @@ class OpenAICompatibleProvider:
         spec_lookup: dict[str, FeatureSpec] | None = None,
         model_resolver: Callable[[str], tuple[str, FeatureSpec] | None] | None = None,
         include_usage_accounting: bool = False,
+        stream_usage: bool = True,
         reasoning_effort: str | None = None,
     ) -> None:
         self._api_key = api_key
@@ -129,6 +130,11 @@ class OpenAICompatibleProvider:
         # behind a LiteLLM gateway), which rejects an unrecognized top-level
         # `usage` field outright rather than ignoring it.
         self._include_usage_accounting = include_usage_accounting
+        # Whether a streaming request asks for the final usage chunk
+        # (`stream_options.include_usage`). Standard OpenAI, so on by default;
+        # see LOCAL_STREAM_USAGE. Without it the accumulator's usage dict stays
+        # empty and the turn is audited as 0 tokens.
+        self._stream_usage = stream_usage
         # Top-level `reasoning_effort` for thinking-only backends
         # (LOCAL_REASONING_EFFORT). None = not sent.
         self._reasoning_effort = reasoning_effort
@@ -236,6 +242,14 @@ class OpenAICompatibleProvider:
         self._extend_body(slug, body)
         _announce_reasoning(slug, body)
         body["stream"] = True
+        # The OpenAI SSE spec sends no usage block while streaming unless the
+        # request opts in, so without this every streamed turn is recorded as
+        # 0 input / 0 output tokens. `StreamAccumulator.feed` reads `usage`
+        # before its `choices` guard, so the usage-only final chunk (which
+        # carries an empty `choices`) is captured. Distinct from the
+        # OpenRouter-only top-level `usage` field set in to_openai_request.
+        if self._stream_usage:
+            body["stream_options"] = {"include_usage": True}
         return _OpenAICompatibleStream(
             client=self._client,
             body=body,

@@ -416,6 +416,7 @@ def _local() -> OpenAICompatibleProvider:
             include_usage_accounting=getattr(
                 settings, "local_include_usage_accounting", False
             ),
+            stream_usage=bool(getattr(settings, "local_stream_usage", True)),
             reasoning_effort=getattr(settings, "local_reasoning_effort", None),
         )
     return _local_provider

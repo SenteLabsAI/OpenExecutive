@@ -17,6 +17,10 @@ import pytest
 from openexecutive.providers import openai_compatible
 from openexecutive.providers.feature_gate import FeatureSpec
 from openexecutive.providers.openai_compatible import OpenAICompatibleProvider
+from openexecutive.providers.translator import (
+    StreamAccumulator,
+    to_openai_request,
+)
 
 _LOCAL_SPEC = FeatureSpec(
     supports_cache_control=False,
@@ -183,3 +187,80 @@ def test_backend_without_thinking_gets_no_reasoning_field_for_haiku_5_5() -> Non
     body = _run_create(provider, model="claude-haiku-5-5", temperature=0)["json"]
     assert "reasoning" not in body
     assert "temperature" not in body
+
+
+# --------------------------------------------------------------------------
+# stream_options.include_usage — without it a streamed turn is audited as
+# 0 tokens, because the OpenAI SSE spec omits usage unless asked.
+# --------------------------------------------------------------------------
+
+
+def _stream_body(monkeypatch: pytest.MonkeyPatch, **ctor: Any) -> dict[str, Any]:
+    """The request body ``messages_stream`` would send, without connecting."""
+    captured: dict[str, Any] = {}
+
+    class _FakeStream:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(openai_compatible, "_OpenAICompatibleStream", _FakeStream)
+    provider = OpenAICompatibleProvider(
+        base_url="http://localhost:11434/v1",
+        spec_lookup={"llama3.3": _LOCAL_SPEC},
+        **ctor,
+    )
+    provider.messages_stream(
+        model="llama3.3",
+        max_tokens=16,
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    return captured["body"]
+
+
+def test_streaming_asks_for_the_final_usage_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = _stream_body(monkeypatch)
+    assert body["stream"] is True
+    assert body["stream_options"] == {"include_usage": True}
+    # Distinct from the OpenRouter-only top-level `usage` field, which a
+    # strict backend rejects outright.
+    assert "usage" not in body
+
+
+def test_stream_usage_false_omits_the_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    body = _stream_body(monkeypatch, stream_usage=False)
+    assert "stream_options" not in body
+
+
+def test_non_streaming_never_sends_stream_options() -> None:
+    body = to_openai_request(
+        "llama3.3",
+        {"max_tokens": 16, "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert "stream_options" not in body
+    assert "stream" not in body
+
+
+def test_usage_only_final_chunk_is_captured() -> None:
+    """Gemini (and OpenAI) send usage in a trailing chunk whose ``choices`` is
+    empty; ``feed`` must read it before its choices guard or the turn audits
+    as 0 tokens."""
+    acc = StreamAccumulator()
+    acc.feed(
+        {
+            "id": "x",
+            "model": "llama3.3",
+            "choices": [{"index": 0, "delta": {"content": "hello"}}],
+        }
+    )
+    acc.feed(
+        {
+            "id": "x",
+            "choices": [],
+            "usage": {"prompt_tokens": 1234, "completion_tokens": 56},
+        }
+    )
+    message = acc.finalize()
+    assert message.usage.input_tokens == 1234
+    assert message.usage.output_tokens == 56
