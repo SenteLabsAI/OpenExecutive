@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 from openexecutive.integrations import email_repeats
 from openexecutive.orchestrator import alert_tools
@@ -60,6 +61,16 @@ def test_mail_with_files_is_never_matched_as_a_copy() -> None:
     assert email_repeats.fingerprint("dana@x.example", "Invoice", body, has_attachments=True) is None
 
 
+def test_copies_rendered_with_their_own_headers_still_match() -> None:
+    body = "Could you send over the signed order form for the spring delivery please"
+    first = f"Message ID: a1\nDate: Mon\nSubject: Order\n\n--- BODY ---\n{body}"
+    second = f"Message ID: b2\nDate: Tue\nSubject: Order\n\n--- BODY ---\n{body}"
+    key = email_repeats.fingerprint("dana@x.example", "Order", first)
+    assert key is not None and key == email_repeats.fingerprint("dana@x.example", "Re: Order", second)
+    # No parsed body: nothing to match.
+    assert email_repeats.fingerprint("dana@x.example", "Order", "") is None
+
+
 def test_an_email_turn_with_a_held_step_raises_no_second_card() -> None:
     session = Session(session_id="email:t1")
     session.origin_channel = "email"
@@ -71,6 +82,15 @@ def test_an_email_turn_with_a_held_step_raises_no_second_card() -> None:
         out = asyncio.run(alert_tools.handle_create_alert({"subject": "Leo wants a yes", "body": "Order"}))
         assert out == alert_tools.HELD_STEP_CARD
         assert json.loads(out)["status"] == "step_already_on_card"
+        # One card about something else goes; the mail can't ask for more.
+        other = {"subject": "Possible fraud", "body": "New bank details", "separate": True}
+        with (
+            patch("openexecutive.alerts.pipeline.schedule_evaluation"),
+            patch("openexecutive.audit.log_event", new=lambda *_a, **_k: None),
+        ):
+            first = asyncio.run(alert_tools.handle_create_alert(other))
+        assert first != alert_tools.SEPARATE_CARD_RAISED and session.separate_cards == 1
+        assert asyncio.run(alert_tools.handle_create_alert(other)) == alert_tools.SEPARATE_CARD_RAISED
     finally:
         current_session.reset(token)
     # In the app, a card can still be raised.

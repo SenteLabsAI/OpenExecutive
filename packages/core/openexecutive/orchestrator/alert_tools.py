@@ -365,6 +365,15 @@ HELD_STEP_CARD = json.dumps({
 })
 
 
+SEPARATE_CARD_RAISED = json.dumps({
+    "status": "separate_card_already_raised",
+    "message": (
+        "Nothing was raised: this email already has its Approve card and one other card. "
+        "Put anything more in that card's details instead."
+    ),
+})
+
+
 def _step_already_on_card(session: Any) -> bool:
     """Whether this turn answers an email and already put a step on an
     Approve card (``session.note_step_held``): that card is the one about
@@ -392,8 +401,14 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
     # (orchestrator.outside_content.SENDER).
     from openexecutive.orchestrator.outside_content import answers_off_team_mail
 
-    if _step_already_on_card(current_session.get()) and tool_input.get("separate") is not True:
-        return HELD_STEP_CARD
+    if _step_already_on_card(current_session.get()):
+        turn = current_session.get()
+        if tool_input.get("separate") is not True:
+            return HELD_STEP_CARD
+        if int(getattr(turn, "separate_cards", 0) or 0) >= 1:
+            # The mail this turn reads could ask for card after card.
+            return SEPARATE_CARD_RAISED
+        turn.separate_cards = int(getattr(turn, "separate_cards", 0) or 0) + 1
     if answers_off_team_mail():
         private = True
         sender = getattr(current_session.get(), "email_from", "") or ""

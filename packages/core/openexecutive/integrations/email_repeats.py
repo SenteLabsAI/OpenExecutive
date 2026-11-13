@@ -28,6 +28,9 @@ TABLE = "email_repeats"
 WINDOW = timedelta(hours=24)
 # Fewer words than this and a copy is never matched.
 MIN_WORDS = 8
+# Where a backend's rendered text (Gmail) starts the body: the header lines
+# above it differ between copies (message id, date).
+_BODY_MARKER_RE = re.compile(r"^\s*---\s*BODY\s*---\s*$", re.IGNORECASE | re.MULTILINE)
 _REPLY_PREFIX_RE = re.compile(r"^(?:\s*(?:re|fwd?|aw|sv)\s*:\s*)+", re.IGNORECASE)
 
 
@@ -45,6 +48,9 @@ def fingerprint(from_addr: str, subject: str, body: str, *, has_attachments: boo
     files."""
     if has_attachments:
         return None
+    marker = _BODY_MARKER_RE.search(body)
+    if marker is not None:
+        body = body[marker.end():]
     words = re.findall(r"\w+", body.casefold())
     if len(words) < MIN_WORDS:
         return None

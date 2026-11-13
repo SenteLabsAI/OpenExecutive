@@ -632,7 +632,8 @@ async def _handle_mail(
     from openexecutive.integrations import email_repeats
 
     repeat_key = email_repeats.fingerprint(
-        from_addr, msg.subject, msg.body_text or raw, has_attachments=msg.has_attachments or bool(msg.attachments),
+        # Only the parsed body: the raw text carries per-copy headers.
+        from_addr, msg.subject, msg.body_text, has_attachments=msg.has_attachments or bool(msg.attachments),
     )
     if await asyncio.to_thread(email_repeats.is_copy, repeat_key, message_id):
         # The same email again (a second delivery, or sent twice): the first

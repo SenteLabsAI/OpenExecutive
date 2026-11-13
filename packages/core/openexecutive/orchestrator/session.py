@@ -226,6 +226,9 @@ class Session:
     # An email turn whose step already waits on a card raises no second
     # card about the same mail (``alert_tools.handle_create_alert``).
     steps_held: int = 0
+    # How many cards such a turn raised anyway as about something else
+    # ('separate'): at most one, since the mail itself can ask for more.
+    separate_cards: int = 0
     # Act as me for the turn in progress (``delegation.settings.TurnDelegation``),
     # pinned at its start by ``pin_turn_delegation``: whether the speaker has
     # it on, whether ``ghostwrite_email`` is offered, and whether the turn has
