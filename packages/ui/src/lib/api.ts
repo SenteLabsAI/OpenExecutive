@@ -5871,7 +5871,7 @@ export interface DoneRow {
 /** Home's Done for you on its own (GET /today/done), for the screens that
  *  show it without the rest of Home, in the same rows and words. */
 export async function getDone(): Promise<DoneRow[]> {
-  const res = await fetch(`${API_BASE}/today/done`);
+  const res = await fetch(`${API_BASE}/today/done`, { cache: "no-store" });
   if (!res.ok) throw new Error(`Failed to load Done for you: ${res.statusText}`);
   return res.json();
 }
