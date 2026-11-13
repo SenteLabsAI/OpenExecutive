@@ -238,6 +238,28 @@ def test_the_pass_keeps_only_what_passes_the_checks(monkeypatch: pytest.MonkeyPa
     assert "<what_it_read>" in turn and "<reply>" in turn
 
 
+def test_the_pass_sees_what_was_asked_and_the_company(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.memory.company_profile import CompanyProfile
+
+    provider = _Provider([])
+    monkeypatch.setattr("openexecutive.providers.get_provider", lambda model: provider)
+    monkeypatch.setattr("openexecutive.onboarding.profile_builder.load_or_create_profile",
+                        lambda: CompanyProfile(name="Harbor Lane", industry="Property management"))
+    asyncio.run(wo.keep_worked_out(1, REPLY, [("read_document", READ)], session_id="s1", private=False,
+                                   asked="Add dog treats to my cart", model="m"))
+    turn = provider.calls[0]["messages"][0]["content"]
+    assert "<what_they_asked>\nAdd dog treats to my cart\n</what_they_asked>" in turn
+    assert "Company: Harbor Lane" in turn and "Industry: Property management" in turn
+
+
+def test_no_profile_still_runs_the_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom() -> None:
+        raise OSError("no profile")
+
+    monkeypatch.setattr("openexecutive.onboarding.profile_builder.load_or_create_profile", _boom)
+    assert wo._company_note() == ""
+
+
 def test_the_pass_stops_at_the_daily_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = _Provider([_raw()])
     monkeypatch.setattr("openexecutive.providers.get_provider", lambda model: provider)
@@ -271,6 +293,7 @@ def test_both_chat_paths_read_and_keep_figures() -> None:
         assert "build_worked_out_block, person_id, _lookup_text(memory_text, user_message), session=session" in src, (
             method.__name__)
         assert "schedule_worked_out_pass(" in src and "private=touched_mail" in src, method.__name__
+        assert "asked=own_text" in src, method.__name__
         # Nothing from a turn the person wrote nothing in (an app's own ask).
         assert "if own_text.strip():\n" in src, method.__name__
     assert "<worked_out>" in inspect.getsource(executive.Executive._build_messages)
@@ -358,8 +381,8 @@ def test_the_same_value_on_another_thing_stays_apart() -> None:
 
 def test_the_pass_is_told_to_keep_only_lasting_business_figures() -> None:
     prompt = wo._PROMPT.casefold()
-    for words in ("lasting knowledge about the business", "shopping", "web search", "live counts",
-                  "none is the\nusual answer"):
+    for words in ("lasting knowledge about this company", "what the person asked", "personal errand",
+                  "live counts", "none is the\nusual answer"):
         assert words in prompt, words
 
 

@@ -5391,8 +5391,10 @@ chat:
     (check_figure): every number in the figure is in the reply, the source
     shares a word with what was read or the reply, and the lesson deny
     patterns and non-Latin check refuse links, handles, markup, instruction
-    and approval talk. The pass keeps only lasting numbers about the
-    business (its own prices, plans, targets, terms, a customer's or deal's
+    and approval talk. The pass also gets what the person asked and a short
+    company note from the profile (_company_note), because without them it
+    could not tell a personal errand (a shopping cart) from company work and
+    kept both. It keeps only lasting numbers about the business (its own prices, plans, targets, terms, a customer's or deal's
     numbers, ids it was issued); shopping and web-search lookups and live
     counts it would look up again (sign-ups, a waitlist, open issues, stars)
     are left out, since they filled the list with noise. Same subject (stem

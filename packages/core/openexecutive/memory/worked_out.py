@@ -10,11 +10,13 @@ read back as a lead to check, not as truth.
 **What writes them.** After a turn that read something (a tool returned text
 with a number in it) and answered with a number, a small model pass reads the
 reply and the tool results and names the figures the reply worked out
-(``schedule_worked_out_pass``). Code checks each one before it is kept: every
-number in it is in the reply, its source is named in what the turn read or in
-the reply, and it carries no link, handle, markup or instruction talk. It keeps
-only lasting numbers about the business, never shopping lookups or live
-counts it would look up again. A later figure on the same subject, or the
+(``schedule_worked_out_pass``). It also gets what the person asked and a
+short note on the company (``_company_note``), so it judges a figure by the
+company's work: a personal errand or one-off lookup keeps nothing, and live
+counts it would look up again are left out. Code checks each one before it
+is kept: every number in it is in the reply, its source is named in what the
+turn read or in the reply, and it carries no link, handle, markup or
+instruction talk. A later figure on the same subject, or the
 same value under another name for it, replaces the earlier one.
 
 **Who reads them.** Each figure is its person's alone: read back only on
@@ -51,6 +53,8 @@ _FIGURE_MAX = 200
 _SOURCE_MAX = 120
 _REPLY_MAX = 8000
 _RESULTS_MAX = 12000
+_ASKED_MAX = 2000
+_COMPANY_MAX = 1200
 _MAX_TOKENS = 800
 _DIGIT = re.compile(r"\d")
 _NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
@@ -491,21 +495,21 @@ def build_worked_out_block(person_id: int | None, message: str, *, session: Any,
 # The pass
 # --------------------------------------------------------------------------- #
 
-_PROMPT = """You read one reply the Executive gave and what it read to give it.
-List the figures in it that are lasting knowledge about the business: numbers
-the company will need again and that stay true until something changes them.
-That is its own totals, balances and rates, prices and plans, targets and
-budgets, deal and contract
-terms, a customer's, supplier's or project's numbers, dates it committed to,
-and identifiers it was issued (an account, registration or case number).
+_PROMPT = """You read one turn: what the person asked, what the Executive read
+to answer, and its reply. You also get a short note on the company.
+List the figures in the reply that are lasting knowledge about this company:
+numbers its people will need again next month and that stay true until
+something changes them. That is its own totals, balances and rates, prices
+and plans, targets and budgets, deal and contract terms, a customer's,
+supplier's or project's numbers, dates it committed to, and identifiers it
+was issued (an account, registration or case number).
 
-Most replies have none. Leave out:
-- shopping and product lookups: prices, ratings or counts from a store,
-  marketplace or web search (Amazon, Google Shopping, a retailer's site),
-  unless the reply is about the company's own product or a purchase it made;
-- live counts it would look up again next time because they change: sign-ups,
-  a waitlist, open issues or pull requests, tickets in a column, machines,
-  stars, followers, points, build or image ids;
+Judge by what the person asked and what the company does. If the ask was a
+personal errand or a one-off lookup with nothing to do with the company's
+work (their own shopping or orders, a price check, trivia), keep none, even
+when the reply is full of numbers. Most turns have none. Also leave out:
+- live counts it would look up again next time because they change, such as
+  sign-ups, a waitlist, open issues, followers or stars;
 - the status of work the Executive tracks itself: how many follow-ups, tasks,
   reminders, approvals, watch suggestions or brief items are open or overdue;
 - numbers the reply only repeated from today's brief, a digest or what it was
@@ -565,7 +569,24 @@ def eligible(reply: str, calls: list[tuple[str, str]] | None) -> bool:
         name not in _STATUS_TOOLS and _DIGIT.search(r or "") for name, r in (calls or []))
 
 
-async def take_figures(reply: str, calls: list[tuple[str, str]], *, today: date,
+def _company_note() -> str:
+    """A few lines on what the company is and does, for the pass to judge
+    what is about it. Empty when there is no profile. Never raises."""
+    try:
+        from openexecutive.onboarding.profile_builder import load_or_create_profile
+
+        p = load_or_create_profile()
+    except Exception:
+        return ""
+    parts = [f"{label}: {value}" for label, value in (
+        ("Company", p.name), ("Industry", p.industry), ("Stage", p.stage), ("Mission", p.mission),
+        ("Customers", p.target_customer.profile),
+        ("Priorities", "; ".join(p.strategic_priorities.current_year)),
+    ) if str(value or "").strip()]
+    return "\n".join(" ".join(x.split()) for x in parts)[:_COMPANY_MAX]
+
+
+async def take_figures(reply: str, calls: list[tuple[str, str]], *, today: date, asked: str = "",
                        model: str | None = None) -> list[Figure]:
     """The checked figures for one turn. Empty on any failure."""
     from openexecutive.audit.usage import log_model_usage
@@ -577,7 +598,9 @@ async def take_figures(reply: str, calls: list[tuple[str, str]], *, today: date,
     read = _read_text(calls)
     if not reply.strip() or not read:
         return []
-    turn = (f"<what_it_read>\n{no_tags(read)}\n</what_it_read>\n\n"
+    turn = (f"<company>\n{no_tags(_company_note())}\n</company>\n\n"
+            f"<what_they_asked>\n{no_tags((asked or '')[:_ASKED_MAX])}\n</what_they_asked>\n\n"
+            f"<what_it_read>\n{no_tags(read)}\n</what_it_read>\n\n"
             f"<reply>\n{no_tags(reply)}\n</reply>\n\nToday is {today.isoformat()}.")
     chosen = model or notes_model()
     try:
@@ -605,7 +628,8 @@ async def take_figures(reply: str, calls: list[tuple[str, str]], *, today: date,
 
 
 async def keep_worked_out(person_id: int, reply: str, calls: list[tuple[str, str]], *, session_id: str,
-                          private: bool, model: str | None = None, db_path: Path | None = None) -> list[int]:
+                          private: bool, asked: str = "", model: str | None = None,
+                          db_path: Path | None = None) -> list[int]:
     """Run the pass for one turn and keep what passes the checks. Never
     raises."""
     try:
@@ -616,7 +640,7 @@ async def keep_worked_out(person_id: int, reply: str, calls: list[tuple[str, str
         if not await asyncio.to_thread(take_pass, person_id, today.isoformat(),
                                        int(get_settings().worked_out_max_per_day), db_path=db_path):
             return []
-        figures = await take_figures(reply, calls, today=today, model=model)
+        figures = await take_figures(reply, calls, today=today, asked=asked, model=model)
         ids = await asyncio.to_thread(add_figures, person_id, figures, session_id=session_id,
                                       private=private, db_path=db_path)
     except Exception:
@@ -632,7 +656,7 @@ async def keep_worked_out(person_id: int, reply: str, calls: list[tuple[str, str
 
 
 def schedule_worked_out_pass(reply: str, calls: list[tuple[str, str]] | None, *, session: Any,
-                             person_id: int | None, private: bool) -> None:
+                             person_id: int | None, private: bool, asked: str = "") -> None:
     """Fire-and-forget :func:`keep_worked_out` after a turn, when it is on,
     the speaker is known, the turn is theirs (not a replay, a host page or
     another app) and it could have worked something out. Never raises."""
@@ -660,7 +684,8 @@ def schedule_worked_out_pass(reply: str, calls: list[tuple[str, str]] | None, *,
 
         async def _run() -> None:
             with set_turn(session_id=audit_sid or session_id, turn_id=audit_tid):
-                await keep_worked_out(person_id, reply, snapshot, session_id=session_id, private=private)
+                await keep_worked_out(person_id, reply, snapshot, session_id=session_id, private=private,
+                                      asked=asked)
 
         task = asyncio.get_running_loop().create_task(_run())
         _TASKS.add(task)
