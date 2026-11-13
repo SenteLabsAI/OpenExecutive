@@ -174,6 +174,12 @@ def _value(figure: str) -> str:
     return re.sub(r"[\s,]+", "", figure.casefold().rstrip("."))
 
 
+# Words that make a figure another figure on the same thing: a plan, target
+# or limit is not the actual, even at the same value.
+_QUALIFIERS = ("plan planned target goal budget forecast estimate estimated projection projected expected "
+               "growth change limit cap max maximum min minimum quota average per actual")
+
+
 def same_figure(a_key: str, a_figure: str, b_key: str, b_figure: str) -> bool:
     """Whether two figures are one thing kept twice under other names: the
     same value, at least six characters long, and one subject's words all in
@@ -181,12 +187,19 @@ def same_figure(a_key: str, a_figure: str, b_key: str, b_figure: str) -> bool:
     launch date", both "Monday, Nov 16"). A short value ("14", "$25",
     "$1.2M") is too common to say two subjects are one thing, and a subject
     that adds a word the other lacks on both sides ("Q3 headcount plan",
-    "Q4 headcount plan") is another thing."""
+    "Q4 headcount plan") is another thing. So is one whose extra words
+    qualify it ("Sales headcount" and "Sales headcount plan", "Q3 revenue"
+    and "Q3 revenue target", both $1,000,000): a plan, target or limit is
+    its own figure even when it matches the actual."""
     value = _value(a_figure)
     if len(value) < 6 or value != _value(b_figure):
         return False
     a, b = set(a_key.split()), set(b_key.split())
-    return len(a & b) >= 2 and (a <= b or b <= a)
+    if len(a & b) < 2 or not (a <= b or b <= a):
+        return False
+    from openexecutive.memory.lessons import _stems
+
+    return not ((a ^ b) & _stems(_QUALIFIERS))
 
 
 def _numbers(text: str) -> set[str]:

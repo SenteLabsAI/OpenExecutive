@@ -348,9 +348,12 @@ def test_the_same_value_on_another_thing_stays_apart() -> None:
     _keep(1, "Q3 revenue target", "$1.2M", "Ledger")
     _keep(1, "Sales headcount plan", "140 people", "People list")
     _keep(1, "Support headcount plan", "140 people", "People list")
+    _keep(1, "Sales headcount", "140 people", "People list")
+    _keep(1, "Revenue this quarter", "$1,000,000", "Ledger")
+    _keep(1, "Revenue target this quarter", "$1,000,000", "Ledger")
     _keep(1, "Q3 revenue forecast", "$1,000,000", "Ledger")
     _keep(1, "Q3 revenue budget", "$1,000,000", "Ledger")
-    assert len(wo.list_figures(1)) == 10
+    assert len(wo.list_figures(1)) == 13
 
 
 def test_the_pass_is_told_to_keep_only_lasting_business_figures() -> None:
