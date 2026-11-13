@@ -34,8 +34,8 @@ _NAME_SYSTEM = (
     "listed, when the chat is about the same matter. Otherwise give a new "
     "2-4 word topic naming the matter (a project, deal, hire, customer, "
     "person or area of the business), broad enough that later chats about it "
-    "fit too. Write none for small talk or a one-off question with no lasting "
-    "matter."
+    "fit too. For small talk or a one-off question with no lasting matter, "
+    "leave Topic empty (the line is just: Topic:)."
 )
 
 _AREA_RULE = (
@@ -62,7 +62,8 @@ _AREAS_SYSTEM = (
     "numbered, each with its area if it has one. For each topic marked new, "
     "reply with one line in the form <number>: <area>, and nothing else. "
     + _AREA_RULE
-    + " Write none for a topic that shares its matter with no other topic."
+    + " Leave the area empty (the line is just <number>:) for a topic that "
+    "shares its matter with no other topic."
 )
 
 _BACKFILL_SYSTEM = (
@@ -71,8 +72,9 @@ _BACKFILL_SYSTEM = (
     "existing topic, written exactly as listed, when a chat is about the same "
     "matter. Otherwise give a new 2-4 word topic naming the matter (a project, "
     "deal, hire, customer, person or area of the business), and put chats "
-    "about the same matter under the same topic. Write none for small talk or "
-    "a one-off question with no lasting matter."
+    "about the same matter under the same topic. For small talk or a one-off "
+    "question with no lasting matter, leave the topic empty (the line is just "
+    "<number>:)."
 )
 
 # Titles per backfill call: a few thousand tokens in, one short line each out.
