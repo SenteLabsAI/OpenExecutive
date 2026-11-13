@@ -420,15 +420,17 @@ async def test_the_askers_own_tap_carries_out_their_browser_step_and_nothing_els
 def test_the_browser_is_built_in_and_turns_off_here(monkeypatch: pytest.MonkeyPatch) -> None:
     from openexecutive.orchestrator import extensions
 
-    monkeypatch.setattr(extensions, "_loaded", False)
-    monkeypatch.setattr(extensions, "_tools", {})
-    extensions.load()
-    assert set(browser_tools.TOOLS) <= set(extensions._tools)
-    assert extensions.card_handler("browser_click") is not None
-    assert extensions.card_handler("browser_look") is None
-    assert extensions.asks_through_approvals("oe__browser_type")
-    monkeypatch.setenv(browser_relay.ENV_OFF, "1")
-    assert not browser_tools.offered(_session())
+    extensions._reset_for_tests()
+    try:
+        extensions.load()
+        assert set(browser_tools.TOOLS) <= set(extensions._tools)
+        assert extensions.card_handler("browser_click") is not None
+        assert extensions.card_handler("browser_look") is None
+        assert extensions.asks_through_approvals("oe__browser_type")
+        monkeypatch.setenv(browser_relay.ENV_OFF, "1")
+        assert not browser_tools.offered(_session())
+    finally:
+        extensions._reset_for_tests()
 
 
 # A tiny valid JPEG start, base64 (the check reads only the first bytes).
