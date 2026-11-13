@@ -590,3 +590,24 @@ def test_a_hands_off_turn_never_raises_the_level_on_its_own(
                {"action": "set_approvals_level", "id": "approvals", "value": "hands-off"}, _web(roster["owner"], "s-h"))
     assert out.get("status") == "waiting_for_approval", out
     assert outside_mode.stored_mode() == outside_mode.ASK
+
+
+def test_only_the_signing_refusal_becomes_a_card() -> None:
+    from fastapi import HTTPException
+
+    from openexecutive.delegation import verified
+
+    def refuse(detail: str) -> None:
+        raise HTTPException(status_code=409, detail=detail)
+
+    async def go(detail: str) -> Any:
+        with verified.from_chat():
+            try:
+                await app_control_catalog._signed(refuse, detail)
+            except HTTPException as exc:
+                return exc.detail
+        return None
+
+    signed = asyncio.run(go("This needs signed sign-ins on this server, so that nobody else can change it for you."))
+    assert signed["code"] == "caller_signing_required"
+    assert asyncio.run(go("That rule is already there.")) == "That rule is already there."

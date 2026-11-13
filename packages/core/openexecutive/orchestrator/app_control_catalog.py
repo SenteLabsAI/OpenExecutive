@@ -760,7 +760,10 @@ async def _signed(fn: Callable[..., Any], *args: Any) -> Any:
     try:
         return await _call(fn, *args)
     except HTTPException as exc:
-        if exc.status_code == 409 and in_chat_turn():
+        # Only the route's refusal for want of a signed request: a 409 for
+        # anything else (a rule already there, a full list) says so as is.
+        signing = SIGNING_REQUIRED in str(exc.detail) or "signed sign-in" in str(exc.detail)
+        if exc.status_code == 409 and signing and in_chat_turn():
             raise HTTPException(status_code=409, detail={"code": SIGNING_REQUIRED, "message": exc.detail}) from None
         raise
 
