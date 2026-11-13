@@ -632,7 +632,7 @@ async def _handle_mail(
     from openexecutive.integrations import email_repeats
 
     repeat_key = email_repeats.fingerprint(from_addr, msg.subject, msg.body_text or raw)
-    if email_repeats.is_copy(repeat_key, message_id):
+    if await asyncio.to_thread(email_repeats.is_copy, repeat_key, message_id):
         # The same email again (a second delivery, or sent twice): the first
         # copy was answered, so this one is marked read and left alone.
         logger.info("skipping message=%s: a copy of one already handled", message_id)
