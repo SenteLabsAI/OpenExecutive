@@ -593,13 +593,12 @@ def bulk_ack_alerts(body: BulkAckBody, request: Request) -> BulkAckResponse:
         exclude_private=not _caller_is_principal(request),
     )
     count = len(updated_ids)
-    for alert_id in updated_ids:
-        target = targets.get(alert_id)
-        if target is None or target.source == "browser_handover":
-            _handover_card_closed(target or store.get_alert(alert_id))
-    # Same feedback loop as a single ack, for the rows we can attribute.
+    # Same feedback loop as a single ack, for the rows we can attribute, and
+    # a closed hand-over card takes its browser bar down. One read per row.
     for alert_id in updated_ids:
         alert = targets.get(alert_id) or store.get_alert(alert_id)
+        if alert is not None and alert.source == "browser_handover":
+            _handover_card_closed(alert)
         if alert is not None:
             # A sweep is housekeeping, not a no to the suggestions a card lists.
             lifecycle.record_ack_feedback(alert, body.status, decline_suggestions=False)
