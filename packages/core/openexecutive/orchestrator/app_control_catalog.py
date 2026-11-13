@@ -1,13 +1,17 @@
 """What chat can do in the app (``app_control``): chats, topics, documents,
-files, alerts, watch suggestions, workflows, memory, departments, skills and
-the person's own settings, plus links to screens.
+files, alerts, watch suggestions, workflows, memory, departments, skills,
+the person's own settings and the three checks (Approvals, Your rules, In
+training), plus links to screens.
 
 Each action calls the route its button calls (see ``app_control``), so this
 file is wiring: which route, what to send it, what to say after. An action
 whose route checks nothing about the caller (its page is the principal's) is
 ``principal_only``. What waits for a tap: deletes, shares, turning on
 something that sends as the person or lets more happen on its own, and
-approving a workflow's waiting step.
+approving a workflow's waiting step. A change to the checks that holds more
+(a lower level, a Waits rule, In training on) is done in the turn; one that
+lets more go on its own (a higher level, a Goes rule, removing a Waits rule,
+leaving training) waits for a tap, whatever the level.
 
 Not here on purpose: the person's notes ("Keep track of what happens") are
 private and read only through ``recall_history``, which marks the chat
@@ -20,6 +24,7 @@ import asyncio
 import inspect
 from collections.abc import Callable
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any
 
 from openexecutive.orchestrator.app_control import (
@@ -634,10 +639,14 @@ _SETTINGS: dict[str, str] = {
     "urgent_through": "Let urgent things through quiet hours",
     "act_as_me": "As you",
     "inbox_drafts": "Draft replies to your inbox",
+    "as_you_training": "In training for As you",
+    "as_me_training": "In training for As me",
 }
 # Turning these on lets the Executive write as the person, or (inbox
 # replies, where Approvals lets them go) send as them.
 _WIDENING = frozenset({"act_as_me", "inbox_drafts"})
+# Turning these off lets more go on its own: In training holds everything.
+_TRAINING = frozenset({"as_you_training", "as_me_training"})
 
 
 async def _find_settings(request: Any) -> list[Item]:
@@ -659,6 +668,18 @@ async def _find_settings(request: Any) -> list[Item]:
         state = d.model_dump()
         items.append(Item(id="act_as_me", title=_SETTINGS["act_as_me"], detail="on" if state.get("enabled") else "off"))
         items.append(Item(id="inbox_drafts", title=_SETTINGS["inbox_drafts"]))
+        training = state.get("training") or {}
+        if "training" in training:
+            items.append(Item(id="as_you_training", title=_SETTINGS["as_you_training"],
+                              detail="on" if training.get("training") else "off"))
+    except Exception:
+        pass
+    try:
+        from openexecutive.api.routes import take_the_lead as lead_route
+
+        lead = await _call(lead_route.get_take_the_lead, request)
+        items.append(Item(id="as_me_training", title=_SETTINGS["as_me_training"],
+                          detail="on" if lead.training else "off"))
     except Exception:
         pass
     return items
@@ -706,18 +727,179 @@ async def _change_setting(request: Any, setting: str, value: str) -> str:
     on = _on(value)
     if setting == "act_as_me":
         await delegation.update_delegation(request, delegation.DelegationUpdate(enabled=on))
-    else:
+    elif setting == "inbox_drafts":
         await delegation.update_delegation_inbox(request, delegation.InboxUpdate(enabled=on))
+    elif setting == "as_you_training":
+        await _signed(delegation.update_delegation_training, request, delegation.TrainingUpdate(training=on))
+    else:
+        from openexecutive.api.routes import take_the_lead as lead_route
+
+        await _signed(lead_route.update_take_the_lead, request, lead_route.LeadUpdate(training=on))
     return f"Turned {label} {'on' if on else 'off'}"
 
 
 def _setting_needs_tap(setting: str, value: str) -> bool:
-    if setting not in _WIDENING:
+    if setting not in _WIDENING and setting not in _TRAINING:
         return False
     try:
-        return _on(value)
+        on = _on(value)
     except Refused:
         return True
+    # Turning As you on widens; turning In training off does.
+    return on if setting in _WIDENING else not on
+
+
+async def _signed(fn: Callable[..., Any], *args: Any) -> Any:
+    """Call a route that lets more go only for a signed request. From a chat
+    turn it refuses (``verified.from_chat``); say so in the words
+    ``app_control`` reads as "leave a card", so the person's tap does it."""
+    from fastapi import HTTPException
+
+    from openexecutive.delegation.verified import SIGNING_REQUIRED, in_chat_turn
+
+    try:
+        return await _call(fn, *args)
+    except HTTPException as exc:
+        if exc.status_code == 409 and in_chat_turn():
+            raise HTTPException(status_code=409, detail={"code": SIGNING_REQUIRED, "message": exc.detail}) from None
+        raise
+
+
+# --------------------------------------------------------------------------- #
+# Approvals and Your rules (Delegate, Approvals): the level and the rules
+# that decide what goes on its own (orchestrator.levels, take_the_lead)
+# --------------------------------------------------------------------------- #
+
+# The level's id → what the person calls it, from holding most to least.
+_LEVELS: dict[str, str] = {"ask": "Careful", "outsiders": "Balanced", "trust": "Hands-off"}
+APPROVALS_ID = "approvals"
+
+
+def _level_of(value: str) -> str:
+    v = " ".join(value.strip().lower().replace("-", " ").split())
+    for mode, name in _LEVELS.items():
+        if v in (mode, name.lower().replace("-", " ")):
+            return mode
+    raise Refused("Say Careful, Balanced or Hands-off.")
+
+
+async def _find_approvals(request: Any) -> list[Item]:
+    from openexecutive.api.routes import executive
+
+    out = await _call(executive.get_outside_content, request)
+    return [Item(id=APPROVALS_ID, title="Approvals", detail=_LEVELS.get(out.mode, out.mode))]
+
+
+async def _prepare_level(request: Any, item_id: str, value: str) -> str:
+    """The level's name, so the card says it plainly; Refused for anything else."""
+    return _LEVELS[_level_of(value)]
+
+
+async def _set_level(request: Any, item_id: str, value: str) -> str:
+    from openexecutive.api.routes import executive
+
+    mode = _level_of(value)
+    await _call(executive.set_outside_content, request, executive.OutsideContentIn.model_validate({"mode": mode}))
+    return f"Set Approvals to {_LEVELS[mode]}"
+
+
+def _level_needs_tap(item_id: str, value: str) -> bool:
+    """A level that holds less than today's lets more go: it waits for a tap."""
+    from openexecutive.orchestrator import outside_mode
+
+    try:
+        new = _level_of(value)
+    except Refused:
+        return True
+    order = list(_LEVELS)
+    try:
+        return order.index(new) > order.index(outside_mode.get_mode())
+    except Exception:
+        return True
+
+
+_RULE_KINDS = {"person": "person", "domain": "domain", "words": "words", "amount": "amount"}
+
+
+def _rule_parts(value: str) -> tuple[str, str]:
+    """``person: Dana``, ``domain: acme.com``, ``words: invoice``,
+    ``amount: 500`` → (kind, what), as the rule stores it."""
+    from openexecutive.orchestrator import take_the_lead
+
+    kind, sep, what = value.partition(":")
+    kind = kind.strip().lower()
+    if not sep or kind not in _RULE_KINDS or not what.strip():
+        raise Refused("Give the rule as person: <name or email>, domain: <example.com>, words: <words> or amount: <number>.")
+    try:
+        return _RULE_KINDS[kind], take_the_lead.clean_rule(_RULE_KINDS[kind], what)
+    except take_the_lead.RuleError as exc:
+        raise Refused(str(exc)) from None
+
+
+async def _prepare_rule(request: Any, item_id: str, value: str) -> str:
+    """The rule as it will be stored, so the card shows what a tap adds."""
+    kind, what = _rule_parts(value)
+    return f"{kind}: {what}"
+
+
+async def _prepare_goes_rule(request: Any, item_id: str, value: str) -> str:
+    kind, what = _rule_parts(value)
+    if kind == "words":
+        raise Refused("A words rule can only wait for you.")
+    return f"{kind}: {what}"
+
+
+async def _find_rules(request: Any) -> list[Item]:
+    from openexecutive.api.routes import take_the_lead as lead_route
+    from openexecutive.orchestrator import take_the_lead
+
+    out = await _call(lead_route.get_take_the_lead, request)
+    return [
+        Item(
+            id=str(r.id),
+            title=take_the_lead.rule_text(take_the_lead.Rule(
+                id=r.id, scope=take_the_lead.SCOPE_COMPANY, kind=r.kind, value=r.value, created_at="",
+                effect=r.effect,
+            )),
+            detail="goes on its own" if r.effect == take_the_lead.EFFECT_GO else "always waits",
+        )
+        for r in out.rules
+    ]
+
+
+async def _add_rule(request: Any, item_id: str, value: str, *, effect: str) -> str:
+    from openexecutive.api.routes import take_the_lead as lead_route
+    from openexecutive.orchestrator import take_the_lead
+
+    kind, what = _rule_parts(value)
+    await _signed(lead_route.add_company_rule, request, lead_route.RuleIn(kind=kind, value=what, effect=effect))
+    rule = take_the_lead.Rule(id=0, scope=take_the_lead.SCOPE_COMPANY, kind=kind, value=what, created_at="",
+                              effect=effect)
+    said = take_the_lead.rule_text(rule)
+    return f"Added a rule: {said} {'goes on its own' if effect == take_the_lead.EFFECT_GO else 'always waits'}"
+
+
+async def _remove_rule(request: Any, rule_id: str, value: str) -> str:
+    from openexecutive.api.routes import take_the_lead as lead_route
+
+    try:
+        number = int(rule_id)
+    except ValueError as exc:
+        raise Refused("That isn't one of your rules.") from exc
+    await _signed(lead_route.delete_company_rule, request, number)
+    return "Removed the rule"
+
+
+def _removing_needs_tap(rule_id: str, value: str) -> bool:
+    """Removing a Waits rule lets more go; removing a Goes rule holds more."""
+    from openexecutive.orchestrator import take_the_lead
+
+    try:
+        rules = take_the_lead.list_rules([take_the_lead.SCOPE_COMPANY])
+    except Exception:
+        return True
+    found = next((r for r in rules if str(r.id) == rule_id), None)
+    return found is None or found.effect != take_the_lead.EFFECT_GO
 
 
 async def _check_inbox(request: Any, item_id: str, value: str) -> str:
@@ -794,6 +976,9 @@ _KINDS = (
     Kind("new_department", "new department", _nothing, no_item=True),
     Kind("skill", "skill", _find_skills),
     Kind("setting", "setting", _find_settings),
+    Kind("approvals", "Approvals (the level for what goes on its own)", _find_approvals),
+    Kind("rule", "rule in Your rules", _find_rules),
+    Kind("new_rule", "new rule in Your rules", _nothing, no_item=True),
     Kind("inbox", "inbox", _nothing, no_item=True),
     Kind("standing_job", "standing job (something As me keeps doing)", _find_jobs),
     Kind("new_standing_job", "new standing job", _nothing, no_item=True),
@@ -872,8 +1057,25 @@ _ACTIONS = (
     # Settings
     Action("change_setting", "setting",
            "Change one of the person's own settings: quiet_hours (start-end or off), delivery "
-           "(instant or digest), urgent_through, act_as_me, inbox_drafts (on or off)",
+           "(instant or digest), urgent_through, act_as_me, inbox_drafts, as_you_training, "
+           "as_me_training (on or off)",
            _change_setting, confirm=_setting_needs_tap, value="the new value", card="Set {title} to {value}"),
+    # Approvals and Your rules: holding more is done now, letting more go waits.
+    Action("set_approvals_level", "approvals",
+           "Set Approvals, the one level for what goes on its own (use id \"approvals\")",
+           _set_level, confirm=_level_needs_tap, value="Careful, Balanced or Hands-off",
+           card="Set {title} to {value}", prepare=_prepare_level),
+    Action("add_waits_rule", "new_rule",
+           "Add a rule in Your rules that always waits for the person (use id \"new\")",
+           partial(_add_rule, effect="wait"), prepare=_prepare_rule,
+           value="person: <name or email>, domain: <example.com>, words: <words> or amount: <number>"),
+    Action("add_goes_rule", "new_rule",
+           "Add a rule in Your rules that lets something go on its own (use id \"new\"; not for words)",
+           partial(_add_rule, effect="go"), confirm=True, prepare=_prepare_goes_rule,
+           value="person: <name or email>, domain: <example.com> or amount: <number>",
+           card="Add a rule that goes on its own: {value}"),
+    Action("remove_rule", "rule", "Remove a rule from Your rules", _remove_rule, confirm=_removing_needs_tap,
+           card="Remove the rule {title}"),
     # Standing jobs: each step for one still goes through Approvals.
     Action("add_standing_job", "new_standing_job",
            "Give As me a standing job, something to keep doing in its own name (use id \"new\")",
@@ -892,6 +1094,7 @@ _SCREENS = (
     ("notifications", "/settings/notifications", "Settings, Notifications"),
     ("act_as_me", "/settings/act-as-me", "Delegate, As you"),
     ("as_me", "/delegate#as-me", "Delegate, As me"),
+    ("approvals", "/delegate#approvals", "Delegate, Approvals"),
     ("memory_settings", "/settings/memory", "Settings, Memory"),
     ("people", "/people", "People"),
     ("departments", "/departments", "Departments"),

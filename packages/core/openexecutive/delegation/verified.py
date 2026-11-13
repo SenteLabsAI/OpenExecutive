@@ -62,6 +62,11 @@ def caller_refusal(caller: Any, email: str) -> str | None:
 _from_chat: ContextVar[bool] = ContextVar("verified_from_chat", default=False)
 
 
+def in_chat_turn() -> bool:
+    """Whether a route is running inside ``from_chat``."""
+    return _from_chat.get()
+
+
 @contextmanager
 def from_chat() -> Iterator[None]:
     """Mark routes called inside this block as run from a chat turn, so
