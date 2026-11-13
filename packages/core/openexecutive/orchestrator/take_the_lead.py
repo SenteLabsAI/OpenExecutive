@@ -718,6 +718,23 @@ def _mail_recipient_strings(value: Any, norm: Any) -> Iterator[str]:
         yield value
 
 
+def _mail_addresses(tool_input: dict[str, Any], norm: Any) -> set[str] | None:
+    """Every address a mail send's recipient fields name, lowercased, read
+    both as the pattern sees them and as a mail header parser would; None
+    when the two can disagree (an "@" the pattern doesn't account for, as in
+    "dana @co.example"), so a check built on it fails closed."""
+    from email.utils import getaddresses
+
+    found: set[str] = set()
+    for text in _mail_recipient_strings(tool_input, norm):
+        seen = _EMAIL_RE.findall(text)
+        if text.count("@") != len(seen):
+            return None
+        found |= {a.lower() for a in seen}
+        found |= {a.strip().lower() for _n, a in getaddresses([text]) if "@" in a}
+    return found
+
+
 def _mail_only_to_principal(tool: str, tool_input: dict[str, Any]) -> bool:
     """Whether a mail send goes only to the principal's own
     addresses. Mail to them reaches no one new, however many other addresses
@@ -735,11 +752,7 @@ def _mail_only_to_principal(tool: str, tool_input: dict[str, Any]) -> bool:
     if _normalize_tool_name(str(tool or "")) not in _MAIL_SEND_TOOLS:
         return False
     try:
-        recipients = {
-            a.lower()
-            for text in _mail_recipient_strings(tool_input, _norm_key)
-            for a in _EMAIL_RE.findall(text)
-        }
+        recipients = _mail_addresses(tool_input, _norm_key)
         if not recipients:
             return False
         from openexecutive.people.store import find_principal_person
@@ -753,6 +766,35 @@ def _mail_only_to_principal(tool: str, tool_input: dict[str, Any]) -> bool:
     return recipients <= own
 
 
+def _money(value: str) -> str:
+    """An amount rule's value as the card says it: "$250", "$1,500"."""
+    number = _number(value)
+    if number is None:
+        return value
+    return f"${number:,.0f}" if number == int(number) else f"${number:,.2f}"
+
+
+def _mail_label(tool: str, tool_input: dict[str, Any], *, recipient: bool) -> str | None:
+    """"Email Leo Park" for a mail send to one person (their name from
+    People, contacts too, else the address), "Email 3 people" for more; only
+    where ``recipient`` (the approval card). None when it isn't a mail send."""
+    from openexecutive.orchestrator.mcp_gateway import _norm_key, _normalize_tool_name
+
+    if _normalize_tool_name(str(tool or "")) not in _MAIL_SEND_TOOLS:
+        return None
+    if not recipient:
+        return "Send an email"
+    try:
+        parsed = _mail_addresses(tool_input, _norm_key)
+        found = sorted(parsed) if parsed is not None else []
+    except Exception:
+        return "Send an email"
+    if len(found) == 1:
+        names = _names_of(found)
+        return f"Email {names[0] if names else found[0]}"
+    return f"Email {len(found)} people" if found else "Send an email"
+
+
 def _rule_hit(rules: list[Rule], text: str, recipients: list[str]) -> Hit | None:
     """The first Waits rule that ``text`` / ``recipients`` match."""
     lowered = text.lower()
@@ -762,19 +804,19 @@ def _rule_hit(rules: list[Rule], text: str, recipients: list[str]) -> Hit | None
         value = rule.value
         if rule.kind == RULE_PERSON:
             if "@" in value and value in recipients:
-                return Hit("rule", f"your rule about {value}", rule.id)
+                return Hit("rule", f"your rule about {value} says to wait", rule.id)
             if "@" not in value and re.search(rf"\b{re.escape(value.lower())}\b", lowered):
-                return Hit("rule", f"your rule about {value}", rule.id)
+                return Hit("rule", f"your rule about {value} says to wait", rule.id)
         elif rule.kind == RULE_DOMAIN:
             if any(r.endswith("@" + value) or r.endswith("." + value) for r in recipients):
-                return Hit("rule", f"your rule about {value}", rule.id)
+                return Hit("rule", f"your rule about {value} says to wait", rule.id)
         elif rule.kind == RULE_WORDS:
             if value.lower() in lowered:
-                return Hit("rule", f'your rule about "{value}"', rule.id)
+                return Hit("rule", f'your rule about "{value}" says to wait', rule.id)
         elif rule.kind == RULE_AMOUNT:
             limit = _number(value) or 0
             if any(a >= limit for a in amounts(text)):
-                return Hit("rule", f"your rule about amounts of {value} or more", rule.id)
+                return Hit("rule", f"your rule about amounts of {_money(value)} or more says to wait", rule.id)
     return None
 
 
@@ -962,6 +1004,26 @@ def _names(names: list[str]) -> str:
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
 
+def _mail_to_one_person(tool: str, tool_input: dict[str, Any]) -> Any:
+    """The People entry (a contact too) a mail send reaches when it reaches
+    exactly one address, in every recipient field (To, Cc, Bcc, however
+    spelled), and that address is theirs. Else None. Never raises."""
+    try:
+        from openexecutive.orchestrator.mcp_gateway import _norm_key, _normalize_tool_name
+        from openexecutive.people.store import find_person_by_address
+
+        if _normalize_tool_name(str(tool or "")) not in _MAIL_SEND_TOOLS:
+            return None
+        found = _mail_addresses(tool_input, _norm_key)
+        if found is None or len(found) != 1:
+            return None
+        person = find_person_by_address(next(iter(found)), include_contacts=True)
+        return person if person is not None and person.id is not None else None
+    except Exception:
+        logger.warning("take_the_lead: couldn't read who an email reaches", exc_info=True)
+        return None
+
+
 def allowance(tool: str, tool_input: dict[str, Any], *, mcp: bool = False) -> tuple[str, str] | None:
     """The action and who (or what) it is for, as ``(key, label)``: what one
     Allow covers. "Message Priya Nair" covers any message to her on any
@@ -969,6 +1031,11 @@ def allowance(tool: str, tool_input: dict[str, Any], *, mcp: bool = False) -> tu
     exactly them. None when it can't be pinned to someone or something on
     the People list (nothing to allow, so it keeps asking)."""
     if mcp:
+        mailed = _mail_to_one_person(tool, tool_input)
+        if mailed is not None:
+            # An email to one person on People (a contact too) is "Message
+            # them", the same Allow as a message to them on any channel.
+            return f"{FEATURE}|message|person:{mailed.id}", f"Message {mailed.full_name or mailed.email}"[:200]
         # A connected tool is allowed for one named file or record, and
         # never when it reaches people: who it reaches isn't on the People
         # list, so one Allow would cover anyone (a mail send, a share).
@@ -1482,7 +1549,11 @@ def summarize(tool: str, tool_input: dict[str, Any], *, mcp: bool = False, quote
     label = _TOOL_LABELS.get(tool) or tool.replace("_", " ").strip().capitalize()
     if mcp:
         bare = tool.split("__", 1)[-1]
-        label = _connected_label(tool, tool_input, recipient=quote) or bare.replace("_", " ").strip().capitalize()
+        label = (
+            _mail_label(tool, tool_input, recipient=quote)
+            or _connected_label(tool, tool_input, recipient=quote)
+            or bare.replace("_", " ").strip().capitalize()
+        )
     if tool == "message_person":
         try:
             from openexecutive.people.store import get_person
@@ -1926,6 +1997,9 @@ def hold(
         )
     except Exception:
         logger.exception("take_the_lead: couldn't put decision %d on Today", decision_id)
+    from openexecutive.orchestrator.session import note_step_held
+
+    note_step_held()
     record(scope=SCOPE_EXECUTIVE, source=source, tool=tool, summary=summarize(tool, tool_input, mcp=mcp, quote=False),
            status="waiting",
            why=f"It waited because {hit.reason}.", decision_id=decision_id, db_path=db_path,

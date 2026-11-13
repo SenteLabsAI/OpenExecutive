@@ -629,6 +629,16 @@ async def _handle_mail(
         if mailbox is not None and done is not None:
             await done()
         return _SKIPPED
+    from openexecutive.integrations import email_repeats
+
+    repeat_key = email_repeats.fingerprint(from_addr, msg.subject, msg.body_text or raw)
+    if email_repeats.is_copy(repeat_key, message_id):
+        # The same email again (a second delivery, or sent twice): the first
+        # copy was answered, so this one is marked read and left alone.
+        logger.info("skipping message=%s: a copy of one already handled", message_id)
+        if done is not None:
+            await done()
+        return _SKIPPED
 
     if mailbox is not None and gateway is not None:
         # The principal answering a roster request ("who is this?") by
@@ -830,6 +840,7 @@ async def _handle_mail(
                 teammate_authenticated=teammate_authenticated,
                 source=None if mailbox is not None else mail,
                 prove_sender=prove,
+                repeat_key=repeat_key,
             ) or "answered"
         except EmailTurnTimeout as exc:
             # Past EMAIL_TURN_TIMEOUT_S: the turn was cancelled where it
@@ -1163,6 +1174,7 @@ async def _run_executive(
     teammate_authenticated: bool | None = None,
     source: InboundMail | None = None,
     prove_sender: Callable[[], Awaitable[bool]] | None = None,
+    repeat_key: str | None = None,
 ) -> str | None:
     """The Executive's turn for one email. Mail from the mailbox is answered
     with its send tool (``reply_block``); mail from a mail source
@@ -1502,6 +1514,12 @@ async def _run_executive(
         if deadline.expired():
             raise EmailTurnTimeout(timeout_s) from exc
         raise
+    if repeat_key is not None and True in (session.email_authenticated, session.email_sender_authenticated):
+        # The turn ran for a sender the provider vouched for: a copy of this
+        # email is now a repeat (integrations.email_repeats).
+        from openexecutive.integrations import email_repeats
+
+        await asyncio.to_thread(email_repeats.remember, repeat_key, message_id)
     if source is None:
         _note_reply_outcome(session, person, raw_email, message_id, thread_id, from_addr, response)
         return None

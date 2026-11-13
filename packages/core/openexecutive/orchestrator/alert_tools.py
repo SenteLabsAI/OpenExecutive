@@ -81,6 +81,14 @@ CREATE_ALERT_TOOL: dict[str, Any] = {
                 "items": {"type": "string"},
                 "description": "With 'choice': 2 to 4 short options, each a few words.",
             },
+            "separate": {
+                "type": "boolean",
+                "description": (
+                    "Only when told a step from this email already waits on an Approve card: "
+                    "true when this card is about something else (a risk, possible fraud, a "
+                    "separate decision), so it is raised as well."
+                ),
+            },
             "joins_card": {
                 "type": "integer",
                 "description": (
@@ -345,6 +353,28 @@ def _asks_the_speaker(session: Any, tool_input: dict[str, Any]) -> bool:
         return False
 
 
+# What create_alert answers on an email turn whose step already waits on a card.
+HELD_STEP_CARD = json.dumps({
+    "status": "step_already_on_card",
+    "message": (
+        "Nothing was raised yet: a step from this email already waits on an Approve card, "
+        "and that card is what the owner sees. If this card would only ask about that same "
+        "step, don't raise it. If it is about something else (a risk, possible fraud, a "
+        "separate decision), call create_alert again with the same fields plus 'separate': true."
+    ),
+})
+
+
+def _step_already_on_card(session: Any) -> bool:
+    """Whether this turn answers an email and already put a step on an
+    Approve card (``session.note_step_held``): that card is the one about
+    this mail, so a second would ask the owner twice. Never raises."""
+    try:
+        return getattr(session, "origin_channel", "") == "email" and int(getattr(session, "steps_held", 0) or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 async def handle_create_alert(tool_input: dict[str, Any]) -> str:
     from openexecutive.alerts.models import AlertEvent
     from openexecutive.alerts.pipeline import schedule_evaluation
@@ -362,6 +392,8 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
     # (orchestrator.outside_content.SENDER).
     from openexecutive.orchestrator.outside_content import answers_off_team_mail
 
+    if _step_already_on_card(current_session.get()) and tool_input.get("separate") is not True:
+        return HELD_STEP_CARD
     if answers_off_team_mail():
         private = True
         sender = getattr(current_session.get(), "email_from", "") or ""

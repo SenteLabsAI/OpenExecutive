@@ -189,6 +189,9 @@ def hold(
         )
     except Exception:
         logger.exception("department_gate: couldn't put decision %d on Today", decision_id)
+    from openexecutive.orchestrator.session import note_step_held
+
+    note_step_held()
     log_event(
         "department_action_held",
         f"Held for approval: {take_the_lead.summarize(tool, tool_input, mcp=mcp, quote=False)}",

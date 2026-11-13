@@ -81,7 +81,7 @@ _WHY: dict[str, str] = {
     AI_APP: "another AI app asked for it",
     NOT_OWNER: "it changes how your Executive is set up",
     UNATTENDED: "it came up while nobody was chatting",
-    STRANGER: "someone who isn't in People asked for it",
+    STRANGER: "someone outside your team asked for it",
     NEW_PERSON: "it goes to someone who isn't in People",
     FILE_PLACE: "the folder it goes in is shared outside the company",
     URL_FETCH: "it has a service fetch a web address",
