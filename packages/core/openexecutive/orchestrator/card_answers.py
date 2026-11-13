@@ -164,17 +164,24 @@ def said_no(message: str) -> bool:
 # "Yes, and next time too", "from now on", "always": the person also lets it
 # do this on its own next time (an In training card's tick).
 _NEXT_TIME = re.compile(
-    r"\b(?:next time|from now on|every time|each time|always|going forward|in future|in the future|"
-    r"on its own|on your own|without asking)\b",
+    r"\b(?:(?:and|also) next time|next time too|next time as well|from now on|going forward|"
+    r"(?:do|send|book) (?:it|this|these|them) on (?:its|your) own|without asking)\b",
+    re.IGNORECASE,
+)
+# "...but ask me next time", "this once", "run these by me first": still asks.
+_STILL_ASKS = re.compile(
+    r"\b(?:ask|check with|run (?:it|this|these|them) by|by me|this once|just once|only|first|"
+    r"before|each time|every time)\b",
     re.IGNORECASE,
 )
 
 
 def said_next_time(message: str) -> bool:
     """Whether ``message`` says yes for next time too, plainly: a yes as
-    ``said_yes``, and words that mean from now on."""
+    ``said_yes``, words that mean from now on, and nothing that keeps it
+    asking ("but ask me next time", "this once")."""
     text = unicodedata.normalize("NFKC", message or "").replace("’", "'")
-    return said_yes(message) and bool(_NEXT_TIME.search(text))
+    return said_yes(message) and bool(_NEXT_TIME.search(text)) and not _STILL_ASKS.search(text)
 
 
 def said_yes(message: str) -> bool:
@@ -345,6 +352,14 @@ def _audit(event: str, alert: Any, person_id: int | None, **extra: Any) -> None:
     )
 
 
+def _signed_here() -> bool:
+    """Whether this server ties a request to the person (signed sign-ins or
+    local login): the rule the card's own tick has (decisions approve)."""
+    from openexecutive.delegation.handle_it import signing_ok
+
+    return signing_ok()
+
+
 async def _decision(alert: Any, person: Any, *, approve: bool, allow: bool = False) -> str:
     from fastapi import HTTPException
 
@@ -367,10 +382,10 @@ async def _decision(alert: Any, person: Any, *, approve: bool, allow: bool = Fal
     return json.dumps({
         "alert_id": alert.id, "headline": alert.headline, "reply": APPROVE if approve else DISMISS,
         "status": instance.status,
-        **({"allowed": True} if allow else {}),
+        **({"allow_asked": True} if allow else {}),
         "note": (
-            "Done as the card's button with its tick would: from now on it does this on its own. "
-            "Say so in a few words."
+            "Done as the card's button with its tick would. If the card offered doing it on its "
+            "own next time, it now does; say what happened in a few words."
             if allow else "Done as the card's button would. Say in a few words what happened."
         ),
     })
@@ -434,6 +449,11 @@ async def handle_answer_card(tool_input: dict[str, Any]) -> str:
             return _error(
                 "Their message doesn't say to do it on its own next time. Approve it once, or ask "
                 "whether to let it do this on its own from now on."
+            )
+        if allow and not _signed_here():
+            return _error(
+                "Doing it on its own next time needs signed sign-ins on this server. Approve it "
+                "once, and say they can tick the card's box in the app."
             )
         if reply == APPROVE:
             _mark_answered(session)

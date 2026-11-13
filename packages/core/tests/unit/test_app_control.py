@@ -541,8 +541,8 @@ def test_a_waits_rule_is_added_now_and_a_goes_rule_waits(
 
     # Removing a Goes rule holds more: now. Removing a Waits rule lets more go: a card.
     found = {i["title"]: i["id"] for i in _run(app_control.handle_find_in_app, {"kind": "rule"}, session)["items"]}
-    assert app_control.CATALOG.actions["remove_rule"].needs_tap(found["anything with acme.com"], "")
-    assert not app_control.CATALOG.actions["remove_rule"].needs_tap(found["amounts under $500"], "")
+    assert app_control.CATALOG.actions["remove_rule"].needs_tap(found["anything with acme.com always waits"], "")
+    assert not app_control.CATALOG.actions["remove_rule"].needs_tap(found["amounts under $500 goes on its own"], "")
 
 
 def test_removing_a_goes_rule_in_the_turn_asks_for_the_tap_it_needs(roster: dict[str, Any]) -> None:
@@ -554,7 +554,7 @@ def test_removing_a_goes_rule_in_the_turn_asks_for_the_tap_it_needs(roster: dict
                _web(roster["owner"], "s-rm"))
     # The route wants a signed request, which a chat turn never is: the tap is one.
     assert out.get("status") == "waiting_for_approval", out
-    assert out["card"] == "Remove the rule “amounts under $500”"
+    assert out["card"] == "Remove the rule “amounts under $500 goes on its own”"
 
 
 def test_in_training_on_is_now_and_off_waits() -> None:
@@ -576,3 +576,17 @@ def test_turning_on_as_me_training_from_chat(roster: dict[str, Any]) -> None:
                {"action": "change_setting", "id": "as_me_training", "value": "off"}, session)
     assert out["status"] == "waiting_for_approval"
     assert take_the_lead.get(take_the_lead.SCOPE_EXECUTIVE).training
+
+
+def test_a_hands_off_turn_never_raises_the_level_on_its_own(
+    roster: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.orchestrator import outside_mode
+
+    # The turn began on Hands-off; the level was lowered since.
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.TRUST)
+    outside_mode.set_mode(outside_mode.ASK, updated_by="test")
+    out = _run(app_control.handle_do_in_app,
+               {"action": "set_approvals_level", "id": "approvals", "value": "hands-off"}, _web(roster["owner"], "s-h"))
+    assert out.get("status") == "waiting_for_approval", out
+    assert outside_mode.stored_mode() == outside_mode.ASK

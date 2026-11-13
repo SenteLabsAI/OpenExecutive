@@ -796,9 +796,19 @@ async def _prepare_level(request: Any, item_id: str, value: str) -> str:
 
 
 async def _set_level(request: Any, item_id: str, value: str) -> str:
+    from fastapi import HTTPException
+
     from openexecutive.api.routes import executive
+    from openexecutive.delegation.verified import SIGNING_REQUIRED, in_chat_turn
+    from openexecutive.orchestrator import outside_mode
 
     mode = _level_of(value)
+    order = list(_LEVELS)
+    if in_chat_turn() and order.index(mode) > order.index(outside_mode.stored_mode()):
+        # Letting more go is the owner's tap, never the turn: a turn that
+        # began on Hands-off (or a level lowered since it began) would
+        # otherwise raise it again on its own.
+        raise HTTPException(status_code=409, detail={"code": SIGNING_REQUIRED, "message": "Raising Approvals takes your tap."})
     await _call(executive.set_outside_content, request, executive.OutsideContentIn.model_validate({"mode": mode}))
     return f"Set Approvals to {_LEVELS[mode]}"
 
@@ -813,7 +823,7 @@ def _level_needs_tap(item_id: str, value: str) -> bool:
         return True
     order = list(_LEVELS)
     try:
-        return order.index(new) > order.index(outside_mode.get_mode())
+        return order.index(new) > order.index(outside_mode.stored_mode())
     except Exception:
         return True
 
@@ -857,11 +867,12 @@ async def _find_rules(request: Any) -> list[Item]:
     return [
         Item(
             id=str(r.id),
+            # What it does is in the title, so a card to remove it says
+            # which of two rules about the same thing goes.
             title=take_the_lead.rule_text(take_the_lead.Rule(
                 id=r.id, scope=take_the_lead.SCOPE_COMPANY, kind=r.kind, value=r.value, created_at="",
                 effect=r.effect,
-            )),
-            detail="goes on its own" if r.effect == take_the_lead.EFFECT_GO else "always waits",
+            )) + (" goes on its own" if r.effect == take_the_lead.EFFECT_GO else " always waits"),
         )
         for r in out.rules
     ]
