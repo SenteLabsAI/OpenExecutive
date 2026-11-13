@@ -39,6 +39,7 @@ import {
 } from "@/lib/runStatus";
 import { cadenceLabel, cardAction, lastRunAt } from "@/lib/workflowCards";
 import { starterPicksFor } from "@/lib/workflowStarters";
+import { runHref, stepCount } from "@/lib/workflowRun";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import { PageSpinner } from "@/components/ui/Spinner";
 
@@ -504,11 +505,11 @@ function YourWorkflows({
         const last = lastRunAt(w.name, runs);
         const cadence = cadenceLabel(cadenceByName.get(w.name));
         const meta = [
-          cadence || `${w.steps.length} steps`,
+          cadence || stepCount(w.steps),
           last ? `last run ${formatRelativeTime(last)}` : "not run yet",
         ].join(" · ");
         const more: OverflowItem[] = [
-          ...(action.kind === "signoff" ? [{ label: "Run again", href }] : []),
+          ...(action.kind === "signoff" ? [{ label: "Run again", href: runHref(w.name) }] : []),
           { label: "Edit", href: `/jobs/new?edit=${encodeURIComponent(w.name)}` },
           { label: "Delete", danger: true, onSelect: () => onDeleteCustom(w.name) },
         ];
@@ -538,7 +539,7 @@ function YourWorkflows({
                   Review
                 </Link>
               ) : (
-                <Link href={href} className={buttonClass("primary", "md")}>
+                <Link href={runHref(w.name)} className={buttonClass("primary", "md")}>
                   Run
                 </Link>
               )}
@@ -568,7 +569,7 @@ function CatalogCard({ workflow: w, useFor }: { workflow: WorkflowMeta; useFor?:
             Quick
           </span>
         ) : null}
-        {w.quick ? "One question, one document" : `${w.steps.length} steps`} · ~
+        {w.quick ? "One question, one document" : stepCount(w.steps)} · ~
         {w.estimated_minutes} min
       </span>
     </Link>
