@@ -33,7 +33,18 @@ function sessionStore(): NoteStore | null {
   }
 }
 
-/** Called by a list's Run just before it opens the workflow's page. */
+/** A click that opens the link in this tab: not a new tab or window, not another button. */
+export function opensHere(e: {
+  button: number;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+}): boolean {
+  return e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey;
+}
+
+/** Called by a list's Run just before it opens the workflow's page in this tab. */
 export function noteRunOnArrival(
   name: string,
   store: NoteStore | null = sessionStore(),

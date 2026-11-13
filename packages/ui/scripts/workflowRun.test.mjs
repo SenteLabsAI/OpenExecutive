@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   RUN_NOTE_MAX_AGE_MS,
   noteRunOnArrival,
+  opensHere,
   shownSteps,
   startsOnArrival,
   stepCount,
@@ -75,4 +76,14 @@ test("the run starts on arrival only when asked and nothing is left to fill in",
   assert.equal(startsOnArrival(true, true), true);
   assert.equal(startsOnArrival(true, false), false);
   assert.equal(startsOnArrival(false, true), false);
+});
+
+test("only a plain click in this tab leaves the note", () => {
+  const click = { button: 0, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false };
+  assert.equal(opensHere(click), true);
+  assert.equal(opensHere({ ...click, metaKey: true }), false);
+  assert.equal(opensHere({ ...click, ctrlKey: true }), false);
+  assert.equal(opensHere({ ...click, shiftKey: true }), false);
+  assert.equal(opensHere({ ...click, altKey: true }), false);
+  assert.equal(opensHere({ ...click, button: 1 }), false);
 });

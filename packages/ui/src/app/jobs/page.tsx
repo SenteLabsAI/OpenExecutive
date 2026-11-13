@@ -39,7 +39,7 @@ import {
 } from "@/lib/runStatus";
 import { cadenceLabel, cardAction, lastRunAt } from "@/lib/workflowCards";
 import { starterPicksFor } from "@/lib/workflowStarters";
-import { noteRunOnArrival, stepCount } from "@/lib/workflowRun";
+import { noteRunOnArrival, opensHere, stepCount } from "@/lib/workflowRun";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import { PageSpinner } from "@/components/ui/Spinner";
 
@@ -541,7 +541,7 @@ function YourWorkflows({
               ) : (
                 <Link
                   href={href}
-                  onClick={() => noteRunOnArrival(w.name)}
+                  onClick={(e) => opensHere(e) && noteRunOnArrival(w.name)}
                   className={buttonClass("primary", "md")}
                 >
                   Run
