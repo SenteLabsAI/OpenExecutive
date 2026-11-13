@@ -34,6 +34,8 @@ Developed by [Foreact Labs](https://foreactlabs.com) Open Executive provides a s
 
 All responses come from one consistent executive voice. The internal agent architecture is never exposed to the user. Beyond Q&A, the system maintains episodic memory of past decisions and initiatives across sessions, and a built-in scheduler can proactively surface follow-ups and time-sensitive actions.
 
+The Executive can also **use your web browser** to get things done on websites for you. With the Open Executive extension in Chrome, it looks at the page you're on, clicks, types, fills in forms and opens pages until the task is done: "sort this search by best sellers and list the top five", "fill in this vendor form from the contract". It follows your Approvals, never types passwords or card numbers, hands a sign-in or a code back to you, and stops when you press Stop. Saved workflows can use it too. See [docs/browser_extension_setup.md](docs/browser_extension_setup.md).
+
 ## Architecture
 
 ```
@@ -95,8 +97,10 @@ openexecutive/
 │   │       ├── audit/            # Audit logging
 │   │       ├── architecture/     # Internal architecture utilities
 │   │       ├── workflows/        # Multi-step workflow definitions
+│   │       ├── browser/          # Using a person's own browser via the extension
 │   │       └── cli.py            # Click CLI
-│   └── ui/                       # Next.js 15 web UI
+│   ├── ui/                       # Next.js 15 web UI
+│   └── extension/                # Chrome extension (load unpacked or build your own)
 ├── evals/                        # Eval scenarios + LLM-as-judge runner
 ├── fixtures/                     # Demo company fixtures (profiles, docs, rosters)
 ├── scripts/                      # Operator scripts (Google auth)
@@ -197,6 +201,7 @@ setup guide:
 | **Notion** | Syncs the pages shared with an internal integration into the knowledge base | Set `NOTION_SYNC_ENABLED=true` and `NOTION_API_KEY` (see [.env.example](.env.example)) |
 | **MCP tools** | Gives the Executive tools from other MCP servers, with deny rules for destructive ones | Copy [packages/core/mcp_servers.json.example](packages/core/mcp_servers.json.example) to `company/mcp_servers.json` and list your servers under `mcpServers`; MCP turns on when the file exists (Docker keeps it on `/data`, see [docs/deployment.md](docs/deployment.md#persistent-state)) |
 | **MCP clients** | Lets any MCP client talk to the Executive | [Connect as an MCP Server](#connect-as-an-mcp-server) |
+| **Browser** | Uses each person's own Chrome to do tasks on websites, through the Open Executive extension (on by default) | [docs/browser_extension_setup.md](docs/browser_extension_setup.md) |
 
 Synced Drive, OneDrive, Confluence and Notion content is kept apart from your uploaded
 documents and labelled as unreviewed, so it ranks below them.
@@ -275,6 +280,7 @@ The built-in knowledge base is **trusted by default** — the Executive can use 
 | **Telegram** | Message the configured bot |
 | **Google Chat** | Mention the app in a space |
 | **Discord** | DM the bot, `@mention` it in a channel, or use `/ask` / `/today` slash commands |
+| **Browser** | Add the Open Executive extension to Chrome, connect it, then ask in the web chat ([setup](docs/browser_extension_setup.md)) |
 | **CLI** | `openexecutive chat` |
 | **MCP** | Point any MCP client at `http://localhost:8000/mcp` (see [Connect as an MCP Server](#connect-as-an-mcp-server)) |
 
@@ -438,6 +444,8 @@ the app refuses to start.
 | `EMAIL_POLL_INTERVAL_SECONDS` | No | `60` | How often to poll for new email |
 | `TELEGRAM_BOT_TOKEN` | No | — | Telegram bot token (from @BotFather) |
 | `TELEGRAM_WEBHOOK_SECRET` | No | — | Random string for webhook validation |
+| `BROWSER_EXTENSION_URL` | No | Chrome Web Store listing | Where Add to Chrome goes; empty shows load unpacked steps only ([setup](docs/browser_extension_setup.md)) |
+| `OE_BROWSER_OFF` | No | — | `1` turns browser use off |
 | `DISCORD_BOT_TOKEN` | No | — | Discord bot token (Developer Portal → Bot tab) |
 | `DISCORD_APP_ID` | No | — | Discord application ID (General Information tab) |
 | `DISCORD_GUILD_IDS` | No | — | Comma-separated guild IDs for dev slash-command registration |

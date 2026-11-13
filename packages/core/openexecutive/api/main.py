@@ -1022,6 +1022,11 @@ def create_app() -> FastAPI:
     app.include_router(workspace.router, tags=["workspace"])
     app.include_router(notifications.router, tags=["notifications"])
     app.include_router(watchlist.router, tags=["watchlist"])
+    # The browser extension's relay: steps the Executive takes in the
+    # person's own browser (browser.relay).
+    from openexecutive.api.routes import browser as browser_route
+
+    app.include_router(browser_route.router, tags=["browser"])
     app.include_router(google_chat_router, tags=["google-chat"])
     app.include_router(telegram_router, tags=["telegram"])
     app.include_router(slack_events_router, tags=["slack"])

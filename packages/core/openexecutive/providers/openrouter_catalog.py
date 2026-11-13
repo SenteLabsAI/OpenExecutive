@@ -72,6 +72,9 @@ _loaded_reasoning: frozenset[str] = frozenset()
 # the model reads a PDF itself, so OpenRouter's file-parser can pass it
 # through ("native") instead of OCRing it first.
 _loaded_file_input: frozenset[str] = frozenset()
+# Ids whose catalog entry lists "image" in ``architecture.input_modalities``:
+# the model can see a picture (the browser's screenshots, browser.tools).
+_loaded_image_input: frozenset[str] = frozenset()
 # Every id in the last fetched catalog (unfiltered), so ``accepts_files`` can
 # tell "known, no file input" from "not in the catalog".
 _known_ids: frozenset[str] = frozenset()
@@ -107,14 +110,25 @@ def accepts_files(model_id: str) -> bool | None:
     return False if model_id in _known_ids else None
 
 
-def file_input_ids(entries: Iterable[Mapping[str, Any]]) -> frozenset[str]:
-    """Ids of catalog entries whose ``input_modalities`` list contains "file"."""
+def accepts_images(model_id: str) -> bool | None:
+    """Whether the loaded catalog says ``model_id`` sees images. ``None``
+    when no catalog is loaded or the slug isn't in it."""
+    if _loaded_models is None:
+        return None
+    if model_id in _loaded_image_input:
+        return True
+    return False if model_id in _known_ids else None
+
+
+def file_input_ids(entries: Iterable[Mapping[str, Any]], modality: str = "file") -> frozenset[str]:
+    """Ids of catalog entries whose ``input_modalities`` list contains
+    ``modality`` ("file" by default)."""
     out: set[str] = set()
     for entry in entries:
         model_id = entry.get("id")
         arch = entry.get("architecture")
         inputs = arch.get("input_modalities") if isinstance(arch, Mapping) else None
-        if isinstance(model_id, str) and isinstance(inputs, list) and "file" in inputs:
+        if isinstance(model_id, str) and isinstance(inputs, list) and modality in inputs:
             out.add(model_id)
     return frozenset(out)
 
@@ -262,7 +276,7 @@ async def refresh_openrouter_catalog(settings: Any) -> bool:
     Never raises: a failure logs a warning and leaves the previous cache
     (or the never-loaded state → registry fallback) untouched.
     """
-    global _loaded_models, _loaded_reasoning, _loaded_file_input, _known_ids, _loaded_at
+    global _loaded_models, _loaded_reasoning, _loaded_file_input, _loaded_image_input, _known_ids, _loaded_at
     try:
         entries = await fetch_catalog(
             base_url=settings.openrouter_base_url,
@@ -285,6 +299,7 @@ async def refresh_openrouter_catalog(settings: Any) -> bool:
     _loaded_models = models
     _loaded_reasoning = reasoning_capable_ids(entries) & frozenset(models)
     _loaded_file_input = file_input_ids(entries)
+    _loaded_image_input = file_input_ids(entries, "image")
     _known_ids = frozenset(
         e["id"] for e in entries if isinstance(e, Mapping) and isinstance(e.get("id"), str)
     )
@@ -321,9 +336,10 @@ async def run_catalog_refresher(settings: Any) -> None:
 
 
 def _reset_for_tests() -> None:
-    global _loaded_models, _loaded_reasoning, _loaded_file_input, _known_ids, _loaded_at
+    global _loaded_models, _loaded_reasoning, _loaded_file_input, _loaded_image_input, _known_ids, _loaded_at
     _loaded_models = None
     _loaded_reasoning = frozenset()
     _loaded_file_input = frozenset()
+    _loaded_image_input = frozenset()
     _known_ids = frozenset()
     _loaded_at = None

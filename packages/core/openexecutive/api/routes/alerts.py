@@ -80,6 +80,17 @@ class AckBody(BaseModel):
     mute_topic: str | bool | None = None
 
 
+def _handover_card_closed(alert: Alert | None) -> None:
+    """A "Waiting on you" card closed without Done is a Stop: the turn
+    waiting for it stops and the bar in their browser comes down
+    (browser/handover.py)."""
+    if alert is None or alert.source != "browser_handover" or alert.id is None:
+        return
+    from openexecutive.browser import handover as browser_handover
+
+    browser_handover.card_closed(alert.id)
+
+
 @router.post("/alerts/{alert_id}/ack", response_model=Alert)
 def ack_alert(alert_id: int, body: AckBody, request: Request) -> Alert:
     existing = _visible_alert(alert_id, request)
@@ -94,6 +105,8 @@ def ack_alert(alert_id: int, body: AckBody, request: Request) -> Alert:
         raise HTTPException(status_code=403, detail=_NOT_YOURS)
     if not store.set_status(alert_id, body.status):
         raise HTTPException(status_code=404, detail="Alert not found")
+    if body.status != "read":
+        _handover_card_closed(existing)
     # Feedback loop: a dismiss on a watch-sourced alert lowers that watch's
     # trust score; an approval recovers it. Optional mute on dismiss. Only
     # on a real transition — re-posting the same status teaches nothing.
@@ -334,6 +347,9 @@ async def approve_alert(
     ):
         # A card nobody was routed to is the principal's, as on Today.
         raise HTTPException(status_code=403, detail="This one is for someone else to approve.")
+    if alert.source == "browser_handover" and (approver is None or approver != alert.routed_to_person_id):
+        # A step in their own browser: only they say it's done.
+        raise HTTPException(status_code=403, detail="Only the person it's waiting on can press Done.")
 
     approval = approvals.claim(
         alert_id, approved_by_person_id=approver, edited_body=body.edited_body,
@@ -345,6 +361,19 @@ async def approve_alert(
     _audit_approval(
         "alert_approved", f"Approved '{alert.headline[:120]}'", alert, approval,
     )
+
+    from openexecutive.browser import handover as browser_handover
+
+    if alert.source == browser_handover.SOURCE:
+        # Done on a "Waiting on you" card from the browser
+        # (browser/handover.py). A turn still waiting for it carries on
+        # there; otherwise the new chat below carries the work on.
+        handover = browser_handover.by_card(alert_id)
+        if handover is not None:
+            _gone, waited = browser_handover.finish(handover.id, handover.person_id, "done")
+            browser_handover.end_bar(handover)
+            if waited:
+                return _finished(alert, approval, approvals.STATUS_DONE, "The Executive carried on.")
 
     action_id = approvals.held_action_id(alert_id)
     if action_id is not None and body.edited_body is None:
@@ -564,6 +593,10 @@ def bulk_ack_alerts(body: BulkAckBody, request: Request) -> BulkAckResponse:
         exclude_private=not _caller_is_principal(request),
     )
     count = len(updated_ids)
+    for alert_id in updated_ids:
+        target = targets.get(alert_id)
+        if target is None or target.source == "browser_handover":
+            _handover_card_closed(target or store.get_alert(alert_id))
     # Same feedback loop as a single ack, for the rows we can attribute.
     for alert_id in updated_ids:
         alert = targets.get(alert_id) or store.get_alert(alert_id)

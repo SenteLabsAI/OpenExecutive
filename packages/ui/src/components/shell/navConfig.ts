@@ -446,6 +446,7 @@ export type SettingsPageId =
   | "executive"
   | "notifications"
   | "memory"
+  | "browser"
   | "workspace"
   | "advanced"
   | "about";
@@ -503,6 +504,15 @@ export const SETTINGS_PAGES: SettingsPageDef[] = [
     icon: "user",
     description: "Whether it keeps notes of what you say, what you share with the team, and how long notes last.",
     hashes: ["memory"],
+  },
+  {
+    id: "browser",
+    group: "you",
+    label: "Browser",
+    href: "/settings/browser",
+    icon: "globe",
+    description: "Add the Open Executive extension so your Executive can use websites for you.",
+    hashes: ["browser"],
   },
   {
     id: "workspace",

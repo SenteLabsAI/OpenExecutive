@@ -126,6 +126,11 @@ class ExtraTool:
     # Returns text from outside the team, e.g. a vendor app's records (see
     # module doc and ``orchestrator.outside_content``).
     reads_outside: bool = False
+    # A held call can wait on an Approve card and be carried out from it
+    # (``orchestrator.levels.carriable``, ``take_the_lead.carry_out``): the
+    # handler runs again inside ``levels.approved()`` and must take that tap
+    # as the OK it was waiting for.
+    card: bool = False
     # Asked on a turn with no verified caller too (see module doc); needs
     # ``offered``.
     known_caller: bool = True
@@ -156,6 +161,10 @@ class Collection:
     # change itself can still fail after it returns.
     on_change: Callable[[str, Change], Awaitable[None]] | None = None
 
+
+# Built in: loaded whatever ``OPENEXECUTIVE_EXTENSIONS`` says. The browser
+# (``openexecutive.browser``) turns itself off with ``OE_BROWSER_OFF=1``.
+BUILTIN: tuple[str, ...] = ("openexecutive.browser.tools",)
 
 _tools: dict[str, ExtraTool] = {}
 _collections: dict[str, Collection] = {}
@@ -230,6 +239,7 @@ def load() -> None:
             from openexecutive.config import get_settings
 
             names = [n for n in (getattr(get_settings(), "extensions", None) or "").split(",") if n]
+            names += [n for n in BUILTIN if n not in names]
             for module_name in names:
                 tools_before, collections_before = set(_tools), set(_collections)
                 try:
@@ -307,6 +317,24 @@ def private_row(tool_name: str) -> bool:
     load()
     tool = _tools.get(tool_name)
     return tool is not None and tool.private_row
+
+
+def card_handler(tool_name: str) -> Callable[[dict[str, Any]], Awaitable[str]] | None:
+    """The handler an Approve card carries out for ``tool_name``: a
+    registered tool marked ``card``, else None."""
+    load()
+    tool = _tools.get(tool_name)
+    return tool.handler if tool is not None and tool.card else None
+
+
+def asks_through_approvals(tool_name: str) -> bool:
+    """Whether ``tool_name`` (a workflow tool name, ``oe__`` prefix or not)
+    is a registered tool marked ``card``: it puts its own call through
+    Approvals and holds on its own Approve card, so a workflow step doesn't
+    hold it a second time for writing somewhere new."""
+    load()
+    tool = _tools.get(tool_name.removeprefix("oe__"))
+    return tool is not None and tool.card
 
 
 def counts_on_step_budget(tool_name: str) -> bool:

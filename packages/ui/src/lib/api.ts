@@ -198,6 +198,14 @@ export interface HeldStepsEvent {
   steps: string[];
 }
 
+// The turn needed the person's browser and the extension wasn't connected
+// (browser/tools.py): a card to add it, under the reply.
+export interface BrowserNeededEvent {
+  type: "browser_needed";
+  session_id?: string;
+  store_url: string | null;
+}
+
 // What the content check flagged this turn, in plain words: sent only with
 // held steps, as their reason (orchestrator/outside_content.py `pending_flags`).
 export interface FlagsEvent {
@@ -248,6 +256,7 @@ export type StreamItem =
   | MessageAdded
   | HandingOver
   | HeldStepsEvent
+  | BrowserNeededEvent
   | FlagsEvent
   | ProgressEvent;
 
@@ -1499,6 +1508,10 @@ export interface ChatMessage {
   // The last reply only: what the content check flagged in what its turn
   // read, from the stream's `flags` event or re-attached on reload.
   flags?: string[];
+  // The last reply only, this visit only: its turn needed the browser
+  // extension and it wasn't connected (`browser_needed`). Where to get it,
+  // or null for no install page.
+  browser_needed?: { store_url: string | null };
 }
 
 export interface Decision {
@@ -7422,4 +7435,33 @@ export async function answerRepeatOffer(id: number, accept: boolean): Promise<bo
   } catch {
     return false;
   }
+}
+
+// Settings → Browser and chat's cards: whether this person's Open Executive
+// browser extension is connected (api/routes/browser.py).
+export interface BrowserStatus {
+  /** False while the browser is turned off here (OE_BROWSER_OFF). */
+  available: boolean;
+  /** Their extension is asking for steps now. */
+  connected: boolean;
+  /** "Stay connected" in their extension; null when not connected or too old to say. */
+  stay_connected: boolean | null;
+  /** Where to get the extension, or null: Settings shows how to load it. */
+  store_url: string | null;
+  /** The version of the extension's calls this server speaks. */
+  protocol?: number;
+}
+
+export async function getBrowserStatus(): Promise<BrowserStatus> {
+  const res = await fetch(`${API_BASE}/browser/status`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to load your browser's status");
+  return res.json();
+}
+
+/** The "Try one" asks on a new chat once the browser is connected
+ *  (browser/starters.py). Empty while it's turned off here. */
+export async function getBrowserStarters(signal?: AbortSignal): Promise<string[]> {
+  const res = await fetch(`${API_BASE}/browser/starters`, { cache: "no-store", signal });
+  if (!res.ok) throw new Error("Failed to load browser suggestions");
+  return ((await res.json()) as { starters: string[] }).starters;
 }

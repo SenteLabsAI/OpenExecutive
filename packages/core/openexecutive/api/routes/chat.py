@@ -1864,6 +1864,13 @@ async def _run_chat_turn(
             if not turn_sources.is_empty():
                 answer_sources = turn_sources.payload()
 
+            # Whether the turn wanted the person's browser while it wasn't
+            # connected, taken on every path so a turn whose tab closed can't
+            # leave the card for the next one.
+            from openexecutive.browser import tools as browser_tools
+
+            browser_needed = browser_tools.take_needed(session)
+
             if client_disconnected:
                 # Connection is gone, so we can't yield anything more — but we
                 # still persist whatever the Executive produced before the
@@ -1893,6 +1900,15 @@ async def _run_chat_turn(
             if held_steps:
                 held_evt = {"type": "held_steps", "session_id": session.session_id, "steps": list(held_steps)}
                 yield f"data: {json.dumps(held_evt)}\n\n"
+            # The turn wanted the person's browser and it wasn't connected: a
+            # card under the reply to add the extension.
+            if browser_needed and not (stopped or timed_out):
+                needed_evt = {
+                    "type": "browser_needed",
+                    "session_id": session.session_id,
+                    "store_url": browser_tools.store_url(),
+                }
+                yield f"data: {json.dumps(needed_evt)}\n\n"
             # What the content check flagged this turn, in plain words
             # (orchestrator.content_scan): sent only with held steps, as the
             # reason on their card. A flag that held nothing changed nothing

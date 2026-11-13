@@ -262,6 +262,14 @@ SECTIONS: list[SectionSpec] = [
         wants_mermaid=True,
         diagram_kind="flowchart",
     ),
+    SectionSpec(
+        id="browser",
+        title="Browser Extension",
+        sub="The Executive uses each person's own Chrome through the Open Executive extension: a per-person step relay, the browser tools, hand-over to the person, and how Approvals applies.",
+        kb_query="browser extension relay steps look click type hand over approvals send site",
+        wants_mermaid=True,
+        diagram_kind="flowchart",
+    ),
 ]
 
 

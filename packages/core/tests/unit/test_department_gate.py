@@ -228,8 +228,8 @@ def test_approving_does_the_exact_call_once(
 ) -> None:
     done: list[dict[str, Any]] = []
 
-    async def carry_out(payload: dict[str, Any], *, by_principal: bool) -> str:
-        done.append(payload)
+    async def carry_out(payload: dict[str, Any], *, by_principal: bool, own_card: bool = False) -> str:
+        done.append({**payload, "own_card": own_card})
         return json.dumps({"status": "sent"})
 
     monkeypatch.setattr(ttl, "carry_out", carry_out)
@@ -239,6 +239,9 @@ def test_approving_does_the_exact_call_once(
     assert response.status_code == 200, response.text
     assert response.json()["status"] == ledger.STATUS_APPROVED_UNCHANGED
     assert [(p["tool"], p["input"]) for p in done] == [("send_slack_dm", _send())]
+    # Sam asked and Sam approved: their own card (carry_out decides what that
+    # may relax: only a step that runs on their own device).
+    assert done[0]["own_card"] is True
     assert client.post(f"/decisions/{decision_id}/approve", json={}, headers=headers).status_code == 409
     [card] = alerts_store.list_alerts(limit=10, status="ack")
     assert card.external_id == f"decision:{decision_id}"

@@ -12288,6 +12288,64 @@ delegation:
     kinds under Handle it for me (meetings, handing to a teammate,
     the Executive's own ideas); stand in on positions the person approved.
 
+browser:
+  overview: |
+    openexecutive.browser lets the Executive use a person's own Chrome
+    through the Open Executive extension (packages/extension, Manifest V3,
+    plain JS). On by default; OE_BROWSER_OFF=1 turns it off. The extension's
+    script in a connected Open Executive tab long-polls GET /browser/steps
+    (same origin, signed in as the person, through the UI proxy) and posts
+    each answer to POST /browser/steps/{id} (api/routes/browser.py).
+    browser.relay keeps steps in process, one queue per person: connected =
+    asked in the last 45 s, a step waits up to 45 s. Steps only go to the
+    browser of the person whose turn asked. The extension connects only to a
+    site the person approves in its popup, on https or localhost.
+  protocol: |
+    PROTOCOL in api/routes/browser.py (and OE.PROTOCOL in the extension's
+    shared.js) is the version of the steps. /browser/hello and
+    /browser/status return it; on a mismatch the popup asks for an update
+    instead of connecting. Bump both together when a step's shape changes.
+  tools: |
+    browser.tools registers the browser tool group through
+    orchestrator.extensions (extensions.BUILTIN, always loaded): look, tabs,
+    click, click_at, type, select, key, scroll, navigate, open_tab,
+    switch_tab, show_page, point, hand_over. Offered on a web chat turn to
+    someone on the People list, connected or not; when not connected a tool
+    says how to connect and the chat stream ends with browser_needed (Add to
+    Chrome card, BROWSER_EXTENSION_URL, published listing by default, empty
+    for load-unpacked steps only). Install hooks: SURFACES (more kinds of
+    turn get the tools), AWAY (person not at the computer: own window, a
+    look brings its screenshot back). Screenshots travel beside the result
+    via orchestrator.tool_images, only for models that see images
+    (providers.registry.sees_images).
+  approvals: |
+    No new gate. Page answers are reads_outside with private audit rows.
+    Click, type, select, key, navigate and open_tab are card tools
+    (ExtraTool.card): held below Hands-off they become an Approve card, and a
+    tap runs the step in the asker's own browser (take_the_lead.carry_out,
+    extensions.card_handler, levels.approved for the requester). On an email
+    or chat site (packages/extension/site-rules.js) a click or typing goes
+    only with send_ok (Hands-off or an approved card, levels.SEND_SITE),
+    pinned to the page it was approved on. The extension never types into
+    password, card or code fields, blacks them out of screenshots, never acts
+    on browser or store pages, and its Stop bar holds every step 2 minutes.
+  handover: |
+    browser_hand_over (browser.handover) gives a step to the person: a
+    "Waiting on you" bar with Done and Stop, and a Needs you card
+    (source browser_handover, Done instead of Approve; only the routed
+    person may press it). The turn carries on after Done; past its wait, Done
+    on the card carries the work on in a new chat. In a workflow the run
+    pauses on it.
+  workflows: |
+    Every browser tool but browser_show_page is workflow=True (oe__browser_*):
+    only the creator's browser, in the extension's own window, Approvals in
+    the step (extensions.workflow_hold), and extensions.workflow_wait when
+    not connected; browser.relay resumes the run when the extension asks.
+  customizing: |
+    packages/extension/build.mjs stamps name, icons and version and zips it
+    for an operator's own store listing. site-rules.js holds the sending
+    sites and payment frame hosts. Setup: docs/browser_extension_setup.md.
+
 diagram_style:
   required_classdefs: [entry, compute, storage, cache, external, hot]
   rules:

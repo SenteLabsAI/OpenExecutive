@@ -96,6 +96,7 @@ SECTIONS_FOR: dict[str, set[str]] = {
     "briefing": {"today"},
     "alerts": {"today"},
     "guide": {"user_guide"},
+    "browser": {"browser"},
 }
 
 GUIDE_PREBUILT = PKG + "guide/prebuilt/"
