@@ -5868,6 +5868,14 @@ export interface DoneRow {
   artifact_id?: string | null;
 }
 
+/** Home's Done for you on its own (GET /today/done), for the screens that
+ *  show it without the rest of Home, in the same rows and words. */
+export async function getDone(): Promise<DoneRow[]> {
+  const res = await fetch(`${API_BASE}/today/done`);
+  if (!res.ok) throw new Error(`Failed to load Done for you: ${res.statusText}`);
+  return res.json();
+}
+
 /** Something waiting on the reader that lives on another page: Home's Needs
  *  you shows it as one row whose button opens that page. */
 export interface WaitingElsewhereItem {

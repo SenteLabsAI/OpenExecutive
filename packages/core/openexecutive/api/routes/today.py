@@ -1476,6 +1476,13 @@ RHYTHM_WORKFLOWS: frozenset[str] = frozenset({
 })
 
 
+# Runs that are never a row of their own. The daily look back says nothing
+# on its own ("Looked back on the day", with no line and no link, since its
+# write-up isn't screened for what is private to the owner), and what it did
+# shows as rows of its own (the Take the lead rows below).
+_NEVER_IN_FEED: frozenset[str] = frozenset({"executive_reflection"})
+
+
 def _build_activity(
     limit: int,
     since: datetime | None = None,
@@ -1610,7 +1617,7 @@ def _build_activity(
     for run in wf_persistence.list_runs(
         status="done", limit=pool, visible_to=None, with_body=True,
     ):
-        if run.get("workflow_name") in exclude_workflows:
+        if run.get("workflow_name") in exclude_workflows or run.get("workflow_name") in _NEVER_IN_FEED:
             continue
         items.append(ActivityItem(
             kind="workflow_done",
@@ -3335,6 +3342,17 @@ def get_today_activity(
         return built
     merged = sorted([*built.items, *mine], key=lambda i: i.at, reverse=True)
     return ActivityResponse(items=merged[:limit])
+
+
+@router.get("/today/done", response_model=list[DoneRow], tags=["today"])
+async def get_today_done(request: Request) -> list[DoneRow]:
+    """Home's Done for you on its own (``_done_for_you``), for the screens
+    that show it without the rest of Home (Memory's What it does), so both
+    show the same rows in the same words. The caller's own, as on Home."""
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+
+    caller = await asyncio.to_thread(_resolve_caller_person_id, request)
+    return await asyncio.to_thread(_done_for_you, request, caller, datetime.now(UTC))
 
 
 def _contacts_kept_for_caller(request: Request) -> list[ActivityItem]:

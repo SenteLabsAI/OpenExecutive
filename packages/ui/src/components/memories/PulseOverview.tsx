@@ -2,10 +2,10 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { getActivity, type ActivityItem } from "@/lib/api";
+import { getDone, type DoneRow } from "@/lib/api";
+import { doneLink, statusLabel } from "@/lib/doneForYou";
 import Icon from "@/components/Icon";
 import { upcomingLabel, whenLabel } from "@/lib/pulseView";
-import { SUMMARY_KINDS, activityLine, writeUpHref, writeUpLabel } from "./CadenceSection";
 import type { PulseData } from "./PulseHeader";
 import { Skeleton, metaFor } from "./shared";
 import { MonthCountLine } from "./ValueSection";
@@ -161,23 +161,19 @@ export function ComingUp({ pulse }: { pulse: PulseData }) {
   );
 }
 
-function capitalise(text: string): string {
-  return text.charAt(0).toUpperCase() + text.slice(1);
-}
-
-/** This month's count, then the last few things it did on its own, each
- *  saying what came of it. */
+/** This month's count, then the last day's Done for you: the same rows, in
+ *  the same words, as Home's (GET /today/done), with a way to open each. */
 export function DoneForYou() {
-  const [items, setItems] = useState<ActivityItem[] | null>(null);
+  const [rows, setRows] = useState<DoneRow[] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    getActivity(PREVIEW_ROWS)
+    getDone()
       .then((res) => {
-        if (!cancelled) setItems(res.items.slice(0, PREVIEW_ROWS));
+        if (!cancelled) setRows(res.slice(0, PREVIEW_ROWS));
       })
       .catch(() => {
-        if (!cancelled) setItems([]);
+        if (!cancelled) setRows([]);
       });
     return () => {
       cancelled = true;
@@ -187,41 +183,54 @@ export function DoneForYou() {
   return (
     <PreviewCard title="Done for you" href="/memories?tab=activity" linkLabel="All activity">
       <MonthCountLine />
-      {items === null ? (
+      {rows === null ? (
         <RowsSkeleton />
-      ) : items.length === 0 ? (
-        <Empty>Nothing yet. What it does on its own shows up here as it happens.</Empty>
+      ) : rows.length === 0 ? (
+        <Empty>Nothing in the last day. All activity has the rest.</Empty>
       ) : (
         <ul>
-          {items.map((it, i) => {
-            const { verb, subject } = activityLine(it);
-            // For summary-style kinds the subject IS the summary, so the
-            // detail line says only what kind of thing it was.
-            // A plain "action" has nothing to add beyond its summary.
-            // A finished run says what came of it (and links its write-up).
-            const detail =
-              it.kind === "workflow_done" || it.kind === "contacts_kept"
-                ? (it.detail ?? undefined)
-                : it.kind === "action"
-                ? undefined
-                : SUMMARY_KINDS.has(it.kind)
-                  ? capitalise(verb.replace(/:$/, ""))
-                  : capitalise(`${verb} ${subject}`);
-            return (
-              <PreviewRow
-                key={`${it.at}-${it.kind}-${i}`}
-                upcoming={false}
-                when={whenLabel(it.at)}
-                title={it.summary || detail || capitalise(verb)}
-                detail={it.summary ? detail : undefined}
-                href={writeUpHref(it)}
-                linkLabel={writeUpLabel(it)}
-              />
-            );
-          })}
+          {rows.map((row) => (
+            <DoneRowItem key={row.key} row={row} />
+          ))}
         </ul>
       )}
     </PreviewCard>
+  );
+}
+
+/** One Done for you row: when, what it did, and its link. */
+function DoneRowItem({ row }: { row: DoneRow }) {
+  const link = doneLink(row);
+  return (
+    <li className="flex items-start gap-3 py-3 border-t border-line first:border-t-0">
+      <span className="w-20 shrink-0 text-sm tabular-nums pt-0.5 font-medium text-fg-subtle">
+        {whenLabel(row.at)}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="text-[15px] font-semibold text-fg break-words line-clamp-2" title={row.title}>
+          {row.title}
+          {row.status !== "done" && (
+            <span className="ml-2 inline-block rounded-md border border-accent/40 px-1.5 text-xs font-medium text-accent align-[1px]">
+              {statusLabel(row.status)}
+            </span>
+          )}
+        </div>
+        {row.detail && (
+          <div className="text-sm text-fg-muted mt-0.5 line-clamp-3 break-words" title={row.detail}>
+            {row.detail}
+          </div>
+        )}
+        {link && (
+          <Link
+            href={link.href}
+            className="mt-1 font-semibold text-accent hover:underline whitespace-nowrap text-sm inline-flex items-center gap-0.5"
+          >
+            {link.label}
+            <Icon name="chevron-right" size="w-4 h-4" />
+          </Link>
+        )}
+      </div>
+    </li>
   );
 }
 
