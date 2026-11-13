@@ -1521,16 +1521,38 @@ async def _run_executive(
         if deadline.expired():
             raise EmailTurnTimeout(timeout_s) from exc
         raise
-    if repeat_key is not None and True in (session.email_authenticated, session.email_sender_authenticated):
-        # The turn ran for a sender the provider vouched for: a copy of this
-        # email is now a repeat (integrations.email_repeats).
-        from openexecutive.integrations import email_repeats
-
-        await asyncio.to_thread(email_repeats.remember, repeat_key, message_id)
     if source is None:
         _note_reply_outcome(session, person, raw_email, message_id, thread_id, from_addr, response)
+        await _note_if_answered(repeat_key, message_id, session, from_addr)
         return None
-    return await _send_answer(source, response, answer_to, session_id or session.session_id)
+    outcome = await _send_answer(source, response, answer_to, session_id or session.session_id)
+    await _note_if_answered(repeat_key, message_id, session, from_addr, answered=outcome == "answered")
+    return outcome
+
+
+async def _note_if_answered(
+    repeat_key: str | None, message_id: str, session: Any, from_addr: str, *, answered: bool = False,
+) -> None:
+    """Note an email as answered (``integrations.email_repeats``), so a copy
+    of it is left alone, once its turn ran for a sender the mail provider
+    vouched for and the sender got something: a reply, or a step waiting on
+    an Approve card. A turn that sent nothing is not noted, so the same email
+    sent again is handled again."""
+    if repeat_key is None or True not in (
+        session.email_authenticated, session.email_sender_authenticated,
+    ):
+        return
+    sender = from_addr.strip().lower()
+    if not (
+        answered
+        or sender in session.mail_sent_to
+        or message_id in session.mail_replied_ids
+        or int(getattr(session, "steps_held", 0) or 0) > 0
+    ):
+        return
+    from openexecutive.integrations import email_repeats
+
+    await asyncio.to_thread(email_repeats.remember, repeat_key, message_id)
 
 
 def _note_reply_outcome(

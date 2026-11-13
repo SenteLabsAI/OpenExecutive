@@ -71,6 +71,30 @@ def test_copies_rendered_with_their_own_headers_still_match() -> None:
     assert email_repeats.fingerprint("dana@x.example", "Order", "") is None
 
 
+def test_an_email_is_noted_as_answered_only_when_the_sender_got_something() -> None:
+    from openexecutive.integrations import email_poller
+
+    noted: list[Any] = []
+
+    def note(session: Session, **kw: Any) -> list[Any]:
+        noted.clear()
+        with patch.object(email_repeats, "remember", new=lambda *a, **_k: noted.append(a)):
+            asyncio.run(email_poller._note_if_answered("k", "m1", session, "Dana@X.example", **kw))
+        return list(noted)
+
+    session = Session(session_id="email:t1")
+    session.email_sender_authenticated = True
+    assert note(session) == []  # the turn sent nothing: a resend is handled again
+    assert note(session, answered=True) == [("k", "m1")]
+    session.mail_sent_to.add("dana@x.example")
+    assert note(session) == [("k", "m1")]
+    session.mail_sent_to.clear()
+    session.steps_held = 1  # its step waits on a card
+    assert note(session) == [("k", "m1")]
+    session.email_sender_authenticated = False  # nobody vouched for the sender
+    assert note(session, answered=True) == []
+
+
 def test_an_email_turn_with_a_held_step_raises_no_second_card() -> None:
     session = Session(session_id="email:t1")
     session.origin_channel = "email"
