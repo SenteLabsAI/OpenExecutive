@@ -192,7 +192,11 @@ async def stop_waiting(key: str, db_path: Path | None = None) -> int:
     """Stop every run paused until ``key`` is ready, because the person said
     not to go on (they pressed Stop on what it waited for): each one stops
     there and says so, the same as a no on its pause. Returns how many were
-    stopped. Never raises."""
+    stopped. Never raises.
+
+    As with ``resume_waiting``, a run is saved as waiting only after its step
+    writes its report, so a call made in that gap finds nothing: when it
+    returns 0 and the Stop still stands, call it again a few seconds later."""
     stopped = 0
     try:
         for run in waiting_runs(key, db_path=db_path):
