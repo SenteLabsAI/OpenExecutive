@@ -60,10 +60,10 @@ def test_newer_release_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
         "current": "0.4.4",
         "latest": "0.5.0",
         "update_available": True,
-        "release_url": "https://github.com/SenteLabsAI/OpenExecutive/releases/tag/v0.5.0",
+        "release_url": "https://github.com/ForeactLabs/OpenExecutive/releases/tag/v0.5.0",
         "check_enabled": True,
     }
-    assert calls == ["https://api.github.com/repos/SenteLabsAI/OpenExecutive/releases/latest"]
+    assert calls == ["https://api.github.com/repos/ForeactLabs/OpenExecutive/releases/latest"]
 
 
 @pytest.mark.parametrize("tag", ["v0.4.4", "v0.4.3", "0.4.4"])

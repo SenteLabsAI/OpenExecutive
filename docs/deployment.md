@@ -29,8 +29,8 @@ containers. The UI is stateless and scales freely.
 
 | Component | Dockerfile | Published image | State |
 |---|---|---|---|
-| API | [docker/Dockerfile](../docker/Dockerfile) | `ghcr.io/sentelabsai/openexecutive-api` | One persistent volume at `/data` |
-| UI | [docker/Dockerfile.ui](../docker/Dockerfile.ui) | `ghcr.io/sentelabsai/openexecutive-ui` | Stateless |
+| API | [docker/Dockerfile](../docker/Dockerfile) | `ghcr.io/foreactlabs/openexecutive-api` | One persistent volume at `/data` |
+| UI | [docker/Dockerfile.ui](../docker/Dockerfile.ui) | `ghcr.io/foreactlabs/openexecutive-ui` | Stateless |
 
 The UI never talks to the API directly from the browser. It proxies through its
 own server (`/api/backend/*`), stamping the shared secret on each upstream call,
@@ -426,8 +426,8 @@ host's Docker. Upgrade from the host instead.
    ```
 
    From the published images: change the image tags to the new release
-   (`ghcr.io/sentelabsai/openexecutive-api:X.Y.Z` and
-   `ghcr.io/sentelabsai/openexecutive-ui:X.Y.Z`), then
+   (`ghcr.io/foreactlabs/openexecutive-api:X.Y.Z` and
+   `ghcr.io/foreactlabs/openexecutive-ui:X.Y.Z`), then
 
    ```bash
    docker compose pull

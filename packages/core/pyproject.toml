@@ -58,9 +58,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/SenteLabsAI/OpenExecutive"
-Repository = "https://github.com/SenteLabsAI/OpenExecutive"
-Issues = "https://github.com/SenteLabsAI/OpenExecutive/issues"
+Homepage = "https://github.com/ForeactLabs/OpenExecutive"
+Repository = "https://github.com/ForeactLabs/OpenExecutive"
+Issues = "https://github.com/ForeactLabs/OpenExecutive/issues"
 
 [project.optional-dependencies]
 dev = [

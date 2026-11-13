@@ -86,7 +86,7 @@ GOOGLE_CHAT_SERVICE_ACCOUNT_EMAIL=open-executive-chat@YOUR_PROJECT_ID.iam.gservi
 
    A ready-to-use avatar (brand-matched, 256×256 SVG) is included in this repo. Paste this URL into the **Avatar URL** field:
    ```
-   https://raw.githubusercontent.com/SenteLabsAI/OpenExecutive/main/docs/assets/chat-avatar.svg
+   https://raw.githubusercontent.com/ForeactLabs/OpenExecutive/main/docs/assets/chat-avatar.svg
    ```
    Google Chat accepts SVG URLs served from GitHub raw content directly.
 3. Under **Functionality**, enable:

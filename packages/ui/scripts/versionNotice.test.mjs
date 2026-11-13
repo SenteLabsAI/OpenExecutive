@@ -6,7 +6,7 @@ const BASE = {
   current: "0.4.4",
   latest: "0.4.4",
   update_available: false,
-  release_url: "https://github.com/SenteLabsAI/OpenExecutive/releases/tag/v0.4.4",
+  release_url: "https://github.com/ForeactLabs/OpenExecutive/releases/tag/v0.4.4",
   check_enabled: true,
 };
 
@@ -21,7 +21,7 @@ test("says when this is the latest release", () => {
 });
 
 test("links the release and the upgrade steps when a newer one is out", () => {
-  const url = "https://github.com/SenteLabsAI/OpenExecutive/releases/tag/v0.5.0";
+  const url = "https://github.com/ForeactLabs/OpenExecutive/releases/tag/v0.5.0";
   const n = versionNotice({ ...BASE, latest: "0.5.0", update_available: true, release_url: url });
   assert.equal(n.status, "v0.5.0 is available.");
   assert.deepEqual(n.update, { releaseUrl: url, upgradeUrl: UPGRADE_DOC_URL });

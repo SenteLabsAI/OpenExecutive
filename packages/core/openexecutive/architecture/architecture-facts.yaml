@@ -152,7 +152,7 @@ system:
     GET /version (api/routes/version.py) returns the running version
     (the FastAPI app's release-please-stamped version), the latest
     published release and `update_available`. The latest release comes
-    from GitHub's public releases API for SenteLabsAI/OpenExecutive,
+    from GitHub's public releases API for ForeactLabs/OpenExecutive,
     cached in-process for 6h (1h after a failure, keeping the last good
     answer). Only `tag_name` is read, and only an `X.Y.Z`/`vX.Y.Z` tag is
     accepted; the release link is built from that tag, never taken from

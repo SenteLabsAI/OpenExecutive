@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-RELEASES_REPO = "SenteLabsAI/OpenExecutive"
+RELEASES_REPO = "ForeactLabs/OpenExecutive"
 _LATEST_RELEASE_URL = f"https://api.github.com/repos/{RELEASES_REPO}/releases/latest"
 _RELEASE_PAGE_URL = f"https://github.com/{RELEASES_REPO}/releases/tag/v{{version}}"
 _TIMEOUT_S = 5.0

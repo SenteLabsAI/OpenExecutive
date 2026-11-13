@@ -6,10 +6,10 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/SenteLabsAI/OpenExecutive.git",
+    "url": "https://github.com/ForeactLabs/OpenExecutive.git",
     "directory": "packages/ui"
   },
-  "homepage": "https://github.com/SenteLabsAI/OpenExecutive#readme",
+  "homepage": "https://github.com/ForeactLabs/OpenExecutive#readme",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

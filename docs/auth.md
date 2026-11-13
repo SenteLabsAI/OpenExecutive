@@ -641,4 +641,4 @@ curl -sv -H "x-api-key: $SHARED" https://api.example.com/sessions           # 20
 - A listed host origin's scripts reading what the host list allows (the briefing, conversations and their replies, the watch list) and starting chat turns as whoever has the host open: see "Host origins", **What remains**.
 - Other users or programs on the same computer while local login is on — anything that can reach `127.0.0.1:3000` can click **Open**. Use it only on a computer that is yours alone.
 
-If/when per-user data isolation matters (e.g. private sessions per teammate), the change is non-trivial — see the original plan note in [PR #86](https://github.com/SenteLabsAI/OpenExecutive/pull/86) about adding `user_id` to the sessions table.
+If/when per-user data isolation matters (e.g. private sessions per teammate), the change is non-trivial — see the original plan note in [PR #86](https://github.com/ForeactLabs/OpenExecutive/pull/86) about adding `user_id` to the sessions table.
