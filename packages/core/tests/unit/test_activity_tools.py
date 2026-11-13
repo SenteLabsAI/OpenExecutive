@@ -19,6 +19,16 @@ def _item(**kw: Any) -> today.ActivityItem:
     return today.ActivityItem(**{**base, **kw})
 
 
+@pytest.fixture(autouse=True)
+def _on_the_team() -> Any:
+    from openexecutive.orchestrator.schedule_tools import current_session
+    from openexecutive.orchestrator.session import Session
+
+    token = current_session.set(Session(caller_person_id=1))
+    yield
+    current_session.reset(token)
+
+
 def test_it_reads_the_shared_feed_for_the_window_asked(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, Any] = {}
 
@@ -80,6 +90,7 @@ def test_only_the_team_and_its_own_runs_read_it(monkeypatch: pytest.MonkeyPatch)
         return json.loads(asyncio.run(activity_tools.handle_list_my_activity({})))
 
     for session, allowed in (
+        (None, False),  # nothing says who is asking
         (Session(caller_person_id=None), False),  # an MCP caller off the roster
         (Session(caller_person_id=7), True),  # someone on the team
         (Session(unattended=True), True),  # its own scheduled work

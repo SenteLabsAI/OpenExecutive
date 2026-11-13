@@ -71,8 +71,9 @@ def _refusal() -> str | None:
         if answers_off_team_mail():
             return "this list is the team's, and this turn answers someone who is not on it"
         session = current_session.get()
-        if session is not None and not getattr(session, "unattended", False) \
-                and getattr(session, "caller_person_id", None) is None:
+        if session is None:
+            return "this list is the team's, and nothing says who is asking"
+        if not getattr(session, "unattended", False) and getattr(session, "caller_person_id", None) is None:
             return "this list is the team's, and whoever is asking is not on the team"
     except Exception:
         logger.warning("list_my_activity: couldn't tell who is asking — refusing", exc_info=True)
