@@ -14,6 +14,7 @@ import pytest
 
 from openexecutive.alerts import store as alerts_store
 from openexecutive.orchestrator import take_the_lead as ttl
+from openexecutive.orchestrator.schedule_tools import current_session
 from openexecutive.people import registry as people_registry
 from openexecutive.people import store as people_store
 from openexecutive.workflows import executive_reflection
@@ -135,3 +136,33 @@ def test_the_look_is_told_to_take_steps_and_sees_what_came_in(owner: Any) -> Non
     assert executive_reflection._new_cards_since("2999-01-01T00:00:00+00:00") == ([], False)
     assert executive_reflection._last_look_at() is None
     people_registry.invalidate()
+
+
+def test_malformed_arguments_are_refused_not_run(owner: Any) -> None:
+    seen, call_tool = _calls()
+    asked = ttl.asked_call_tool(call_tool)
+    for bad in ("not json", "[1, 2]", ["x"]):
+        out = json.loads(asyncio.run(asked({"name": SEND, "arguments": bad})))
+        assert "must be an object" in out["error"]
+    assert seen == []
+
+
+def test_the_one_who_asked_never_approves_their_own_held_step(
+    owner: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.memory.decision_ledger import get_decision_instance
+
+    mate = people_store.upsert_person(full_name="Bob Mate", email="bob@co.example")
+    people_registry.invalidate()
+    monkeypatch.setattr(ttl, "_team_only", lambda *_a, **_k: True)
+    monkeypatch.setattr(ttl, "_approver_for", lambda *_a, **_k: mate)
+    token = current_session.set(SimpleNamespace(caller_person_id=mate))  # type: ignore[arg-type]
+    try:
+        hit = ttl.Hit("rule", "your rule about Dana Park says to wait")
+        chat = ttl.hold("message_person", {"person_id": mate, "text": "board deck"}, hit, source="chat", mcp=False)
+        unattended = ttl.hold("message_person", {"person_id": mate, "text": "board"}, hit, source="scheduled", mcp=False)
+    finally:
+        current_session.reset(token)
+    chat_row, other_row = get_decision_instance(chat), get_decision_instance(unattended)
+    assert chat_row is not None and chat_row.approver_person_id == owner.id
+    assert other_row is not None and other_row.approver_person_id == mate

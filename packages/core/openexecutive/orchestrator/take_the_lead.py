@@ -1695,6 +1695,17 @@ def _approver_for(kind: str, text: str, reason: str) -> int | None:
         return None
 
 
+def _asker_id() -> int | None:
+    """The person whose turn this is, or None. Never raises."""
+    try:
+        from openexecutive.orchestrator.schedule_tools import current_session
+
+        value = getattr(current_session.get(), "caller_person_id", None)
+        return int(value) if value is not None else None
+    except Exception:
+        return None
+
+
 def _principal_id() -> int | None:
     from openexecutive.people.registry import get_principal
 
@@ -1859,6 +1870,10 @@ def hold(
     elif _team_only(tool, tool_input):
         approver = _approver_for(hit.kind, "\n".join(_strings(tool_input)), hit.reason)
     else:
+        approver = _principal_id()
+    if source == "chat" and approver is not None and approver == _asker_id():
+        # Someone asked for it on their own turn: the owner's rule holds it
+        # for the owner, never for the one who asked.
         approver = _principal_id()
     private = _is_principal(approver)
     # What it would say quotes the Executive's context: on a card that sits
@@ -2245,9 +2260,11 @@ def asked_call_tool(call_tool: _Handler) -> _Handler:
             try:
                 arguments = json.loads(arguments)
             except (ValueError, RecursionError):
-                return await call_tool(tool_input)  # the gateway refuses it as it would
+                arguments = None
         if not isinstance(arguments, dict):
-            return await call_tool(tool_input)
+            # Run as-is it would skip the rules; held as-is it would be
+            # approved as a different call.
+            return json.dumps({"error": f"{name} was not done: its arguments must be an object."})
 
         async def _inner(_: dict[str, Any]) -> Any:
             return await call_tool(tool_input)
