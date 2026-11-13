@@ -188,6 +188,30 @@ def test_chat_saves_tool_workflow_switched_off(scheduled: list[str]) -> None:
     assert scheduled == []
 
 
+def test_a_tool_workflow_the_person_asked_for_saves_switched_on(
+    scheduled: list[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Their own ask in chat is the yes: no review card, no second switch."""
+    monkeypatch.setattr(wat, "_person_asked", lambda: True)
+    d = _with_cadence(_action_definition())
+    assert "requires_review" not in _draft(d)
+    out = _save(d, wat._canonical_token(d))
+    assert out["status"] == "saved", out
+    stored = dynamic_store.get_definition("weekly_watch")
+    assert stored is not None and stored.is_active is True
+    assert scheduled == ["weekly_watch"]
+
+
+def test_who_asked_fails_closed_without_a_person() -> None:
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    token = current_session.set(None)
+    try:
+        assert wat._person_asked() is False
+    finally:
+        current_session.reset(token)
+
+
 def test_under_hands_off_a_tool_workflow_saves_switched_on(
     scheduled: list[str], monkeypatch: pytest.MonkeyPatch,
 ) -> None:

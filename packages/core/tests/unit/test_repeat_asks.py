@@ -44,8 +44,9 @@ def test_third_monday_offers_weekly_at_the_hour_they_asked(db):
     assert _ask(db, "can you pull the pipeline summary please", _monday(1)) is None
     offer = _ask(db, "Pipeline summary for this week?", _monday(2))
     assert offer is not None
-    # 08:00 New York (EDT on 10-19, EST after 11-01) is 13:00 UTC in November.
-    assert offer["cadence"] == "weekly@mon@13:00"
+    # Saved in the company's zone, as workflow cadences are: 08:00 New York
+    # all year, never its UTC hour.
+    assert offer["cadence"] == "weekly@mon@08:00"
     assert offer["ask"] == "Pipeline summary for this week?"
     assert len(offer["asked_at"]) == 3
     assert [o["id"] for o in repeat_asks.open_offers(7, db_path=db)] == [offer["id"]]
@@ -62,7 +63,7 @@ def test_asks_inside_one_week_are_daily(db):
     _ask(db, "cash position update", start)
     _ask(db, "cash position update", start + timedelta(days=1))
     offer = _ask(db, "what's the cash position update", start + timedelta(days=2, hours=2))
-    assert offer is not None and offer["cadence"] == "daily@14:00"
+    assert offer is not None and offer["cadence"] == "daily@09:00"
 
 
 def test_different_asks_and_other_people_do_not_count(db):

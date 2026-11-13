@@ -116,7 +116,7 @@ export default function AsMeCard({
             <div className="min-w-0 flex-1">
               {state === "ready" && lead && (
                 <p className="text-[15px] font-semibold text-fg">
-                  {things(lead.done_today ?? 0)} done today, {lead.left_today ?? 0} left for you
+                  {things(lead.done_today ?? 0)} done today
                 </p>
               )}
               <p className="mt-1 text-sm text-fg-muted">

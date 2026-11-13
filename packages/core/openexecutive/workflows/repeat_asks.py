@@ -154,9 +154,10 @@ _DOW = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 
 def timing(asked: list[datetime], zone: ZoneInfo) -> str:
-    """The cadence (UTC, the scheduler's DSL) for asks made at ``asked``:
-    weekly on their weekday, daily when they fall inside one week, else
-    weekly on the most common day; at the earliest hour they were made."""
+    """The cadence (the scheduler's DSL, in the company's zone, as workflow
+    cadences are) for asks made at ``asked``: weekly on their weekday, daily
+    when they fall inside one week, else weekly on the most common day; at
+    the earliest hour they were made."""
     local = sorted(a.astimezone(zone) for a in asked)
     hour = min(d.hour for d in local)
     days = Counter(d.weekday() for d in local)
@@ -168,14 +169,9 @@ def timing(asked: list[datetime], zone: ZoneInfo) -> str:
         weekday = local[-1].weekday()
     else:
         weekday = days.most_common(1)[0][0]
-    # The next such local time, read back in UTC: the scheduler runs in UTC.
-    last = local[-1]
-    ahead = (weekday - last.weekday()) % 7 or 7
-    day = last.date() + timedelta(days=ahead)
-    at = datetime(day.year, day.month, day.day, hour, 0, tzinfo=zone).astimezone(UTC)
     if weekly:
-        return f"weekly@{_DOW[at.weekday()]}@{at:%H:%M}"
-    return f"daily@{at:%H:%M}"
+        return f"weekly@{_DOW[weekday]}@{hour:02d}:00"
+    return f"daily@{hour:02d}:00"
 
 
 def _verified_person(session: Any, person_id: int | None) -> Any:

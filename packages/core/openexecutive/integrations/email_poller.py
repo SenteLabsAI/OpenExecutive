@@ -753,6 +753,13 @@ async def _handle_mail(
         private_rows(private),
         rows_for_person(teammate_id) if teammate_id is not None else contextlib.nullcontext(),
     ):
+        if not sender_in_roster:
+            from openexecutive.integrations import roster_intake
+
+            if roster_intake.looks_like_phishing(raw) and not _is_contact(from_addr):
+                # A stranger fishing for sign-in details, or giving the AI
+                # orders: no reply, no "Who is" card and no turn, one alert.
+                return await _drop_phishing(mail, raw, display_name, private=private, done=done)
         if not sender_in_roster and mailbox is None and not _is_contact(from_addr):
             # A source mails the turn's answer, and this sender is neither on
             # the team nor a contact, so there is no one it could go to: the
@@ -894,6 +901,64 @@ def _is_contact(from_addr: str) -> bool:
     except Exception:  # noqa: BLE001 - unknown reads as a stranger.
         logger.warning("contact lookup failed; the mail is treated as a stranger's", exc_info=True)
         return False
+
+
+async def _drop_phishing(
+    mail: InboundMail,
+    raw: str,
+    display_name: str,
+    *,
+    private: bool,
+    done: Callable[[], Awaitable[None]] | None,
+) -> str:
+    """Mail from someone off the People list that looks like phishing: one
+    private alert for the principal, and nothing else (no acknowledgement,
+    no "Who is" card, no turn). Returns what happened."""
+    from openexecutive.alerts.models import PRIVATE_ALERT_TAG, AlertSeverity
+    from openexecutive.alerts.store import insert_alert
+    from openexecutive.audit import log_event as audit_log
+    from openexecutive.people.store import find_principal_person
+
+    msg = mail.message
+    header, _body, _att = _split_gmail_content(raw)
+    subject_line = next((ln for ln in header if ln.lower().startswith("subject:")), "")
+    subject = " ".join(subject_line[len("subject:"):].split())[:120]
+    who = f"{display_name} <{msg.from_addr}>" if display_name else msg.from_addr
+    try:
+        principal = find_principal_person()
+        insert_alert(
+            source="phishing",
+            external_id=f"phishing:{msg.message_id}",
+            severity=AlertSeverity.MEDIUM.value,
+            headline=f"Looks like phishing: {subject or 'an email'}"[:160],
+            body=(
+                f"{who} wrote to the Executive's inbox. It asks for passwords or codes, "
+                "threatens to close an account, or gives the Executive orders, so it got "
+                "no reply and nothing in it was done. Delete it, or add the sender on "
+                "People if you know them."
+            ),
+            topic_tags=[PRIVATE_ALERT_TAG],
+            dedup_key=f"phishing:{msg.message_id}",
+            routed_to_person_id=principal.id if principal is not None else None,
+        )
+    except Exception:
+        logger.exception("email: couldn't raise the phishing alert for message=%s", msg.message_id)
+    audit_log(
+        "integration_inbound",
+        f"Email from {msg.from_addr} looks like phishing: alerted, not answered",
+        actor="email",
+        details={
+            "channel": "email",
+            "provider": mail.source,
+            "from": msg.from_addr,
+            "message_id": msg.message_id,
+            "outcome": "dropped_phishing",
+        },
+        private=private,
+    )
+    if done is not None:
+        await done()
+    return "alerted: it looks like phishing"
 
 
 async def _hold_from_source(
@@ -1287,6 +1352,10 @@ async def _run_executive(
     # text from its first word: the whole turn is held as one that read
     # outside content (orchestrator.outside_content.SENDER).
     session.sender_off_team = person is None
+    if session.sender_off_team:
+        from openexecutive.integrations import roster_intake
+
+        session.sender_gave_orders = roster_intake.looks_like_phishing(raw_email)
 
     # Multi-peer co-presence: parse To+Cc headers and resolve each
     # recipient to a Person via find_person_by_email. Skip the From

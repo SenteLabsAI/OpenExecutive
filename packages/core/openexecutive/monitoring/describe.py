@@ -30,6 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from openexecutive.monitoring import store as ms
 from openexecutive.monitoring.models import (
     MODE_ACTIVE,
+    MODE_DRY_RUN,
     TRIGGER_ONLY_BIG,
     WatchlistItem,
     is_valid_cadence,
@@ -141,6 +142,9 @@ SYSTEM = (
     "- cadence: how often they want to hear. real_time only when they ask for "
     "right away; otherwise 15min for stocks and status pages, daily for "
     "searches, pages and feeds, unless they said otherwise.\n"
+    "- mode: dry_run (Watch quietly: only in their brief, never a card) only "
+    "when they ask to hear about it only in the brief or quietly; otherwise "
+    "leave it out.\n"
     "- display_label: a short name for what is watched, e.g. 'Initech' or "
     "'Stripe status'.\n"
     "- notes: one short line on why, in their words, when they said why.\n"
@@ -158,7 +162,7 @@ def _tool() -> dict[str, Any]:
     from openexecutive.orchestrator.watchlist_tools import ADD_WATCHLIST_ENTRY_TOOL
 
     chat = ADD_WATCHLIST_ENTRY_TOOL["input_schema"]["properties"]
-    keep = ("signal_type", "target", "display_label", "cadence", "notes")
+    keep = ("signal_type", "target", "display_label", "cadence", "mode", "notes")
     properties: dict[str, Any] = {k: dict(chat[k]) for k in keep}
     properties["trigger"] = {
         "type": "object",
@@ -355,7 +359,8 @@ async def build_draft(payload: dict[str, Any]) -> WatchDraft:
     cadence = _str(payload.get("cadence"), 20) or ("daily" if signal_type == "query" else "15min")
     if not is_valid_cadence(cadence):
         cadence = "daily" if signal_type == "query" else "15min"
-    mode = MODE_ACTIVE
+    # Watch quietly when they asked for the brief only; else it tells them.
+    mode = MODE_DRY_RUN if payload.get("mode") == MODE_DRY_RUN else MODE_ACTIVE
 
     label = _str(payload.get("display_label"), _LABEL_MAX)
     trigger = clean_trigger(signal_type, payload.get("trigger"))
@@ -384,7 +389,7 @@ async def build_draft(payload: dict[str, Any]) -> WatchDraft:
         mode=mode,
         notes=_str(payload.get("notes"), _NOTES_MAX),
         watching=watching_line(signal_type, target, label),
-        tell_you_when=trigger_line(signal_type, trigger),
+        tell_you_when=trigger_line(signal_type, trigger) + (", only in your brief" if mode == MODE_DRY_RUN else ""),
         how_often=checks_line(signal_type, cadence),
     )
 

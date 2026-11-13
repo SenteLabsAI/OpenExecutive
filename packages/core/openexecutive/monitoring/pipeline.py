@@ -41,11 +41,13 @@ from openexecutive.memory.episodic import insert_scheduled_action
 from openexecutive.monitoring import store
 from openexecutive.monitoring.enrichment import build_company_context, enrich_signal
 from openexecutive.monitoring.models import (
+    EVENT_QUIET_FIND,
     MODE_ACTIVE,
     MODE_DRY_RUN,
     ORIGIN_RESEARCH_PROPOSED,
     OUTCOME_ALERTED,
     OUTCOME_FAILED,
+    OUTCOME_HELD_BRIEF,
     OUTCOME_HELD_DIGEST,
     OUTCOME_SUPPRESSED_BASELINE,
     OUTCOME_SUPPRESSED_BELOW_FLOOR,
@@ -612,6 +614,29 @@ def _audit_suppressed(
     )
 
 
+def _note_for_brief(item: WatchlistItem, signal: Signal) -> None:
+    """A quiet watch's find, for the next brief to report (it reads this
+    audit row as something handled since the last one)."""
+    from openexecutive.monitoring.describe import watch_title
+
+    try:
+        label = watch_title(item)
+    except Exception:
+        label = item.target
+    summary = _without_links(collapse_whitespace(signal.normalized_summary))[:200]
+    audit_log(
+        EVENT_QUIET_FIND,
+        f"Quiet watch on {label}: {summary}",
+        actor="external_monitor",
+        details={
+            "watchlist_id": item.id,
+            "watchlist_slug": item.slug,
+            "source_kind": signal.source_kind,
+            "provenance_url": _safe_url(signal.provenance_url),
+        },
+    )
+
+
 # During a lost race, how far past our own clock an entry may be dated and
 # still be judged now (ordinary publisher drift); anything later is deferred
 # rather than recorded, since nothing we fetched can honestly be dated later.
@@ -848,6 +873,7 @@ _HELD_WORDS: dict[str, str] = {
     OUTCOME_SUPPRESSED_BELOW_FLOOR: "Not a big change, so it stayed quiet.",
     OUTCOME_SUPPRESSED_LOW_RELEVANCE: "Not close enough to your company, so it stayed quiet.",
     OUTCOME_HELD_DIGEST: "It already told you today, so this waits for the next summary.",
+    OUTCOME_HELD_BRIEF: "It is watching quietly, so this goes in your next brief.",
 }
 
 
@@ -1095,10 +1121,16 @@ async def _poll_one_watchlist_item(
             continue
 
         if item.mode == MODE_DRY_RUN:
-            _suppress(
-                signal_id, item, signal, OUTCOME_SUPPRESSED_DRY_RUN,
-                tally=tally, db_path=db_path,
-            )
+            if item.origin == ORIGIN_RESEARCH_PROPOSED:
+                # A suggestion waiting for the person's OK tells no one.
+                _suppress(
+                    signal_id, item, signal, OUTCOME_SUPPRESSED_DRY_RUN,
+                    tally=tally, db_path=db_path,
+                )
+            else:
+                # Watch quietly: never a card, only a line in the next brief.
+                _suppress(signal_id, item, signal, OUTCOME_HELD_BRIEF, tally=tally, db_path=db_path)
+                _note_for_brief(item, signal)
             continue
 
         # The watch's own trigger was met (``_matches`` above), so this

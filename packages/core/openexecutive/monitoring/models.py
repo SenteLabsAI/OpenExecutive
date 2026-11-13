@@ -247,11 +247,18 @@ OUTCOME_FAILED = "failed"
 # after the window folds every held change into ONE alert (the daily digest
 # for a busy page), and each held row then moves to ``alerted``.
 OUTCOME_HELD_DIGEST = "held_digest"
+# A watch set to Watch quietly (MODE_DRY_RUN, not a suggestion): never a card;
+# the change goes in the next brief instead (``EVENT_QUIET_FIND``).
+OUTCOME_HELD_BRIEF = "held_brief"
+# The audit row a quiet watch's find writes; the brief reads it as one of the
+# things it handled (briefing.brief_state.HANDLED_EVENT_KINDS).
+EVENT_QUIET_FIND = "watch_found_quietly"
 PAGE_WATCH_DIGEST_HOURS = 24
 
 _VALID_OUTCOMES = frozenset({
     OUTCOME_ALERTED,
     OUTCOME_HELD_DIGEST,
+    OUTCOME_HELD_BRIEF,
     OUTCOME_SUPPRESSED_BASELINE,
     OUTCOME_SUPPRESSED_STALE,
     OUTCOME_SUPPRESSED_DRY_RUN,

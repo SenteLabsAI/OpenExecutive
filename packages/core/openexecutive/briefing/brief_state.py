@@ -80,6 +80,8 @@ HANDLED_EVENT_KINDS: dict[str, str] = {
     },
     "watchlist_research_added": "watching",
     "watchlist_auto_disabled": "stopped_watching",
+    # What a watch set to Watch quietly found: told here, never on a card.
+    "watch_found_quietly": "quiet_watch_found",
 }
 
 # The nudge audit summary opens with "[alert N] " so `alerts.review` can count

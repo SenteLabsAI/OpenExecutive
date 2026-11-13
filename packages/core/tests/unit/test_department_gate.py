@@ -262,6 +262,35 @@ def test_declining_is_recorded(
     assert [e for e, _ in events][-1] == "department_action_declined"
 
 
+def test_an_email_card_can_be_changed_before_approving(
+    client: TestClient, team: dict[str, Person], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    done: list[dict[str, Any]] = []
+
+    async def carry_out(payload: dict[str, Any], *, by_principal: bool, own_card: bool = False) -> str:
+        done.append(payload)
+        return json.dumps({"status": "sent"})
+
+    monkeypatch.setattr(ttl, "carry_out", carry_out)
+    mail = {"to": "dana@else.example", "subject": "Hi", "body": "Draft text"}
+    held = levels.hold("google_workspace__send_gmail_message", mail, mcp=True, reason=levels.OWN_MAIL,
+                       session=_ask_as(team["sam"]))
+    decision_id = json.loads(held)["decision_instance_id"]
+    instance = ledger.get_decision_instance(decision_id)
+    assert instance is not None
+    fields = json.loads(instance.proposed_payload_json)["fields"]
+    assert [f["field"] for f in fields] == ["subject", "body"]
+    owner = {"x-caller-email": "olivia@co.example"}
+    # Who it goes to is never changed from the card.
+    bad = client.post(f"/decisions/{decision_id}/approve", json={"edits": {"input": {"to": "x@else.example"}}},
+                      headers=owner)
+    assert bad.status_code == 422
+    response = client.post(f"/decisions/{decision_id}/approve",
+                           json={"edits": {"input": {"body": "Better text"}}}, headers=owner)
+    assert response.status_code == 200, response.text
+    assert [p["input"] for p in done] == [{**mail, "body": "Better text"}]
+
+
 def _rename(n: int) -> dict[str, Any]:
     return {"file_id": f"f{n}", "name": f"2026 Tax - Lot {n}.pdf"}
 

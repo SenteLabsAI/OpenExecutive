@@ -226,7 +226,7 @@ function WatchCard({
           </div>
         )}
         {item.mode === "dry_run" && (
-          <div className="text-sm text-fg-subtle mt-1.5">Watching quietly</div>
+          <div className="text-sm text-fg-subtle mt-1.5">Only in your brief</div>
         )}
         {forLines(item).map((line) => (
           <div key={line} className="text-sm text-fg-subtle mt-1.5 truncate">

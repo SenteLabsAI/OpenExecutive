@@ -1,7 +1,8 @@
 "use client";
 
-// A Take the lead card from training: something the Executive wanted to do on
-// its own that you haven't allowed yet. Approve does it once; with "Do this on
+// A Take the lead card: something the Executive wanted to do on its own that
+// waited (in training, a rule, the Approvals level). Approve does it once; on
+// a training card, with "Do this on
 // its own next time" ticked it also lets it do this (the same action with the
 // same person) from now on;
 // Edit changes it first, and with "Do it like this next time" ticked keeps
@@ -25,8 +26,12 @@ import CardTopRow from "./CardTopRow";
 // The tag a training card carries (orchestrator.take_the_lead.TRAINING_TAG).
 export const LEAD_TRAINING_TAG = "take_the_lead:training";
 
-export function isLeadTraining(proposal: ProposalItem): boolean {
-  return proposal.decision_instance_id != null && (proposal.topic_tags ?? []).includes(LEAD_TRAINING_TAG);
+// Every Take the lead card carries its class (take_the_lead.DECISION_CLASS).
+export const LEAD_ACTION_TAG = "decision_class:take_the_lead_action";
+
+export function isLeadCard(proposal: ProposalItem): boolean {
+  const tags = proposal.topic_tags ?? [];
+  return proposal.decision_instance_id != null && (tags.includes(LEAD_TRAINING_TAG) || tags.includes(LEAD_ACTION_TAG));
 }
 
 export default function LeadTrainingCard({
@@ -80,7 +85,10 @@ export default function LeadTrainingCard({
   const fields = card?.fields ?? [];
   // What it would send or set, shown in full: the card's own fields, or a
   // connected app's email.
-  const shownFields = fields.length > 0 ? fields : (card?.details ?? []);
+  // A connected app's email shows who it goes to too: its details, in full.
+  const details = card?.details ?? [];
+  const shownFields = details.length > 0 ? details : fields;
+  const training = card ? card.kind === "training" : (proposal.topic_tags ?? []).includes(LEAD_TRAINING_TAG);
   // Older cards saved only the summary, which quotes the start of the
   // message: with the message shown below, the title keeps just who.
   const headline =
@@ -98,7 +106,7 @@ export default function LeadTrainingCard({
         emphasized ? "border-accent/60 ring-1 ring-accent/25 shadow-sm" : "border-line"
       }`}
     >
-      <CardTopRow need="Needs your OK" mode="take_the_lead" at={proposal.created_at} tag="In training" />
+      <CardTopRow need="Needs your OK" mode="take_the_lead" at={proposal.created_at} tag={training ? "In training" : undefined} />
       <div className="min-w-0 text-base sm:text-[17px] font-semibold leading-snug text-fg break-words">
         {headline}
       </div>
@@ -126,7 +134,11 @@ export default function LeadTrainingCard({
         </div>
       )}
       <p className="mt-2 text-sm leading-relaxed text-fg-muted">
-        It waited because it&apos;s in training. Approve does this once.
+        {training
+          ? "It waited because it’s in training. Approve does this once."
+          : card?.reason
+            ? `It waited because ${card.reason}.`
+            : null}
       </p>
 
       {editing ? (

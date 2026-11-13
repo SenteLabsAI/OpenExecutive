@@ -15,12 +15,21 @@ Row encoding (mirrors ``departments/cadence.py``):
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 
 from openexecutive.workflows.dynamic_models import DynamicWorkflowDef
 
 logger = logging.getLogger(__name__)
+
+
+def _zone() -> tzinfo:
+    try:
+        from openexecutive.memory.workspace_settings import get_user_timezone
+
+        return get_user_timezone()
+    except Exception:
+        return UTC
 
 
 def schedule_dynamic_workflow_cadence(
@@ -38,7 +47,9 @@ def schedule_dynamic_workflow_cadence(
     from openexecutive.memory.episodic import insert_scheduled_action
 
     base = (after or datetime.now(UTC)).astimezone(UTC)
-    run_at = _parse_cadence_spec(defn.cadence, base)
+    # A cadence's times are the company's own (Settings), summer time and
+    # all: "weekly@mon@09:00" is 9 AM there every Monday.
+    run_at = _parse_cadence_spec(defn.cadence, base, _zone())
     if run_at is None:
         logger.warning(
             "dynamic_cadence: invalid spec %r for workflow %r", defn.cadence, defn.name

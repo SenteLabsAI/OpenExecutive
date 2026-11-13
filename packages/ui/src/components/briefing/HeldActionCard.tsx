@@ -7,9 +7,11 @@
 
 import { useEffect, useState } from "react";
 
+import HeldFieldsEdit from "@/components/HeldFieldsEdit";
 import Button from "@/components/ui/Button";
 import {
   approveDecision,
+  approveLeadCard,
   getHeldAction,
   rejectDecision,
   type HeldActionPayload,
@@ -38,6 +40,7 @@ export default function HeldActionCard({
   const decisionId = proposal.decision_instance_id;
   const [held, setHeld] = useState<HeldActionPayload | null>(null);
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -79,6 +82,20 @@ export default function HeldActionCard({
       {held?.reason && (
         <p className="mt-1.5 text-[15px] leading-relaxed text-fg-muted">It waited because {held.reason}.</p>
       )}
+      {editing && held ? (
+        <HeldFieldsEdit
+          id={decisionId}
+          fields={held.fields}
+          busy={busy}
+          onCancel={() => setEditing(false)}
+          onApprove={(changed) =>
+            void run(() =>
+              Object.keys(changed).length > 0 ? approveLeadCard(decisionId, { input: changed }) : approveDecision(decisionId),
+            )
+          }
+        />
+      ) : (
+      <>
       {held && held.details.length > 0 && (
         <dl className="mt-3 flex flex-col gap-2 rounded-xl border border-line bg-surface p-3">
           {held.details.map((d) => (
@@ -97,10 +114,17 @@ export default function HeldActionCard({
         >
           Approve
         </Button>
+        {held && held.fields.length > 0 && (
+          <Button variant="secondary" disabled={busy} onClick={() => setEditing(true)}>
+            Edit
+          </Button>
+        )}
         <Button variant="ghost" disabled={busy} onClick={() => void run(() => rejectDecision(decisionId))}>
           Decline
         </Button>
       </div>
+      </>
+      )}
       {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
     </div>
   );
