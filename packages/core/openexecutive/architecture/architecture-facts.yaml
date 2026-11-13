@@ -5388,7 +5388,15 @@ chat:
     (check_figure): every number in the figure is in the reply, the source
     shares a word with what was read or the reply, and the lesson deny
     patterns and non-Latin check refuse links, handles, markup, instruction
-    and approval talk. Same subject (stem key) replaces; 200 per person;
+    and approval talk. The pass keeps only lasting numbers about the
+    business (its own prices, plans, targets, terms, a customer's or deal's
+    numbers, ids it was issued); shopping and web-search lookups and live
+    counts it would look up again (sign-ups, a waitlist, open issues, stars)
+    are left out, since they filled the list with noise. Same subject (stem
+    key) replaces, and so does the same value under another name for it
+    (same_figure: a value of 6+ characters, one subject's words a subset
+    of the other's, at least two, and no qualifier such as plan, target or
+    limit among the extra words); 200 per person;
     WORKED_OUT_MAX_PER_DAY passes (default 40); WORKED_OUT_ENABLED. Read back
     by build_worked_out_block as a <worked_out> user-turn block, up to five
     by shared words with the message, labelled data and "from before", only
