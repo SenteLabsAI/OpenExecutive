@@ -5,6 +5,7 @@ import { PROFILE_COPY } from "@/components/company-profile/profileCopy";
 import { profileWording } from "@/components/shell/navConfig";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import { startOnboarding, submitOnboardAnswer, type OnboardStatus } from "@/lib/api";
+import { isImeComposing } from "@/lib/imeComposing";
 
 interface OnboardWizardProps {
   onComplete: () => void;
@@ -57,7 +58,7 @@ export default function OnboardWizard({ onComplete }: OnboardWizardProps) {
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !isImeComposing(e) && !e.shiftKey) {
       e.preventDefault();
       handleSubmit();
     }

@@ -8,6 +8,7 @@
 import { useState } from "react";
 
 import Button, { buttonClass } from "@/components/ui/Button";
+import { isImeComposing } from "@/lib/imeComposing";
 
 const FIELD =
   "w-full rounded-xl border border-line bg-surface px-3 py-2.5 text-[15px] leading-snug text-fg focus:outline-none focus:ring-2 focus:ring-accent/40 disabled:opacity-50";
@@ -91,7 +92,7 @@ export default function CardAsk({
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              if (e.key === "Enter" && !isImeComposing(e) && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault();
                 void send(text);
               }

@@ -31,6 +31,7 @@ import SectionTabs from "@/components/ui/SectionTabs";
 import Icon from "@/components/Icon";
 import { domainBulkActions, type BulkAction } from "@/lib/reviewBulk";
 import { PageSpinner, Spinner } from "@/components/ui/Spinner";
+import { isImeComposing } from "@/lib/imeComposing";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -431,7 +432,7 @@ function ItemSlideOver({
                 <input
                   value={newCorrection}
                   onChange={(e) => setNewCorrection(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleAddAnnotation(); } }}
+                  onKeyDown={(e) => { if (e.key === "Enter" && !isImeComposing(e) && !e.shiftKey) { e.preventDefault(); void handleAddAnnotation(); } }}
                   placeholder="Add a correction or clarification…"
                   aria-label="New correction"
                   className="flex-1 min-w-0 h-11 bg-surface-elevated border border-line-strong rounded-xl px-3 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/50 placeholder:text-fg-subtle"

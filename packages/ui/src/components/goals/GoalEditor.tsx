@@ -18,6 +18,7 @@ import {
 } from "@/lib/api";
 import { shownStatus } from "@/lib/goalGroups";
 import { formatRelativeTime } from "@/lib/relativeTime";
+import { isImeComposing } from "@/lib/imeComposing";
 
 // Goal rows (view / edit / delete) and the add-goal form, shared by a
 // department's page and /goals. A goal has an owner and, optionally, a
@@ -85,7 +86,7 @@ function cls(...parts: (string | false | undefined)[]) {
 // in flight can't land on a form the user already closed.
 function formKeys(onSubmit: () => void, onCancel: () => void, saving: boolean) {
   return (e: React.KeyboardEvent<HTMLElement>) => {
-    if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+    if (e.key === "Enter" && !isImeComposing(e)) {
       e.preventDefault();
       onSubmit();
     } else if (e.key === "Escape" && !saving) {
