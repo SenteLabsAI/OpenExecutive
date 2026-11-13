@@ -82,12 +82,20 @@ def _refusal() -> str | None:
 
 
 def _reader() -> int | None:
-    """Who this turn answers: their own items join the team's. None on an
-    unattended run, which reads the team's alone."""
+    """Who this turn answers: their own items join the team's, in a
+    conversation only they read. None (the team's alone) on an unattended
+    run, or where others read the reply (a channel, a shared chat, a call)."""
+    from openexecutive.delegation.settings import private_conversation
     from openexecutive.orchestrator.schedule_tools import current_session
 
     session = current_session.get()
     if session is None or getattr(session, "unattended", False):
+        return None
+    try:
+        if not private_conversation(session):
+            return None
+    except Exception:
+        logger.warning("list_my_activity: couldn't tell whether the chat is private", exc_info=True)
         return None
     person_id = getattr(session, "caller_person_id", None)
     return person_id if isinstance(person_id, int) and not isinstance(person_id, bool) else None

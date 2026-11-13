@@ -339,7 +339,8 @@ class MorningBriefWorkflow(Workflow):
         try:
             activity_response = today_route._build_activity(
                 20, since=since, exclude_workflows=today_route.RHYTHM_WORKFLOWS,
-                viewer=today_route.principal_id(),
+                # The principal's own items only where they alone read it.
+                viewer=today_route.principal_id() if _private_ok() else None,
             )
             activity = [item.model_dump() for item in activity_response.items]
         except Exception:

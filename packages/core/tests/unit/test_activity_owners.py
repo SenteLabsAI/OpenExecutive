@@ -183,8 +183,9 @@ async def test_list_my_activity_reads_the_askers_feed(team: tuple[Path, int, int
         topic_tags=["browser-handover"], routed_to_person_id=owner, db_path=db,
     )
 
-    async def ask(person: int) -> set[str]:
-        token = current_session.set(SimpleNamespace(caller_person_id=person, unattended=False))  # type: ignore[arg-type]
+    async def ask(person: int, *, private: bool = True) -> set[str]:
+        session = SimpleNamespace(caller_person_id=person, unattended=False, from_web_chat=private)
+        token = current_session.set(session)  # type: ignore[arg-type]
         try:
             out = json.loads(await activity_tools.handle_list_my_activity({}))
         finally:
@@ -193,3 +194,5 @@ async def test_list_my_activity_reads_the_askers_feed(team: tuple[Path, int, int
 
     assert "Waiting on you: sign in to the pharmacy" in await ask(owner)
     assert "Waiting on you: sign in to the pharmacy" not in await ask(mate)
+    # Where others read the reply (a channel, a call), not even the owner's own.
+    assert "Waiting on you: sign in to the pharmacy" not in await ask(owner, private=False)
