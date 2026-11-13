@@ -842,3 +842,15 @@ def test_an_outlook_mailbox_reads_exchanges_verdict(monkeypatch: pytest.MonkeyPa
     broken = AsyncMock()
     broken.call_tool.side_effect = RuntimeError("down")
     assert asyncio.run(fc.sender_authenticated(broken, "m1", OWNER)) is False
+
+
+def test_why_a_sender_isnt_confirmed_names_the_check_never_the_text() -> None:
+    why = fc.why_not_authenticated
+    sep = "Subject: Hi\n\n--- RAW MIME ---\n"
+    assert why("", "ann@client.example") == "no raw message"
+    assert why("Subject: secret words", "ann@client.example") == "no raw section (21 chars)"
+    raw = sep + "Authentication-Results: mx.google.com; dmarc=fail\nFrom: <ann@client.example>\n\nbody"
+    assert why(raw, "bob@other.example") == "From differs"
+    assert why(raw, "ann@client.example") == "authserv='mx.google.com' trusted=True dmarc=fail"
+    no_results = sep + "From: <ann@client.example>\n\nbody"
+    assert why(no_results, "ann@client.example") == "no Authentication-Results"

@@ -588,6 +588,21 @@ def _known(address: str) -> bool:
         return False
 
 
+def _names_of(addresses: list[str]) -> list[str]:
+    """The People names (contacts too) of these addresses. Never raises."""
+    from openexecutive.people.store import find_person_by_address
+
+    names: list[str] = []
+    for address in addresses[:20]:
+        try:
+            person = find_person_by_address(address, include_contacts=True)
+        except Exception:
+            continue
+        if person is not None and person.full_name:
+            names.append(person.full_name)
+    return names
+
+
 def _team_only(tool: str, tool_input: dict[str, Any]) -> bool:
     """Whether everyone the action reaches is on the team. Anyone else (a
     contact, someone unknown) is the principal's to approve: only their
@@ -1959,6 +1974,9 @@ def _hit(name: str, tool_input: dict[str, Any], *, mcp: bool) -> tuple[Hit | Non
         text = "\n".join([*_strings(tool_input), *_targets(name, tool_input)[1]])
         addresses, _ = _targets(name, tool_input)
         recipients = sorted({a.lower() for a in [*_EMAIL_RE.findall(text), *addresses]})
+        # A rule naming someone ("Always wait for Dana Price") meets mail to
+        # their address too.
+        text = "\n".join([text, *_names_of(recipients)])
         rule = _rule_hit(rules, text, recipients)
         if rule is not None:
             return rule, None
@@ -2071,6 +2089,7 @@ _SOURCE_WHY: dict[str, str] = {
     "reflection": "It came up while it looked over what's going on.",
     "research": "It came up in its research.",
     "scheduled": "Something you or it scheduled came due.",
+    "chat": "Someone asked for it.",
 }
 
 
@@ -2117,6 +2136,123 @@ def gated_call_tool(call_tool: _Handler, *, source: str) -> _Handler:
             return await call_tool(tool_input)
 
         return await _gated(name, _inner, inner_input, source=source, mcp=True)
+
+    return _call
+
+
+# --------------------------------------------------------------------------- #
+# Your rules and In training on a step someone asked for
+# --------------------------------------------------------------------------- #
+# Approvals (orchestrator.levels) decides first on every turn. On a turn
+# someone is in, what it lets run still meets the owner's Waits rules, then
+# In training, as an unattended run's steps do (``_hit``). The owner's own ask
+# is the yes: their turns skip both. Unattended runs go through ``_gated``.
+
+
+def asked_checks_apply(session: Any) -> bool:
+    """Whether this turn's steps meet Your rules and In training here: a
+    turn someone is in (a teammate, a contact's mail, a shared chat) that is
+    not the owner's own ask. Fails closed: an error is yes."""
+    if session is None or getattr(session, "unattended", False) is True:
+        return False
+    try:
+        from openexecutive.orchestrator.content_trust import principal_speaking
+
+        return not principal_speaking(session)
+    except Exception:
+        logger.warning("take_the_lead: couldn't tell who asked — checking the rules", exc_info=True)
+        return True
+
+
+def _asked_hit(name: str, tool_input: dict[str, Any], *, mcp: bool) -> Hit | None:
+    """Why an asked-for step waits: a Waits rule, then In training. Never
+    raises: an error holds."""
+    try:
+        lead = get(SCOPE_EXECUTIVE)
+        rules = list_rules([SCOPE_COMPANY])
+        text = "\n".join([*_strings(tool_input), *_targets(name, tool_input)[1]])
+        addresses, _ = _targets(name, tool_input)
+        recipients = sorted({a.lower() for a in [*_EMAIL_RE.findall(text), *addresses]})
+        # A rule naming someone ("Always wait for Dana Price") meets mail to
+        # their address too.
+        text = "\n".join([text, *_names_of(recipients)])
+        rule = _rule_hit(rules, text, recipients)
+        if rule is not None:
+            return rule
+        if lead.training:
+            grant = allowance(name, tool_input, mcp=mcp)
+            if (find_allowed(grant[0]) if grant is not None else None) is None:
+                return Hit(TRAINING, "it's in training and you haven't allowed this yet")
+        return None
+    except Exception:
+        logger.warning("take_the_lead: the rules check failed — holding the step", exc_info=True)
+        return Hit("rule", "its rules couldn't be read")
+
+
+async def _asked(name: str, inner: _Handler, tool_input: dict[str, Any], *, mcp: bool) -> Any:
+    if (not mcp and _only_to_principal(name, tool_input)) or (mcp and _mail_only_to_principal(name, tool_input)):
+        return await inner(tool_input)
+    hit = _asked_hit(name, tool_input, mcp=mcp)
+    if hit is None:
+        return await inner(tool_input)
+    if mcp and not str(name or "").strip():
+        return json.dumps({"error": "call_tool needs the tool's name: find it with search_tools first."})
+    missing = [] if mcp else missing_args(name, tool_input)
+    if missing:
+        return json.dumps({"error": (
+            f"{name} was not done: it needs {', '.join(missing)}. Call it again with "
+            f"{'them' if len(missing) > 1 else 'it'} filled in."
+        )})
+    try:
+        decision_id = hold(name, tool_input, hit, source="chat", mcp=mcp)
+    except Exception:
+        logger.exception("take_the_lead: couldn't hold %s", name)
+        return json.dumps({"error": f"{name} was not done: it needs the owner's approval first. Do not retry."})
+    return json.dumps({
+        "status": "waiting_for_approval",
+        "decision_instance_id": decision_id,
+        "message": (
+            f"Not done yet: it waits on an Approve card for the owner because {hit.reason}. "
+            "Tell them in one line it's waiting. Do not retry or work around it."
+        ),
+    })
+
+
+def asked_handlers(handlers: dict[str, Any]) -> dict[str, Any]:
+    """``handlers`` with every acting tool behind Your rules and In training."""
+    out = dict(handlers)
+    for name, inner in handlers.items():
+        if name in ACTING_TOOLS:
+            async def _wrapped(tool_input: dict[str, Any], _name: str = name, _inner: Any = inner) -> Any:
+                return await _asked(_name, _inner, tool_input, mcp=False)
+
+            out[name] = _wrapped
+    return out
+
+
+def asked_call_tool(call_tool: _Handler) -> _Handler:
+    """The MCP gateway's ``call_tool`` with acting tools behind Your rules
+    and In training."""
+
+    async def _call(tool_input: dict[str, Any]) -> Any:
+        name = str(tool_input.get("name") or "")
+        if not mcp_tool_acts(name):
+            return await call_tool(tool_input)
+        arguments = tool_input.get("arguments")
+        if arguments is None:
+            arguments = {}
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except (ValueError, RecursionError):
+                return await call_tool(tool_input)  # the gateway refuses it as it would
+        if not isinstance(arguments, dict):
+            return await call_tool(tool_input)
+
+        async def _inner(_: dict[str, Any]) -> Any:
+            return await call_tool(tool_input)
+
+        return await _asked(name, _inner, arguments, mcp=True)
 
     return _call
 

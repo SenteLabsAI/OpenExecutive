@@ -153,6 +153,28 @@ def authenticated_by_gmail(raw: str, from_addr: str) -> bool:
     return headers is not None and headers_authenticated(headers, from_addr)
 
 
+def why_not_authenticated(raw: str, from_addr: str) -> str:
+    """A short, fixed reason ``authenticated_by_gmail`` says no, for the log:
+    never the message's text, only which check failed and the authserv-id
+    and verdict of its newest Authentication-Results."""
+    headers = _raw_headers(raw)
+    if headers is None:
+        return "no raw message" if not raw else f"no raw section ({len(raw)} chars)"
+    _name, raw_from = parseaddr(str(headers.get("From", "")))
+    if raw_from.strip().lower() != from_addr.strip().lower():
+        return "From differs"
+    results = headers.get_all("Authentication-Results") or []
+    if not results:
+        return "no Authentication-Results"
+    if _relayed_by_a_list(headers):
+        return "list headers"
+    newest = " ".join(str(results[0]).split()).lower()
+    authserv = newest.partition(";")[0].strip()[:60]
+    verdict = re.search(r"dmarc=([a-z]+)", newest)
+    trusted = authserv == _GMAIL_AUTHSERV
+    return f"authserv={authserv!r} trusted={trusted} dmarc={verdict.group(1) if verdict else None}"
+
+
 def headers_authenticated(headers: Message, from_addr: str) -> bool:
     """``authenticated_by_gmail`` over a message's parsed headers, in the
     order the message carries them (the Gmail API's own header list, say)."""

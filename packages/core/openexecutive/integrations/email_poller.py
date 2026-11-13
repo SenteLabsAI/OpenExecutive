@@ -478,10 +478,27 @@ async def _prove_sender(gateway: Any, message_id: str, from_addr: str) -> bool:
 
     if await fact_confirmation.sender_authenticated(gateway, message_id, from_addr):
         return True
-    if _MIME_HEADER_RE.search(await fact_confirmation.read_raw(gateway, message_id)):
+    raw = await fact_confirmation.read_raw(gateway, message_id)
+    if _MIME_HEADER_RE.search(raw):
+        _log_unconfirmed(message_id, raw, from_addr)
         return False
     await asyncio.sleep(_PROVE_RETRY_S)
-    return await fact_confirmation.sender_authenticated(gateway, message_id, from_addr)
+    if await fact_confirmation.sender_authenticated(gateway, message_id, from_addr):
+        return True
+    _log_unconfirmed(message_id, raw, from_addr)
+    return False
+
+
+def _log_unconfirmed(message_id: str, raw: str, from_addr: str) -> None:
+    """Which part of the sender check said no, for the log
+    (``fact_confirmation.why_not_authenticated``). Never raises."""
+    from openexecutive.integrations import fact_confirmation
+
+    try:
+        why = fact_confirmation.why_not_authenticated(raw, from_addr)
+    except Exception:  # noqa: BLE001 - a diagnostic only
+        why = "unreadable"
+    logger.info("sender not confirmed for message=%s: %s", message_id, why)
 
 
 async def _handle_one_email(
