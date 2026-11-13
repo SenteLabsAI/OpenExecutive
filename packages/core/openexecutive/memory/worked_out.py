@@ -598,7 +598,9 @@ async def take_figures(reply: str, calls: list[tuple[str, str]], *, today: date,
     read = _read_text(calls)
     if not reply.strip() or not read:
         return []
-    turn = (f"<company>\n{no_tags(_company_note())}\n</company>\n\n"
+    # Off the event loop: the profile is read and parsed from disk.
+    company = await asyncio.to_thread(_company_note)
+    turn = (f"<company>\n{no_tags(company)}\n</company>\n\n"
             f"<what_they_asked>\n{no_tags((asked or '')[:_ASKED_MAX])}\n</what_they_asked>\n\n"
             f"<what_it_read>\n{no_tags(read)}\n</what_it_read>\n\n"
             f"<reply>\n{no_tags(reply)}\n</reply>\n\nToday is {today.isoformat()}.")
