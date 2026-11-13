@@ -117,9 +117,11 @@ async def _collect(wf: DynamicWorkflow) -> list[Any]:
     return [e async for e in wf.run(wf.input_model()(), store=None)]  # type: ignore[arg-type]
 
 
-def _resume(state: WorkflowResumeState, decision: str) -> list[Any]:
+def _resume(
+    state: WorkflowResumeState, decision: str, resolution: WaitForHumanResolution | None = None
+) -> list[Any]:
     wf = DynamicWorkflow(_defn())
-    resolution = WaitForHumanResolution(
+    resolution = resolution or WaitForHumanResolution(
         run_id="run-1", reply_text=decision, source_channel="web",
         parsed_decision={"decision": decision}, person_id=7,
     )
@@ -329,7 +331,7 @@ def test_no_sign_of_it_in_time_stops_the_run(
     _install(monkeypatch, _ScriptedProvider([]))
     resumed = _resume(events[-1].resume_state, "auto_proceed")
     assert resumed[-1].type == "error"
-    assert "your browser wasn't available within 24 hours" in (resumed[-1].message or "")
+    assert "still waiting for your browser after 24 hours" in (resumed[-1].message or "")
 
 
 def test_a_no_while_it_waits_stops_the_run(
@@ -338,6 +340,26 @@ def test_a_no_while_it_waits_stops_the_run(
     events = _waited(monkeypatch, browser, [_resp(_use(BROWSE, {"do": "look"}, "tu_1"))])
     _install(monkeypatch, _ScriptedProvider([]))  # the step does not run again
     resumed = _resume(events[-1].resume_state, "reject")
+    errors = [e.message for e in resumed if getattr(e, "type", "") == "error"]
+    assert errors == ["Stopped at 'Place the order': you stopped it while it waited for your browser."]
+
+
+def test_stop_waiting_stops_a_waiting_run_with_its_plain_error(
+    monkeypatch: pytest.MonkeyPatch, browser: _Browser, audit: list[dict[str, Any]], _isolated: Path
+) -> None:
+    events = _waited(monkeypatch, browser, [_resp(_use(BROWSE, {"do": "look"}, "tu_1"))])
+    pause = events[-1]
+    until = datetime.now(UTC) + timedelta(hours=1)
+    wf_persistence.create_run("r-stop", "buy_wf", "Weekly order", {})
+    wf_persistence.save_checkpoint(
+        run_id="r-stop", state_json=pause.model_dump_json(), awaiting_person_id=7,
+        awaiting_until=until, resume_state_json=pause.resume_state.model_dump_json(),
+    )
+    monkeypatch.setattr(resumer, "_kick_resume", lambda run_id, db_path=None: None)
+    assert asyncio.run(resumer.stop_waiting("device:7")) == 1
+    stored = WaitForHumanResolution.model_validate_json(wf_persistence.get_run("r-stop")["resolution_json"])  # type: ignore[index]
+    _install(monkeypatch, _ScriptedProvider([]))  # the step does not run again
+    resumed = _resume(pause.resume_state, "", stored)
     errors = [e.message for e in resumed if getattr(e, "type", "") == "error"]
     assert errors == ["Stopped at 'Place the order': you stopped it while it waited for your browser."]
 
@@ -370,6 +392,8 @@ def test_resume_waiting_picks_up_only_the_runs_waiting_for_that_key(
         )
     listed = {r["run_id"]: r.get("waiting_for") for r in wf_persistence.list_runs()}
     assert listed == {"r-mine": "device:7", "r-other": "device:8", "r-gate": None}
+    # No step named what it waits on here.
+    assert not any("waiting_what" in r for r in wf_persistence.list_runs())
 
     assert asyncio.run(resumer.resume_waiting("device:7")) == 1
     assert kicked == ["r-mine"]
@@ -380,6 +404,42 @@ def test_resume_waiting_picks_up_only_the_runs_waiting_for_that_key(
     # Again: nothing left waiting for it.
     assert asyncio.run(resumer.resume_waiting("device:7")) == 0
     assert asyncio.run(resumer.resume_waiting("")) == 0
+
+
+def _waiting_run(run_id: str, key: str, what: str = "") -> None:
+    until = datetime.now(UTC) + timedelta(hours=1)
+    wf_persistence.create_run(run_id, "buy_wf", "Weekly order", {})
+    event = WaitForHumanEvent(person_id=7, question="q", waiting_for=key)
+    wf_persistence.save_checkpoint(
+        run_id=run_id, state_json=event.model_dump_json(), awaiting_person_id=7,
+        awaiting_until=until, resume_state_json=json.dumps({"kind": "waiting", "waiting_what": what}),
+    )
+
+
+def test_a_listed_run_says_what_it_waits_on(_isolated: Path) -> None:
+    _waiting_run("r-named", "device:7", "you to sign in to the store")
+    _waiting_run("r-blank", "device:8")
+    listed = {r["run_id"]: r for r in wf_persistence.list_runs()}
+    assert listed["r-named"]["waiting_what"] == "you to sign in to the store"
+    assert "waiting_what" not in listed["r-blank"]
+
+
+def test_stop_waiting_stops_only_the_runs_waiting_for_that_key(
+    monkeypatch: pytest.MonkeyPatch, _isolated: Path
+) -> None:
+    kicked: list[str] = []
+    monkeypatch.setattr(resumer, "_kick_resume", lambda run_id, db_path=None: kicked.append(run_id))
+    monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **k: None)
+    _waiting_run("r-mine", "device:7")
+    _waiting_run("r-other", "device:8")
+
+    assert asyncio.run(resumer.stop_waiting("device:7")) == 1
+    run = wf_persistence.get_run("r-mine")
+    assert run is not None and run["status"] == "resolved"
+    assert json.loads(run["resolution_json"])["parsed_decision"]["decision"] == "reject"
+    assert wf_persistence.get_run("r-other")["status"] == "awaiting_human"  # type: ignore[index]
+    assert asyncio.run(resumer.stop_waiting("device:7")) == 0
+    assert asyncio.run(resumer.stop_waiting("")) == 0
 
 
 # --- a scheduled run ----------------------------------------------------------------
