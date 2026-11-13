@@ -559,6 +559,7 @@ class EndOfDayDigestWorkflow(Workflow):
             # morning brief"), as for the morning brief and the header.
             activity_response = today_route._build_activity(
                 30, since=since, exclude_workflows=today_route.RHYTHM_WORKFLOWS,
+                viewer=today_route.principal_id(),
             )
             activity = [item.model_dump() for item in activity_response.items]
         except Exception:

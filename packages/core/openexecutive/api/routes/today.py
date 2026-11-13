@@ -1332,6 +1332,24 @@ def _classify_scheduled_action(kind: str, channel: str) -> str:
     return "action"
 
 
+def _channel_people() -> dict[tuple[str, str], Person]:
+    """Map (channel, channel_ref) → the roster person it reaches."""
+    from openexecutive.people import registry as people_registry
+
+    lookup: dict[tuple[str, str], Person] = {}
+    for person in people_registry.list_people():
+        if person.discord_user_id:
+            lookup[("discord_dm", person.discord_user_id)] = person
+        if person.slack_user_id:
+            lookup[("slack_dm", person.slack_user_id)] = person
+        if person.telegram_chat_id:
+            lookup[("telegram", person.telegram_chat_id)] = person
+        for address in [person.email, *person.email_aliases]:
+            if address:
+                lookup[("email", address.lower())] = person
+    return lookup
+
+
 def _build_channel_lookup() -> dict[tuple[str, str], str]:
     """Map (channel, channel_ref) → person.full_name for the whole roster.
 
@@ -1339,20 +1357,87 @@ def _build_channel_lookup() -> dict[tuple[str, str], str]:
     instead of leaking a raw Discord/Slack/Telegram id. Built once per
     request by the caller.
     """
+    return {key: person.full_name for key, person in _channel_people().items()}
+
+
+def _channel_key(channel: str, channel_ref: str) -> tuple[str, str]:
+    """The lookup key for a (channel, channel_ref): an email ref may carry a
+    "|thread_id" suffix (written by the scheduler runner)."""
+    if channel == "email":
+        return channel, channel_ref.split("|", 1)[0].strip().lower()
+    return channel, channel_ref
+
+
+def principal_id() -> int | None:
+    """The principal's person id, the reader of their own briefs' activity
+    (``_build_activity``'s ``viewer``). None when there is none or it can't
+    be read."""
     from openexecutive.people import registry as people_registry
 
-    lookup: dict[tuple[str, str], str] = {}
-    for person in people_registry.list_people():
-        if person.discord_user_id:
-            lookup[("discord_dm", person.discord_user_id)] = person.full_name
-        if person.slack_user_id:
-            lookup[("slack_dm", person.slack_user_id)] = person.full_name
-        if person.telegram_chat_id:
-            lookup[("telegram", person.telegram_chat_id)] = person.full_name
-        for address in [person.email, *person.email_aliases]:
-            if address:
-                lookup[("email", address.lower())] = person.full_name
-    return lookup
+    try:
+        principal = people_registry.get_principal()
+    except Exception:
+        logger.warning("activity: couldn't read the principal", exc_info=True)
+        return None
+    return principal.id if principal is not None else None
+
+
+class _Owners:
+    """Whose an activity item is, for ``_build_activity``'s ``viewer``.
+
+    An item is one person's when it came from their chat (the session's
+    caller; a chat with no recorded caller is the principal's), was made by
+    or assigned to them, is a card routed to them, or is a message to them
+    that no department sent. Everything else is the team's. Built once per
+    feed; never raises (an owner it can't work out is the principal's, so a
+    lookup failure hides a row rather than showing it to the wrong person).
+    """
+
+    def __init__(self) -> None:
+        self.principal_id = principal_id()
+        try:
+            self._reach = {key: p.id for key, p in _channel_people().items() if p.id is not None}
+        except Exception:
+            logger.warning("activity: couldn't map channels to people", exc_info=True)
+            self._reach = {}
+        self._sessions: dict[str, int | None] = {}
+
+    def of_session(self, session_id: str | None, *, department: str | None = None) -> int | None:
+        """The person a conversation belongs to. None (the team's) for no
+        session, or a department's run that nobody started from a chat."""
+        if not session_id:
+            return None
+        if session_id not in self._sessions:
+            from openexecutive.memory import episodic, session_store
+
+            try:
+                found, caller = session_store.get_session_owner(session_id, db_path=episodic.DB_PATH)
+            except Exception:
+                logger.warning("activity: couldn't read a session's owner", exc_info=True)
+                found, caller = False, None
+            if caller is None and found:
+                caller = self.principal_id
+            elif not found:
+                caller = None if department else self.principal_id
+            self._sessions[session_id] = caller
+        return self._sessions[session_id]
+
+    def of_action(self, action: Any) -> int | None:
+        for person_id in (action.created_by_person_id, action.assigned_to_person_id):
+            if person_id is not None:
+                return int(person_id)
+        if action.originating_session_id:
+            return self.of_session(action.originating_session_id, department=action.department or None)
+        if action.department:
+            return None
+        return self._reach.get(_channel_key(action.channel, action.channel_ref or ""))
+
+    @staticmethod
+    def of_alert(alert: Any) -> int | None:
+        owner = getattr(alert, "routed_to_person_id", None)
+        if owner is None:
+            owner = getattr(alert, "owner_person_id", None)
+        return int(owner) if owner is not None else None
 
 
 def _resolve_channel_target(
@@ -1365,12 +1450,7 @@ def _resolve_channel_target(
     """
     if not channel_ref:
         return None
-    key_ref = (
-        channel_ref.split("|", 1)[0].strip().lower()
-        if channel == "email"
-        else channel_ref
-    )
-    return lookup.get((channel, key_ref), channel_ref)
+    return lookup.get(_channel_key(channel, channel_ref), channel_ref)
 
 
 # Held Take the lead actions (orchestrator.take_the_lead.DECISION_CLASS).
@@ -1490,8 +1570,16 @@ def _build_activity(
     *,
     include_alert_raised: bool = True,
     exclude_workflows: frozenset[str] = frozenset(),
+    viewer: int | None = None,
+    everyone: bool = False,
 ) -> ActivityResponse:
     """Aggregate recent self-initiated Executive activity across sources.
+
+    ``viewer`` is the person reading it. One person's items (from their
+    chats, made by or for them, their cards, messages to them: ``_Owners``)
+    reach that person alone; with no viewer only the team's items are left.
+    ``everyone`` keeps every item, for the Executive's own reasoning that
+    no person reads (an alert's review).
 
     ``since`` bounds the feed to items at/after that instant (the briefs pass
     the previous delivery time so "what changed" is a real delta); the pool
@@ -1546,6 +1634,11 @@ def _build_activity(
     # activity rail can say "DM'd Jordan Avery" instead of leaking the
     # raw Discord/Slack/Telegram id.
     channel_lookup = _build_channel_lookup()
+    owners = _Owners()
+
+    def _theirs(owner: int | None) -> bool:
+        """Whether an item with this owner may be in this viewer's feed."""
+        return everyone or owner is None or owner == viewer
 
     def _resolve_target(channel: str, channel_ref: str) -> str | None:
         return _resolve_channel_target(channel_lookup, channel, channel_ref)
@@ -1567,6 +1660,8 @@ def _build_activity(
     for action in list_scheduled_actions(status="done", limit=pool, exclude_internal=True):
         if action.kind == "nudge_scan" or action.channel == "__internal__":
             continue
+        if not _theirs(owners.of_action(action)):
+            continue
         # `created_at` is when the action was queued, not when it fired.
         # For ad-hoc follow-ups these are typically minutes apart, but
         # long-running cadences/nudges can have `run_at` days after
@@ -1586,6 +1681,8 @@ def _build_activity(
         ))
 
     for decision in get_recent_decisions(limit=pool):
+        if not _theirs(owners.of_session(decision.session_id, department=decision.department or None)):
+            continue
         items.append(ActivityItem(
             kind="decision_logged",
             summary=decision.summary,
@@ -1596,6 +1693,8 @@ def _build_activity(
         ))
 
     for advice in get_recent_advice(limit=pool):
+        if not _theirs(owners.of_session(advice.session_id, department=advice.department or None)):
+            continue
         items.append(ActivityItem(
             kind="advice_given",
             summary=advice.advice_summary,
@@ -1609,17 +1708,23 @@ def _build_activity(
     # the Executive finished on its own. The status filter is pushed into SQL
     # (not applied after the pull) so a backlog of running/awaiting runs can't
     # starve the done ones out of the pool. Bucket at `updated_at` (completion).
-    # Team runs only: the rail is shown to everyone, and a run someone started
-    # by hand is theirs alone (`persistence.run_visible_to`).
+    # The viewer's runs and the team's: a run someone started by hand is
+    # theirs alone (`persistence.run_visible_to`), and the daily rhythm runs
+    # with no owner are the principal's.
     # Rows say what the work was and what came of it (`run_outcome`), never
     # the run's log title ("Executive Research (periodic)").
     from openexecutive.workflows import run_outcome
 
     for run in wf_persistence.list_runs(
-        status="done", limit=pool, visible_to=None, with_body=True,
+        status="done", limit=pool, visible_to="all" if everyone else viewer, with_body=True,
     ):
         if run.get("workflow_name") in exclude_workflows or run.get("workflow_name") in _NEVER_IN_FEED:
             continue
+        if (
+            run.get("owner_person_id") is None and run.get("workflow_name") in RHYTHM_WORKFLOWS
+            and not _theirs(owners.principal_id)
+        ):
+            continue  # the principal's own brief or wrap-up ("Sent the morning brief")
         items.append(ActivityItem(
             kind="workflow_done",
             summary=run_outcome.plain_name(run),
@@ -1649,6 +1754,10 @@ def _build_activity(
     # Gated decisions that reached a terminal state (approved / rejected /
     # reversed / …). The pending ones are surfaced as proposals, not activity.
     for instance in decision_ledger.list_recent_resolved(limit=pool):
+        if not _theirs(owners.of_session(
+            instance.originating_session_id, department=instance.department or None,
+        )):
+            continue
         if _payload_is_private(instance.proposed_payload_json):
             continue  # a meeting with one of the principal's contacts
         if instance.decision_class == TAKE_THE_LEAD_CLASS:
@@ -1737,6 +1846,8 @@ def _build_activity(
     ) if include_alert_raised else []):
         if is_private_alert(alert) or not visible_alert(alert, None):
             continue  # the rail is shown to everyone
+        if not _theirs(owners.of_alert(alert)):
+            continue  # a card for one person ("Waiting on you: sign in to …")
         items.append(ActivityItem(
             kind="alert_raised",
             summary=alert.headline,
@@ -1965,6 +2076,7 @@ def _narrative_activity(
         item.model_dump()
         for item in _build_activity(
             20, include_alert_raised=False, exclude_workflows=RHYTHM_WORKFLOWS,
+            viewer=viewer.id if viewer is not None else None,
         ).items
     ]
     if viewer_desc is not None and viewer is not None:
@@ -2753,6 +2865,7 @@ def _done_for_you(request: Request, caller: int | None, now: datetime) -> list[D
         shared = (
             _build_activity(
                 20, since, include_alert_raised=False, exclude_workflows=RHYTHM_WORKFLOWS,
+                viewer=caller,
             ).items
             if owner else []
         )
@@ -3337,7 +3450,14 @@ def get_today_activity(
     # Defensive secondary check in case the signature changes later.
     if limit < 1 or limit > 100:
         raise HTTPException(status_code=400, detail="limit must be in [1, 100]")
-    built = _build_activity(limit)
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+
+    try:
+        reader = _resolve_caller_person_id(request)
+    except Exception:
+        logger.warning("activity: couldn't tell who is reading", exc_info=True)
+        reader = None
+    built = _build_activity(limit, viewer=reader)
     mine = [*_sent_as_caller(request), *_contacts_kept_for_caller(request)]
     if not mine:
         return built

@@ -157,7 +157,7 @@ async def test_today_activity_resource_serializes_model() -> None:
     ) as build:
         out = await mcp_server.today_activity()
     assert json.loads(out) == {"items": []}
-    build.assert_called_once_with(20)
+    build.assert_called_once_with(20, viewer=None)  # the reader: their own items join the team's
 
 
 @pytest.mark.asyncio

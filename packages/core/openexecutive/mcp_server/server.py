@@ -318,8 +318,8 @@ async def today_briefing() -> str:
 async def today_activity() -> str:
     from openexecutive.api.routes.today import _build_activity
 
-    await _require_person()
-    activity = await asyncio.to_thread(_build_activity, 20)
+    who = await _require_person()
+    activity = await asyncio.to_thread(_build_activity, 20, viewer=who.person_id)
     return _json(activity.model_dump(mode="json"))
 
 
