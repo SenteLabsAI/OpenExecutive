@@ -256,7 +256,8 @@ def list_runs(
     default "all" is for the server's own reads, never a person's.
     `with_body` adds each run's `inputs` (parsed) and the start of its
     `artifact` (`BODY_CHARS`), enough to say what came of it. A run paused
-    until something is ready also has `waiting_for`."""
+    until something is ready also has `waiting_for` and, when its step named
+    it, `waiting_what` (what it waits on, in words for the person)."""
     if not _resolve(db_path).exists():
         return []
     clauses: list[str] = []
@@ -277,7 +278,9 @@ def list_runs(
         rows = conn.execute(
             "SELECT run_id, workflow_name, title, status, created_at, updated_at, "
             "CASE WHEN status = 'awaiting_human' AND json_valid(state_json) "
-            "THEN json_extract(state_json, '$.waiting_for') END AS waiting_for"
+            "THEN json_extract(state_json, '$.waiting_for') END AS waiting_for, "
+            "CASE WHEN status = 'awaiting_human' AND json_valid(resume_state_json) "
+            "THEN json_extract(resume_state_json, '$.waiting_what') END AS waiting_what"
             + (f", inputs, substr(artifact, 1, {BODY_CHARS}) AS artifact " if with_body else " ")
             + f"FROM workflow_runs {where}ORDER BY updated_at DESC LIMIT ?",
             params,
@@ -288,6 +291,9 @@ def list_runs(
         # (``extensions.workflow_wait``): "browser:12", say.
         if not isinstance(run.get("waiting_for"), str) or not run["waiting_for"]:
             run.pop("waiting_for", None)
+            run.pop("waiting_what", None)
+        elif not isinstance(run.get("waiting_what"), str) or not run["waiting_what"]:
+            run.pop("waiting_what", None)
     if with_body:
         for run in out:
             try:

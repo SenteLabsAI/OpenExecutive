@@ -2482,8 +2482,9 @@ def test_rhythm_runs_stay_out_of_the_briefs_activity(
 
     _setup_isolated_db(tmp_path / "rhythm.db", monkeypatch)
     for run_id, name, title in [
-        ("a", "executive_reflection", "Executive Reflection 2026-09-28"),
+        ("a", "end_of_day_digest", "End of Day Digest 2026-09-28"),
         ("b", "competitive_teardown", "Teardown of Acme"),
+        ("c", "executive_reflection", "Executive Reflection 2026-09-28"),
     ]:
         persistence.create_run(run_id, name, title, {})
         persistence.complete_run(run_id, "x")
@@ -2494,9 +2495,12 @@ def test_rhythm_runs_stay_out_of_the_briefs_activity(
             10, exclude_workflows=today_route.RHYTHM_WORKFLOWS,
         ).items
     ]
-    assert "Looked back on the day" in rail
-    assert "Looked back on the day" not in brief
+    assert "Sent the end-of-day wrap-up" in rail
+    assert "Sent the end-of-day wrap-up" not in brief
     assert "Teardown of Acme" in brief
+    # The look back is never a row: it says nothing on its own, and what it
+    # did shows as rows of their own.
+    assert "Looked back on the day" not in rail
 
 
 def test_the_shared_header_never_quotes_the_principals_calendar(
@@ -3086,9 +3090,12 @@ def test_done_for_you_leaves_out_what_is_not_done_for_them(
     client = _make_client()
     rows = client.get("/today", headers={"x-caller-email": "jordan@example.com"}).json()["done_for_you"]
     assert sorted(r["title"] for r in rows) == ["Reminded Sam about the invoice", "Wrote the weekly sales report"]
+    # Memory's What it does reads the same rows on their own.
+    assert client.get("/today/done", headers={"x-caller-email": "jordan@example.com"}).json() == rows
     # What it did for the company isn't done for a teammate.
     theirs = client.get("/today", headers={"x-caller-email": "sam@example.com"}).json()["done_for_you"]
     assert theirs == []
+    assert client.get("/today/done", headers={"x-caller-email": "sam@example.com"}).json() == []
 
 
 def test_an_email_it_sent_on_its_own_names_who_and_what_in_done_for_you(

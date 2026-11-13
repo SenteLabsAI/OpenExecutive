@@ -131,6 +131,54 @@ def test_topic_names_are_cleaned() -> None:
     assert store.clean_topic_name("x" * 80) == "x" * store.MAX_TOPIC_CHARS
 
 
+def test_a_no_topic_reply_is_never_a_topic() -> None:
+    # The prompt's own words echoed back once made a "Write none" topic.
+    for raw in ("Write none", "write: none", "(none)", "No topic", "Topic: none", "N/A", ""):
+        assert store.clean_topic_name(raw) is None, raw
+    assert model.parse_title_and_topic("Title: Quick hello\nTopic:") == ("Quick hello", None)
+    assert model.parse_title_and_topic("Title: Quick hello\nTopic: Write none") == ("Quick hello", None)
+    assert model.parse_backfill("1:\n2: Write none\n3: Acme renewal", 3) == {1: None, 2: None, 3: "Acme renewal"}
+    # Real topics that merely contain the words stay.
+    assert store.clean_topic_name("None of the above deal") == "None of the above deal"
+    assert store.clean_topic_name("Write-off review") == "Write-off review"
+    assert store.clean_topic_name("NA expansion") == "NA expansion"
+    assert store.clean_topic_name("Nothing Bundt Cakes") == "Nothing Bundt Cakes"
+
+
+def test_startup_drops_a_saved_no_topic_topic(people: dict[str, int], db: Path) -> None:
+    alex = people["alex"]
+    for sid in ("a", "b", "c", "d"):
+        _chat(alex, sid)
+    bad, _ = store.set_auto_topic("a", alex, "Write none")
+    store.set_auto_topic("b", alex, "Write none")
+    store.set_auto_topic("c", alex, "Acme renewal")
+    store.set_auto_topic("d", alex, "Office move")
+    store.set_area(alex, [store.topic_id_by_name(alex, "Office move") or 0], "None")
+    episodic.initialize_db(db)
+    assert {t["name"] for t in store.list_topics(alex)} == {"Acme renewal", "Office move"}
+    assert store.owned_topic(alex, bad or 0) is None
+    # Its chats go under no topic and aren't asked about again.
+    assert _topic_of("a") == (None, "auto")
+    assert _topic_of("b") == (None, "auto")
+    assert _topic_of("c")[0] is not None
+    assert {t["area"] for t in store.topics_with_areas(alex)} <= {None, ""}
+
+
+def test_startup_leaves_a_topic_the_owner_named_or_filed(people: dict[str, int], db: Path) -> None:
+    alex = people["alex"]
+    for sid in ("a", "b", "c"):
+        _chat(alex, sid)
+    named, _ = store.set_auto_topic("a", alex, "Acme renewal")
+    store.rename_topic(alex, named or 0, "Other")
+    filed, _ = store.set_auto_topic("b", alex, "Write none")
+    store.file_session("c", alex, topic_id=filed)
+    episodic.initialize_db(db)
+    # Owner-kept rows stay, whatever their name, with their chats.
+    assert {t["name"] for t in store.list_topics(alex)} == {"Other", "Write none"}
+    assert _topic_of("a")[0] == named
+    assert _topic_of("c") == (filed, "owner")
+
+
 # ── naming a new chat ────────────────────────────────────────────────────
 
 

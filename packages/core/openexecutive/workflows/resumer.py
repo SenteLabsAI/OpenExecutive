@@ -188,6 +188,32 @@ async def resume_waiting(key: str, db_path: Path | None = None) -> int:
     return picked
 
 
+async def stop_waiting(key: str, db_path: Path | None = None) -> int:
+    """Stop every run paused until ``key`` is ready, because the person said
+    not to go on (they pressed Stop on what it waited for): each one stops
+    there and says so, the same as a no on its pause. Returns how many were
+    stopped. Never raises.
+
+    As with ``resume_waiting``, a run is saved as waiting only after its step
+    writes its report, so a call made in that gap finds nothing: when it
+    returns 0 and the Stop still stands, call it again a few seconds later."""
+    stopped = 0
+    try:
+        for run in waiting_runs(key, db_path=db_path):
+            no = WaitForHumanResolution(
+                run_id=run["run_id"],
+                reply_text="[stopped]",
+                source_channel="system",
+                parsed_decision={"decision": "reject", "note": "they stopped it while it waited"},
+                person_id=run.get("awaiting_person_id") or 0,
+            )
+            if await apply_resolution(run["run_id"], no, db_path=db_path):
+                stopped += 1
+    except Exception:
+        logger.exception("resumer: couldn't stop runs waiting for %s", key)
+    return stopped
+
+
 # How a recorded decision reads back to the person. What follows the verb
 # depends on whether the run can actually continue, because saying the wrong
 # one is the same class of lie #136 was reported for — in either direction.

@@ -25,6 +25,21 @@ MAX_TOPIC_CHARS = 40
 PROMPT_TOPICS = 60
 
 
+# A reply that means "no topic", however the model words it: "none",
+# "(none)", "Write none" (the prompt's own words echoed back), "No topic".
+_NO_TOPIC = re.compile(
+    r"^(?:(?:write|topic|area|answer)\s*:?\s*)?[(\[<]?\s*"
+    r"(?:none|no topic|no area|n/a|-|other)"
+    r"\s*[)\]>]?$",
+    re.IGNORECASE,
+)
+
+
+def is_no_topic(name: str) -> bool:
+    """True when ``name`` is the model saying no topic fits, not a topic."""
+    return bool(_NO_TOPIC.match(name.strip()))
+
+
 def clean_topic_name(raw: str | None) -> str | None:
     """One line, no quotes or end punctuation, capped. None when nothing is
     left, or the model said no topic fits."""
@@ -32,9 +47,36 @@ def clean_topic_name(raw: str | None) -> str | None:
         return None
     name = re.sub(r"\s+", " ", raw).strip().strip("\"'").rstrip(".!?,:;").strip()
     name = "".join(c for c in name if c.isprintable())[:MAX_TOPIC_CHARS].strip()
-    if not name or name.lower() in {"none", "-", "n/a", "other"}:
+    if not name or is_no_topic(name):
         return None
     return name
+
+
+def drop_no_topic_topics(conn: Any) -> int:
+    """Remove topics the model saved from a "no topic" reply (such as
+    "Write none"). Their chats go under no topic, as the model meant, and
+    aren't asked about again; an area saved the same way is cleared. A topic
+    or area the owner named or kept is left alone, whatever its name.
+    Returns how many topics went. Runs at startup."""
+    rows = conn.execute("SELECT id, name FROM chat_topics WHERE kept = 0").fetchall()
+    ids = [int(r[0]) for r in rows if is_no_topic(str(r[1]))]
+    for topic_id in ids:
+        conn.execute(
+            "UPDATE sessions SET topic_id = NULL, topic_source = 'auto' "
+            "WHERE topic_id = ? AND COALESCE(topic_source, '') != 'owner'",
+            (topic_id,),
+        )
+        owned = conn.execute("SELECT 1 FROM sessions WHERE topic_id = ? LIMIT 1", (topic_id,)).fetchone()
+        if owned is None:
+            conn.execute("DELETE FROM chat_topics WHERE id = ?", (topic_id,))
+    areas = conn.execute(
+        "SELECT DISTINCT area FROM chat_topics "
+        "WHERE area IS NOT NULL AND area != '' AND area_kept = 0"
+    ).fetchall()
+    for (area,) in areas:
+        if is_no_topic(str(area)):
+            conn.execute("UPDATE chat_topics SET area = '' WHERE area = ? AND area_kept = 0", (area,))
+    return len(ids)
 
 
 def _now() -> str:

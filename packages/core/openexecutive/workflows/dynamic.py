@@ -515,8 +515,8 @@ class DynamicWorkflow(Workflow):
             yield WorkflowEvent(
                 type="error",
                 message=(
-                    f"Stopped at {step.title!r}: {what} wasn't available within "
-                    f"{WAITING_TIMEOUT_HOURS} hours. Run it again when it is."
+                    f"Stopped at {step.title!r}: still waiting for {what} after "
+                    f"{WAITING_TIMEOUT_HOURS} hours. Run it again when it's ready."
                 ),
             )
             return
