@@ -39,7 +39,7 @@ import {
 } from "@/lib/runStatus";
 import { cadenceLabel, cardAction, lastRunAt } from "@/lib/workflowCards";
 import { starterPicksFor } from "@/lib/workflowStarters";
-import { runHref, stepCount } from "@/lib/workflowRun";
+import { noteRunOnArrival, stepCount } from "@/lib/workflowRun";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import { PageSpinner } from "@/components/ui/Spinner";
 
@@ -509,7 +509,7 @@ function YourWorkflows({
           last ? `last run ${formatRelativeTime(last)}` : "not run yet",
         ].join(" · ");
         const more: OverflowItem[] = [
-          ...(action.kind === "signoff" ? [{ label: "Run again", href: runHref(w.name) }] : []),
+          ...(action.kind === "signoff" ? [{ label: "Run again", href }] : []),
           { label: "Edit", href: `/jobs/new?edit=${encodeURIComponent(w.name)}` },
           { label: "Delete", danger: true, onSelect: () => onDeleteCustom(w.name) },
         ];
@@ -539,7 +539,11 @@ function YourWorkflows({
                   Review
                 </Link>
               ) : (
-                <Link href={runHref(w.name)} className={buttonClass("primary", "md")}>
+                <Link
+                  href={href}
+                  onClick={() => noteRunOnArrival(w.name)}
+                  className={buttonClass("primary", "md")}
+                >
                   Run
                 </Link>
               )}

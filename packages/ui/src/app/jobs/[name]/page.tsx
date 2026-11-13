@@ -17,7 +17,7 @@ import {
   getWorkflowSample,
 } from "@/lib/api";
 import { describeCadenceLocal } from "@/lib/workflowChanges";
-import { RUN_PARAM, shownSteps, startsOnArrival } from "@/lib/workflowRun";
+import { shownSteps, startsOnArrival, takeRunOnArrival } from "@/lib/workflowRun";
 import { Spinner } from "@/components/ui/Spinner";
 
 type FormState = Record<string, string>;
@@ -90,10 +90,6 @@ export default function JobDetailPage() {
   // Arrived straight from creating or changing it (`?saved=1`). Read once and
   // dropped from the URL, so a refresh doesn't say it again.
   const [justSaved] = useState(() => searchParams?.get("saved") === "1");
-  // Arrived from a list's Run (`?run=1`): start the run as soon as the
-  // workflow loads, unless it needs details filled in. Read once and dropped
-  // from the URL, so a refresh doesn't run it again.
-  const [runParam] = useState(() => searchParams?.get(RUN_PARAM) ?? null);
   const [form, setForm] = useState<FormState>({});
   const [running, setRunning] = useState(false);
   const [prefillBanner, setPrefillBanner] = useState<
@@ -107,10 +103,9 @@ export default function JobDetailPage() {
   const prefillRaw = searchParams?.get("prefill") ?? null;
 
   useEffect(() => {
-    if ((!justSaved && runParam === null) || !pathname) return;
+    if (!justSaved || !pathname) return;
     const rest = new URLSearchParams(searchParams?.toString() ?? "");
     rest.delete("saved");
-    rest.delete(RUN_PARAM);
     const qs = rest.toString();
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
     // Once, on arrival.
@@ -152,7 +147,10 @@ export default function JobDetailPage() {
         const filled = (wf.input_schema.required ?? []).every((f) =>
           Boolean(initial[f]?.trim()),
         );
-        if (startsOnArrival(runParam, filled)) setRunning(true);
+        // Arrived from a list's Run: start now, unless details are needed.
+        // The note is taken here, after the cancelled check, so StrictMode's
+        // throwaway first fetch can't use it up.
+        if (startsOnArrival(takeRunOnArrival(name), filled)) setRunning(true);
         if (wf.is_custom) {
           getCustomWorkflow(name)
             .then((d) => !cancelled && setCustomDef(d))
@@ -514,6 +512,7 @@ export default function JobDetailPage() {
             <WorkflowRunner
               workflow={workflow}
               inputs={form}
+              onBack={() => setRunning(false)}
             />
           )}
         </div>

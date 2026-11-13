@@ -15,12 +15,52 @@ export function stepCount(steps: readonly { id: string }[]): string {
   return `${n} ${n === 1 ? "step" : "steps"}`;
 }
 
-/** The query flag a list's Run sets so the workflow page starts the run on arrival. */
-export const RUN_PARAM = "run";
+// A list's Run leaves a note in this tab's session storage and opens the
+// workflow's page, which starts the run when it finds a fresh note. Only a
+// click in the app writes the note, so a link someone sends can open a
+// workflow but never start one.
+const NOTE_PREFIX = "oe.runOnArrival:";
+/** A note older than this is from an abandoned navigation, not this one. */
+export const RUN_NOTE_MAX_AGE_MS = 30_000;
 
-/** Where a list's Run goes: the workflow's page, starting the run at once. */
-export function runHref(name: string): string {
-  return `/jobs/${encodeURIComponent(name)}?${RUN_PARAM}=1`;
+type NoteStore = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+
+function sessionStore(): NoteStore | null {
+  try {
+    return typeof window === "undefined" ? null : window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
+/** Called by a list's Run just before it opens the workflow's page. */
+export function noteRunOnArrival(
+  name: string,
+  store: NoteStore | null = sessionStore(),
+  now: number = Date.now(),
+): void {
+  try {
+    store?.setItem(NOTE_PREFIX + name, String(now));
+  } catch {
+    // Storage full or blocked: the page opens without starting, one tap more.
+  }
+}
+
+/** Whether Run asked for this workflow to start, and forgets the note either way. */
+export function takeRunOnArrival(
+  name: string,
+  store: NoteStore | null = sessionStore(),
+  now: number = Date.now(),
+): boolean {
+  try {
+    const raw = store?.getItem(NOTE_PREFIX + name);
+    if (raw == null) return false;
+    store?.removeItem(NOTE_PREFIX + name);
+    const at = Number(raw);
+    return Number.isFinite(at) && now - at >= 0 && now - at <= RUN_NOTE_MAX_AGE_MS;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -28,6 +68,6 @@ export function runHref(name: string): string {
  * for it and nothing required is left to fill in. Otherwise the page shows
  * its form, and Run it now there starts it.
  */
-export function startsOnArrival(runParam: string | null | undefined, allRequiredFilled: boolean): boolean {
-  return runParam === "1" && allRequiredFilled;
+export function startsOnArrival(asked: boolean, allRequiredFilled: boolean): boolean {
+  return asked && allRequiredFilled;
 }

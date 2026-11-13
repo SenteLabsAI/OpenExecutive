@@ -24,6 +24,8 @@ interface StepStatus {
 interface WorkflowRunnerProps {
   workflow: WorkflowMeta;
   inputs: Record<string, unknown>;
+  /** Back to the workflow's details and form, once the run has failed or stopped. */
+  onBack: () => void;
 }
 
 /**
@@ -31,7 +33,7 @@ interface WorkflowRunnerProps {
  * it was the person's go, so there is no second confirm here. Approvals, Your
  * rules and In training still hold a step mid-run, with an Approve card.
  */
-export default function WorkflowRunner({ workflow, inputs }: WorkflowRunnerProps) {
+export default function WorkflowRunner({ workflow, inputs, onBack }: WorkflowRunnerProps) {
   const router = useRouter();
   const [steps, setSteps] = useState<StepStatus[]>(
     shownSteps(workflow.steps).map((s) => ({ def: s, state: "pending" }))
@@ -208,6 +210,13 @@ export default function WorkflowRunner({ workflow, inputs }: WorkflowRunnerProps
         <div className="mt-4 text-sm text-red-400 bg-red-500/5 border border-red-500/20 rounded-md p-3">
           <div className="font-medium mb-1">Workflow failed</div>
           <div className="text-xs">{error}</div>
+        </div>
+      )}
+      {!streaming && (error || stopped) && (
+        <div className="mt-4">
+          <Button variant="secondary" onClick={onBack}>
+            Back to the details
+          </Button>
         </div>
       )}
     </div>
