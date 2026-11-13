@@ -589,6 +589,11 @@ def initialize_db(db_path: Path | None = None) -> None:
                 except sqlite3.OperationalError as exc:
                     if "duplicate column" not in str(exc).lower():
                         raise
+        # Topics saved from a "no topic" reply ("Write none") before the
+        # name check caught that wording: their chats go under no topic.
+        from openexecutive.memory.chat_topics import drop_no_topic_topics
+
+        drop_no_topic_topics(conn)
         # Who a chat's owner shared it with, to read (session_store.share_session).
         conn.execute(
             """
