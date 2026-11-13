@@ -22,7 +22,7 @@ All responses come from one consistent executive voice. The internal agent archi
 
 ```bash
 # Clone the repo
-git clone https://github.com/SenteLabsAI/OpenExecutive.git
+git clone https://github.com/ForeactLabs/OpenExecutive.git
 cd OpenExecutive
 
 # Set your Anthropic API key

@@ -1,6 +1,6 @@
 # Open Executive
 
-[![CI](https://github.com/SenteLabsAI/OpenExecutive/actions/workflows/ci.yml/badge.svg)](https://github.com/SenteLabsAI/OpenExecutive/actions/workflows/ci.yml)
+[![CI](https://github.com/ForeactLabs/OpenExecutive/actions/workflows/ci.yml/badge.svg)](https://github.com/ForeactLabs/OpenExecutive/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Next.js 15](https://img.shields.io/badge/Next.js-15-black.svg)](https://nextjs.org/)
@@ -108,7 +108,7 @@ openexecutive/
 
 ```bash
 # Clone the repo
-git clone https://github.com/SenteLabsAI/OpenExecutive.git
+git clone https://github.com/ForeactLabs/OpenExecutive.git
 cd OpenExecutive
 
 # Install the backend and web app dependencies
@@ -386,8 +386,8 @@ Versioned images are published to GitHub Container Registry on every release,
 so a deployment can pull instead of building:
 
 ```bash
-docker pull ghcr.io/sentelabsai/openexecutive-api:<version>
-docker pull ghcr.io/sentelabsai/openexecutive-ui:<version>
+docker pull ghcr.io/foreactlabs/openexecutive-api:<version>
+docker pull ghcr.io/foreactlabs/openexecutive-ui:<version>
 ```
 
 Tags: `X.Y.Z` and `X.Y` for a release, `latest` for the most recently

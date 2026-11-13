@@ -2,7 +2,7 @@
 // release, from GET /version. Kept free of React so scripts/ can test it.
 
 export const UPGRADE_DOC_URL =
-  "https://github.com/SenteLabsAI/OpenExecutive/blob/main/docs/deployment.md#upgrading";
+  "https://github.com/ForeactLabs/OpenExecutive/blob/main/docs/deployment.md#upgrading";
 
 export interface VersionFacts {
   current: string;

@@ -52,7 +52,7 @@ concurrency:
 
 jobs:
   release-please:
-    if: github.repository == 'SenteLabsAI/OpenExecutive'
+    if: github.repository == 'ForeactLabs/OpenExecutive'
     runs-on: ubuntu-latest
     steps:
       - name: Require the release token

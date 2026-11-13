@@ -2,7 +2,7 @@ id: mcp_tool_call_001
 domain: mcp
 description: "Executive searches then calls an external tool to fulfil a concrete request"
 requires_mcp: true
-query: "List the open pull requests in our GitHub repo SenteLabsAI/OpenExecutive."
+query: "List the open pull requests in our GitHub repo ForeactLabs/OpenExecutive."
 expected_tool_calls:
   - search_tools
   - call_tool
