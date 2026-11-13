@@ -1355,6 +1355,32 @@ def _heartbeat_pending(db_path: Path | None = None) -> bool:
     return row is not None
 
 
+def scan_soon(
+    now: datetime | None = None,
+    *,
+    db_path: Path | None = None,
+) -> bool:
+    """Bring the pending scan forward to ``now``, so a watch just added gets
+    its first check on the scheduler's next tick instead of waiting out the
+    rest of the scan interval (up to half an hour on a hosted company).
+    Only moves a scan that is later than ``now``; nothing is added when no
+    scan is pending (``bootstrap_external_monitor_scan`` makes one at boot).
+    Returns whether one moved."""
+    from openexecutive.memory.episodic import _get_conn, _resolve_db_path
+
+    resolved = _resolve_db_path(db_path)
+    if not resolved.exists():
+        return False
+    at = (now or datetime.now(UTC)).astimezone(UTC).isoformat()
+    with _get_conn(resolved) as conn:
+        cursor = conn.execute(
+            "UPDATE scheduled_actions SET run_at = ? "
+            "WHERE kind = ? AND status = 'pending' AND run_at > ?",
+            (at, HEARTBEAT_KIND, at),
+        )
+        return cursor.rowcount > 0
+
+
 def bootstrap_external_monitor_scan(
     db_path: Path | None = None,
 ) -> int | None:

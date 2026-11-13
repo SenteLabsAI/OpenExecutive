@@ -1403,8 +1403,11 @@ routing:
     takes an optional `owner_person_id` (a non-archived team member, else
     refused). The duplicate check and the 8-goal cap apply to the goals
     with no department as one group.
-    A goal's status can also be `done`. Only a person sets it (the goal
-    editor, or `update_department_goal` in chat). A done goal is left out
+    A goal's status can also be `done`. A person sets it (the goal
+    editor, or `update_department_goal` in chat), and so does a review whose
+    progress text says it is finished (the shared
+    `department_check_in.GRADING_RULES`, which also grade a goal with no
+    number instead of skipping it). A done goal is left out
     of every review prompt (`department_check_in._render_goals`,
     `goal_review._needs_review`), `persist_goal_verdicts` drops a verdict
     on one, and `/today`'s `goal_count` leaves it out.
@@ -6224,6 +6227,11 @@ external_monitoring:
       default 'manual'), goal_id (the goal the watch is for, nullable),
       last_check_note (what the last poll found and why it stayed quiet,
       in plain words; written by pipeline.check_note after every poll).
+      route_to_person_id defaults to whoever made the watch: a teammate
+      (POST /watchlist or add_watchlist_entry on a verified turn) gets
+      their own, anyone else's is NULL (the principal). Adding a watch
+      calls pipeline.scan_soon, which pulls the pending
+      external_monitor_scan forward so the first poll is within a minute.
       severity_floor is always 'low' and filters nothing: the trigger is
       the only filter, and trigger_json.only_big asks for big changes
       only. A one-time migration (severity_floor_to_only_big) turned a

@@ -69,6 +69,31 @@ def test_create_round_trips(client: TestClient) -> None:
     assert body["enabled"] is True
 
 
+def test_a_watch_a_teammate_makes_tells_them(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 11-13: Alex's news watches told the owner instead of Alex.
+    from openexecutive.people import store as people
+
+    db_path = tmp_path / "watchlist_routes.db"
+    monkeypatch.setattr(people, "DB_PATH", db_path)
+    people.initialize_db(db_path)
+    people.upsert_person(full_name="Jordan Avery", email="jordan@acme.example", is_principal=True, db_path=db_path)
+    sam_id = people.upsert_person(full_name="Sam Okafor", email="sam@acme.example", db_path=db_path)
+
+    as_sam = {"x-caller-email": "sam@acme.example"}
+    made = client.post("/watchlist", json={"slug": "stock-aapl", "signal_type": "stock", "target": "AAPL"}, headers=as_sam)
+    assert made.status_code == 201, made.text
+    row = ms.get_watchlist_item_by_slug("stock-aapl", db_path=db_path)
+    assert row is not None and row.route_to_person_id == sam_id
+
+    as_owner = {"x-caller-email": "jordan@acme.example"}
+    made = client.post("/watchlist", json={"slug": "stock-msft", "signal_type": "stock", "target": "MSFT"}, headers=as_owner)
+    assert made.status_code == 201, made.text
+    row = ms.get_watchlist_item_by_slug("stock-msft", db_path=db_path)
+    assert row is not None and row.route_to_person_id is None
+
+
 def test_create_rejects_uppercase_slug(client: TestClient) -> None:
     resp = client.post(
         "/watchlist",
