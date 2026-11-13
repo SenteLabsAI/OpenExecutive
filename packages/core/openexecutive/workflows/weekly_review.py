@@ -304,6 +304,8 @@ async def _review_area(
     comes back with its goals at their current status."""
     from openexecutive.orchestrator.router import route_to_specialist
     from openexecutive.workflows.department_check_in import (
+        GRADING_RULES,
+        VERDICT_STATUS_SHAPE,
         _parse_verdicts,
         _render_goals,
         persist_goal_verdicts,
@@ -322,17 +324,16 @@ async def _review_area(
             specialist_name=specialist,
             query=(
                 f"Weekly review of the principal's {title} {noun} for {period}. For "
-                "each goal, assess whether it is on_track, at_risk or off_track from "
-                "its current value against its target.\n\n"
+                "each goal, assess whether it is on_track, at_risk, off_track or done.\n\n"
+                f"{GRADING_RULES}\n\n"
                 "Return ONLY a JSON object on its own — no prose before or after, "
                 "no markdown fences — with this exact shape:\n"
                 '{"verdicts": [{"goal_id": <int from the [id=N] prefix>, '
-                '"status": "on_track" | "at_risk" | "off_track", '
+                f"{VERDICT_STATUS_SHAPE}"
                 '"rationale": "<one short sentence>"}, ...], '
                 f'"narrative": "<one sentence on this {noun}\'s week: what moved, '
                 'and what needs attention next week>"}\n\n'
-                "Use the integer id from each goal's `[id=N]` prefix below. Skip "
-                "goals you cannot grade — never guess a number that is not given.\n\n"
+                "Use the integer id from each goal's `[id=N]` prefix below.\n\n"
                 f"{context}"
             ),
             context=context,

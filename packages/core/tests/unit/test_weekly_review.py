@@ -652,3 +652,23 @@ def test_the_daily_chain_is_unchanged_by_the_weekly_dedupe() -> None:
     first = runner._enqueue_next_principal_brief("principal_brief_morning", after)
     second = runner._enqueue_next_principal_brief("principal_brief_morning", after)
     assert first is not None and second is not None and first != second
+
+
+def test_every_review_grades_goals_without_a_number_and_closes_finished_ones() -> None:
+    """11-13: a goal with no number was skipped (never reviewed), and a goal
+    whose progress said "Done" stayed open. All three reviews share the rules."""
+    import inspect
+
+    from openexecutive.departments import goal_review
+    from openexecutive.workflows import department_check_in, weekly_review
+
+    rules = department_check_in.GRADING_RULES
+    assert "One with no number" in rules and "Use done only when" in rules
+    for module in (department_check_in, weekly_review, goal_review):
+        source = inspect.getsource(module)
+        assert "GRADING_RULES" in source and "VERDICT_STATUS_SHAPE" in source
+        assert "Skip goals you cannot grade" not in source
+    verdicts, _ = department_check_in._parse_verdicts(
+        '{"verdicts": [{"goal_id": 2, "status": "done", "rationale": "Stripe is finished."}], "narrative": ""}'
+    )
+    assert verdicts == [{"goal_id": 2, "status": "done", "rationale": "Stripe is finished."}]

@@ -355,12 +355,29 @@ async def describe_watchlist_entry(body: WatchlistDescribe, request: Request) ->
         raise HTTPException(status_code=_DESCRIBE_STATUS.get(exc.code, 422), detail=exc.message) from exc
 
 
+def _creator_person(request: Request) -> int | None:
+    """Who a watch made on this request tells: a teammate who made it (what
+    it finds is theirs), else the principal (None). Fails to the principal."""
+    try:
+        from openexecutive.api.routes.chat import _resolve_caller_person_id
+        from openexecutive.people.store import get_person
+
+        person_id = _resolve_caller_person_id(request)
+        person = get_person(int(person_id)) if person_id is not None else None
+    except Exception:
+        logger.warning("watchlist.create: couldn't tell who made it", exc_info=True)
+        return None
+    if person is None or person.is_principal or person.archived or person.kind != "team":
+        return None
+    return person.id
+
+
 @router.post(
     "/watchlist",
     response_model=WatchlistView,
     status_code=status.HTTP_201_CREATED,
 )
-async def create_watchlist_entry(body: WatchlistCreate) -> WatchlistView:
+async def create_watchlist_entry(body: WatchlistCreate, request: Request) -> WatchlistView:
     slug = body.slug.strip()
     signal_type = body.signal_type.strip()
     target = body.target.strip()
@@ -426,6 +443,7 @@ async def create_watchlist_entry(body: WatchlistCreate) -> WatchlistView:
             severity_floor=AlertSeverity(body.severity_floor),
             severity_ceiling=AlertSeverity(body.severity_ceiling),
             route_to_specialist=body.route_to_specialist,
+            route_to_person_id=_creator_person(request),
             mode=body.mode,
             notes=body.notes[:500],
         )
@@ -463,6 +481,14 @@ async def create_watchlist_entry(body: WatchlistCreate) -> WatchlistView:
             "mode": body.mode,
         },
     )
+
+    try:
+        # Its first check within a minute, not at the end of the scan interval.
+        from openexecutive.monitoring.pipeline import scan_soon
+
+        scan_soon()
+    except Exception:
+        logger.warning("watchlist.create: couldn't bring the next scan forward", exc_info=True)
 
     created = ms.get_watchlist_item(new_id)
     if created is None:

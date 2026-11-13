@@ -359,3 +359,51 @@ async def test_add_and_tune_say_what_a_watch_is_for(db: Path, monkeypatch: pytes
     ms.set_last_check_note(item.id or 0, "Down 1.1% today. Under 5%, so it stayed quiet.")
     (row,) = json.loads(await wt.handle_list_watchlist({}))["watchlist"]
     assert row["last_check"] == "Down 1.1% today. Under 5%, so it stayed quiet."
+
+
+# --------------------------------------------------------------------- #
+# A teammate's own watch tells them, and is checked right away (11-13)
+# --------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_a_teammates_watch_tells_them_and_the_principals_tells_the_principal(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(wt, "_teammate_asking", lambda: SimpleNamespace(id=12))
+    out = json.loads(await wt.handle_add_watchlist_entry({"slug": "news-oe", "signal_type": "query", "target": "Open Executive"}))
+    assert out["ok"] is True
+    item = ms.get_watchlist_item_by_slug("news-oe")
+    assert item is not None and item.route_to_person_id == 12
+
+    monkeypatch.setattr(wt, "_teammate_asking", lambda: None)
+    out = json.loads(await wt.handle_add_watchlist_entry({"slug": "news-acme", "signal_type": "query", "target": "Acme"}))
+    assert out["ok"] is True
+    item = ms.get_watchlist_item_by_slug("news-acme")
+    assert item is not None and item.route_to_person_id is None
+
+
+@pytest.mark.asyncio
+async def test_a_new_watch_brings_the_next_scan_forward(db: Path) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from openexecutive.memory.episodic import _get_conn, insert_scheduled_action
+    from openexecutive.monitoring import pipeline
+
+    later = datetime.now(UTC) + timedelta(minutes=30)
+    action_id = insert_scheduled_action(
+        run_at=later.isoformat(), channel=pipeline.HEARTBEAT_CHANNEL,
+        channel_ref=pipeline.HEARTBEAT_CHANNEL_REF, intent_text=pipeline.HEARTBEAT_INTENT,
+        kind=pipeline.HEARTBEAT_KIND, db_path=db,
+    )
+    before = datetime.now(UTC)
+    out = json.loads(await wt.handle_add_watchlist_entry({"slug": "news-oe", "signal_type": "query", "target": "Open Executive"}))
+    assert out["ok"] is True
+    with _get_conn(db) as conn:
+        (run_at,) = conn.execute("SELECT run_at FROM scheduled_actions WHERE id = ?", (action_id,)).fetchone()
+    assert datetime.fromisoformat(run_at) <= datetime.now(UTC)
+    assert datetime.fromisoformat(run_at) >= before
+    # A scan already due sooner is never pushed later.
+    assert pipeline.scan_soon(datetime.now(UTC) + timedelta(minutes=5), db_path=db) is False

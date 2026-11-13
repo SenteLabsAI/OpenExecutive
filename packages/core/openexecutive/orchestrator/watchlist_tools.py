@@ -157,7 +157,9 @@ ADD_WATCHLIST_ENTRY_TOOL: dict[str, Any] = {
                 "type": "integer",
                 "description": (
                     "The People id of the teammate this watch is for: what "
-                    "it finds is told to them. Leave out for the principal."
+                    "it finds is told to them. Leave out for the person "
+                    "asking (a teammate's own watch tells them; otherwise "
+                    "the principal)."
                 ),
             },
             "route_to_specialist": {
@@ -469,6 +471,39 @@ def _principal_asked() -> bool:
     return is_principal_on_verified_surface(current_session.get())
 
 
+def _teammate_asking() -> Any:
+    """The rostered teammate asking on a surface that verified them, else
+    None (``people_tools.teammate_on_verified_surface``). Fails closed."""
+    from openexecutive.orchestrator.people_tools import teammate_on_verified_surface
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    try:
+        return teammate_on_verified_surface(current_session.get())
+    except Exception:
+        logger.warning("watchlist_tools: teammate lookup failed", exc_info=True)
+        return None
+
+
+def _default_person(for_ids: dict[str, int | None]) -> int | None:
+    """Who a new watch tells: the person the call named, else the teammate
+    who asked for it (what it finds is theirs), else the principal (None)."""
+    if "route_to_person_id" in for_ids:
+        return for_ids["route_to_person_id"]
+    teammate = _teammate_asking()
+    return getattr(teammate, "id", None) if teammate is not None else None
+
+
+def _scan_soon() -> None:
+    """Bring the monitor's next pass forward so a new watch gets its first
+    check within a minute, not up to a whole scan interval later."""
+    from openexecutive.monitoring.pipeline import scan_soon
+
+    try:
+        scan_soon()
+    except Exception:
+        logger.warning("watchlist_tools: couldn't bring the next scan forward", exc_info=True)
+
+
 def _own_words(note: str) -> str:
     """A watch's last-check note when it is the scan's own wording. A note
     that quotes what a feed or page said ("Told you: ...", "Noticed: ...")
@@ -542,7 +577,7 @@ async def handle_add_watchlist_entry(tool_input: dict[str, Any]) -> str:
             trigger=trigger,
             cadence=cadence,
             route_to_specialist=str(tool_input.get("route_to_specialist", "")),
-            route_to_person_id=for_ids.get("route_to_person_id"),
+            route_to_person_id=_default_person(for_ids),
             goal_id=for_ids.get("goal_id"),
             mode=mode,
             notes=str(tool_input.get("notes", ""))[:500],
@@ -551,6 +586,7 @@ async def handle_add_watchlist_entry(tool_input: dict[str, Any]) -> str:
     except Exception as exc:
         logger.exception("add_watchlist_entry: insert failed")
         return _err(tool, f"insert failed: {exc}")
+    _scan_soon()
 
     _audit(
         tool, True,

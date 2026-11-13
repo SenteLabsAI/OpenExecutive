@@ -62,6 +62,7 @@ from openexecutive.orchestrator.activity_labels import (
     fallback_activity,
     summarize_activity,
 )
+from openexecutive.orchestrator.activity_tools import ACTIVITY_TOOL_HANDLERS, ACTIVITY_TOOLS
 from openexecutive.orchestrator.alert_tools import (
     CREATE_ALERT_TOOL,
     handle_create_alert,
@@ -837,6 +838,7 @@ _ALL_SKILL_TOOLS = [
     *DOCUMENT_TOOLS,
     *BROADCAST_TOOLS,
     *WATCHLIST_TOOLS,
+    *ACTIVITY_TOOLS,
     *RESEARCH_TOOLS,
     *WORKFLOW_AUTHORING_TOOLS,
     *WORKFLOW_RUN_TOOLS,
@@ -870,6 +872,7 @@ _ALL_SKILL_HANDLERS = {
     **DOCUMENT_TOOL_HANDLERS,
     **BROADCAST_TOOL_HANDLERS,
     **WATCHLIST_TOOL_HANDLERS,
+    **ACTIVITY_TOOL_HANDLERS,
     **RESEARCH_TOOL_HANDLERS,
     **WORKFLOW_AUTHORING_TOOL_HANDLERS,
     **WORKFLOW_RUN_TOOL_HANDLERS,
