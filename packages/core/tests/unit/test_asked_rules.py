@@ -132,7 +132,7 @@ def test_the_owners_own_ask_skips_rules(owner: Any, monkeypatch: pytest.MonkeyPa
     """The owner's ask is the yes; anyone else's turn is checked."""
     from openexecutive.orchestrator import content_trust
 
-    assert ttl.asked_checks_apply(None) is False
+    assert ttl.asked_checks_apply(None) is True  # no session: fails closed
     assert ttl.asked_checks_apply(SimpleNamespace(unattended=True)) is False
     monkeypatch.setattr(content_trust, "principal_speaking", lambda _s: True)
     assert ttl.asked_checks_apply(SimpleNamespace(unattended=False)) is False

@@ -2266,8 +2266,10 @@ def gated_call_tool(call_tool: _Handler, *, source: str) -> _Handler:
 def asked_checks_apply(session: Any) -> bool:
     """Whether this turn's steps meet Your rules and In training here: a
     turn someone is in (a teammate, a contact's mail, a shared chat) that is
-    not the owner's own ask. Fails closed: an error is yes."""
-    if session is None or getattr(session, "unattended", False) is True:
+    not the owner's own ask. Fails closed: no session, or an error, is yes."""
+    if session is None:
+        return True
+    if getattr(session, "unattended", False) is True:
         return False
     try:
         from openexecutive.orchestrator.content_trust import principal_speaking
