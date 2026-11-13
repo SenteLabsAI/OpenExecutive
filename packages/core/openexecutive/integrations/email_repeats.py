@@ -10,7 +10,9 @@ matches one.
 
 Short mail ("yes", "thanks") is never matched: the same few words can be a
 new answer to a new question. Nor is mail with files: the same note can
-carry a different attachment.
+carry a different attachment. The same request word for word within a day
+(a daily "send me today's numbers") is answered once: the window is a day
+for that reason.
 """
 
 from __future__ import annotations

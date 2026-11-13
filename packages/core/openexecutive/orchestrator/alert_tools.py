@@ -404,9 +404,13 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
     if _step_already_on_card(current_session.get()):
         turn = current_session.get()
         if tool_input.get("separate") is not True:
+            logger.info("create_alert: not raised, this email's step already waits on a card: %.120s",
+                        tool_input.get("subject", ""))
             return HELD_STEP_CARD
         if int(getattr(turn, "separate_cards", 0) or 0) >= 1:
             # The mail this turn reads could ask for card after card.
+            logger.info("create_alert: not raised, this email already has a separate card: %.120s",
+                        tool_input.get("subject", ""))
             return SEPARATE_CARD_RAISED
         turn.separate_cards = int(getattr(turn, "separate_cards", 0) or 0) + 1
     if answers_off_team_mail():

@@ -635,6 +635,10 @@ async def _handle_mail(
         # Only the parsed body: the raw text carries per-copy headers.
         from_addr, msg.subject, msg.body_text, has_attachments=msg.has_attachments or bool(msg.attachments),
     )
+    # Checked before the turn and noted after it (_run_executive): the mail
+    # loops handle one message at a time, each turn awaited before the next,
+    # so a second copy is never in flight with the first. A turn that times
+    # out is not noted, so its retry runs again.
     if await asyncio.to_thread(email_repeats.is_copy, repeat_key, message_id):
         # The same email again (a second delivery, or sent twice): the first
         # copy was answered, so this one is marked read and left alone.
