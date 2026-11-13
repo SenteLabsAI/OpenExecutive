@@ -193,7 +193,7 @@ def test_every_tool_left_offered_only_reads() -> None:
     offered = {t["name"] for t in _ALL_SKILL_TOOLS} - MCP_CLIENT_WITHHELD_TOOLS
     assert offered == {
         "ask_about_person", "find_alerts", "get_artifact", "list_artifacts",
-        "list_department_goals", "list_followups", "list_open_loops", "list_people",
+        "list_department_goals", "list_followups", "list_my_activity", "list_open_loops", "list_people",
         "list_watchlist", "list_workflows", "load_skill", "lookup_person",
         "read_user_guide", "search_skills",
     }

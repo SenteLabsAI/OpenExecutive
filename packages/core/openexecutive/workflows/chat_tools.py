@@ -98,6 +98,7 @@ ACCESS: dict[str, tuple[str, str]] = {
     "list_open_loops": (USE, "list tasks"),
     "list_department_goals": (USE, "list goals"),
     "list_watchlist": (USE, "list the watchlist"),
+    "list_my_activity": (USE, "read what the Executive did on its own"),
     "add_watchlist_entry": (USE, "watch something new"),
     "tune_watchlist_entry": (USE, "tune what is watched"),
     "remove_watchlist_entry": (USE, "stop watching something"),
