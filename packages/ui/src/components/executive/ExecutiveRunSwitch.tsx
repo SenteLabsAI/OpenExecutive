@@ -6,6 +6,7 @@ import Icon from "@/components/Icon";
 import { formatPausedAt, useExecutiveStatus } from "@/components/executive/ExecutiveStatusContext";
 import Button from "@/components/ui/Button";
 import { PageSpinner } from "@/components/ui/Spinner";
+import { isImeComposing } from "@/lib/imeComposing";
 
 // What a pause does and does not stop — shown before pausing so the
 // principal knows chat stays live.
@@ -112,7 +113,7 @@ export default function ExecutiveRunSwitch() {
             maxLength={200}
             onChange={(e) => setReason(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !busy) void onPause();
+              if (e.key === "Enter" && !isImeComposing(e) && !busy) void onPause();
             }}
             placeholder="Reason (optional)"
             aria-label="Reason for pausing (optional)"

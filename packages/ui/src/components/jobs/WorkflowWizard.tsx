@@ -18,6 +18,7 @@ import Button from "@/components/ui/Button";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import WorkflowDraftReview from "./WorkflowDraftReview";
 import { PageSpinner } from "@/components/ui/Spinner";
+import { isImeComposing } from "@/lib/imeComposing";
 
 // Same cap chat applies to its `?draft=` prefill.
 const MAX_DESCRIBE_PARAM_CHARS = 2000;
@@ -359,7 +360,7 @@ export default function WorkflowWizard({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
+              if (e.key === "Enter" && !isImeComposing(e) && !e.shiftKey) {
                 e.preventDefault();
                 send(input);
               }

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { WorkflowToolInfo, searchWorkflowTools } from "@/lib/api";
 import ToolChips, { toolLabel, useToolInfo } from "./ToolChips";
+import { isImeComposing } from "@/lib/imeComposing";
 
 /**
  * Pick the tools an action step may use: the chosen list (removable chips)
@@ -56,7 +57,7 @@ export default function ToolPicker({
           placeholder="What should it do? e.g. append rows to a sheet"
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") {
+            if (e.key === "Enter" && !isImeComposing(e)) {
               e.preventDefault();
               void search();
             }

@@ -15,6 +15,7 @@ import {
 } from "@/lib/api";
 import { goalCounts } from "@/lib/goalGroups";
 import { PageSpinner } from "@/components/ui/Spinner";
+import { isImeComposing } from "@/lib/imeComposing";
 
 // The Approvals level each department's work runs at.
 const AUTHORITY_LABELS: Record<string, string> = {
@@ -85,7 +86,7 @@ function AddDepartmentModal({ onCreated, onCancel }: AddDepartmentModalProps) {
             ref={titleRef}
             value={form.title}
             onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
-            onKeyDown={(e) => { if (e.key === "Enter" && form.title.trim()) handleCreate(); }}
+            onKeyDown={(e) => { if (e.key === "Enter" && !isImeComposing(e) && form.title.trim()) handleCreate(); }}
             className={`${INPUT_CLS} h-11`}
             placeholder="Customer Success"
           />

@@ -6,6 +6,7 @@ import Button from "@/components/ui/Button";
 import OverflowMenu from "@/components/ui/OverflowMenu";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import { stashWorkflowDescription, workflowStarterChipsFor } from "@/lib/workflowStarters";
+import { isImeComposing } from "@/lib/imeComposing";
 
 const CHAT_DRAFT = "Help me set up a workflow that ";
 
@@ -60,7 +61,7 @@ export default function StartHere({
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
+            if (e.key === "Enter" && !isImeComposing(e) && !e.shiftKey) {
               e.preventDefault();
               start();
             }

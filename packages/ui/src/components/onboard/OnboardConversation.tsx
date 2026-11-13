@@ -9,6 +9,7 @@ import {
   type RoleKind,
 } from "@/lib/api";
 import OnboardAnswers from "@/components/onboard/OnboardAnswers";
+import { isImeComposing } from "@/lib/imeComposing";
 
 const MAX_FILES = 8;
 
@@ -177,7 +178,7 @@ export default function OnboardConversation({
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
+            if (e.key === "Enter" && !isImeComposing(e) && !e.shiftKey) {
               e.preventDefault();
               void send();
             }

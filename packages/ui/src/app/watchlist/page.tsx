@@ -26,6 +26,7 @@ import {
 import { suggestWatchSlug } from "@/lib/watchSlug";
 import { CADENCE_CHOICES, triggerInWords } from "@/lib/watchWords";
 import { PageSpinner } from "@/components/ui/Spinner";
+import { isImeComposing } from "@/lib/imeComposing";
 
 const fieldCls =
   "w-full px-3.5 py-2.5 text-[15px] rounded-xl bg-surface border border-line text-fg placeholder:text-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent/40";
@@ -585,7 +586,7 @@ function SetUpWatch({ onCreated }: { onCreated: (w: WatchlistItem) => void }) {
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") void ask();
+            if (e.key === "Enter" && !isImeComposing(e)) void ask();
           }}
           maxLength={500}
           placeholder="e.g. Tell me if Initech's stock moves more than 8%"

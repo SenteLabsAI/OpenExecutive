@@ -25,6 +25,7 @@ import {
 } from "@/lib/api";
 import { clientCountsSummary, renewalBadge } from "@/lib/practice";
 import { PageSpinner } from "@/components/ui/Spinner";
+import { isImeComposing } from "@/lib/imeComposing";
 
 // Client-company switcher for fractional / multi-client use. One client is
 // live at a time; switching saves the current client back to its slot and
@@ -500,7 +501,7 @@ export default function ClientsPage() {
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" && name.trim() && !creating && !fixtureActive) void handleCreate();
+                    if (e.key === "Enter" && !isImeComposing(e) && name.trim() && !creating && !fixtureActive) void handleCreate();
                   }}
                   placeholder="Client company name"
                   className={FIELD_CLS}

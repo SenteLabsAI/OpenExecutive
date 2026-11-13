@@ -73,6 +73,7 @@ import RepeatOfferCard from "@/components/jobs/RepeatOfferCard";
 import type { RepeatOffer } from "@/lib/api";
 import { turnStatus } from "@/lib/turnStatus";
 import { isNearBottom, lastUserIndex, pinScrollTop, pinSpacerHeight } from "@/lib/chatPin";
+import { isImeComposing } from "@/lib/imeComposing";
 
 interface ChatProps {
   onDebugEvent?: (event: DebugEvent) => void;
@@ -1024,7 +1025,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
       acceptFollowup();
       return;
     }
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !isImeComposing(e) && !e.shiftKey) {
       e.preventDefault();
       submit();
     }

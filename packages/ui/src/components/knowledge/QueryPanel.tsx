@@ -8,6 +8,7 @@ import {
   type KnowledgeSourceType,
 } from "@/lib/api";
 import Button from "@/components/ui/Button";
+import { isImeComposing } from "@/lib/imeComposing";
 
 interface QueryPanelProps {
   domains: string[];
@@ -90,7 +91,7 @@ export default function QueryPanel({ domains, onOpenFile }: QueryPanelProps) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
+              if (e.key === "Enter" && !isImeComposing(e) && !e.shiftKey) {
                 e.preventDefault();
                 run();
               }
