@@ -452,13 +452,13 @@ def looks_automated(raw: str, from_addr: str) -> bool:
 
 # Mail that fishes for sign-in details or talks to the AI instead of a
 # person. Plain code, no model: a stranger's mail that matches gets no
-# acknowledgement and no "Who is" card, only one alert for the principal.
+# acknowledgement and no "Who is" card, only one alert for the principal,
+# who still sees it. Broad on purpose: a stranger asking for any password
+# or code is worth that alert, and a miss would reach a turn.
 _CREDENTIALS = r"(?:passwords?|passcodes?|log-?in (?:details|credentials)|sign-?in (?:details|credentials)|credentials|(?:2fa|mfa|verification|one-?time|security) codes?)"
 _PHISHING_RES: tuple[re.Pattern[str], ...] = (
     re.compile(
-        # An ask for *your* codes, not a vendor's own portal login.
-        rf"\b(?:send|reply with|provide|enter|confirm|share|give|type|update)\b[^.\n]{{0,40}}"
-        rf"\b(?:your|any|all)\b[^.\n]{{0,40}}\b{_CREDENTIALS}\b"
+        rf"\b(?:send|reply with|provide|enter|confirm|share|give|type|update)\b[^.\n]{{0,80}}\b{_CREDENTIALS}\b"
         rf"|\b{_CREDENTIALS}\b[^.\n]{{0,40}}\b(?:you can see|you have|on file|below)\b",
         re.IGNORECASE,
     ),

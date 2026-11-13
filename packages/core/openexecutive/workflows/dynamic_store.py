@@ -67,15 +67,23 @@ def _cadences_to_company_time(conn: sqlite3.Connection) -> None:
     the same times in the company's time zone, which is how they are read
     now (``dynamic_cadence``). The first process to mark the database does
     it, in the same transaction. Best effort: a row it can't read stays."""
+    from openexecutive.workflows.dynamic_cadence import from_utc
+
+    try:
+        from openexecutive.memory.workspace_settings import get_user_timezone
+
+        # Read before marking: a zone that can't be read now leaves the
+        # move for the next start, never marked done as a no-op.
+        zone = get_user_timezone()
+    except Exception:
+        logger.warning("dynamic_store: couldn't read the company's time zone; cadences stay for now", exc_info=True)
+        return
     conn.execute("CREATE TABLE IF NOT EXISTS dynamic_workflows_meta (key TEXT PRIMARY KEY)")
     marked = conn.execute(
         "INSERT OR IGNORE INTO dynamic_workflows_meta (key) VALUES (?)", (_LOCAL_CADENCES,)
     )
     if marked.rowcount != 1:
         return
-    from openexecutive.workflows.dynamic_cadence import _zone, from_utc
-
-    zone = _zone()
     for name, body in conn.execute("SELECT name, definition FROM dynamic_workflows").fetchall():
         try:
             defn = DynamicWorkflowDef.model_validate_json(body)
