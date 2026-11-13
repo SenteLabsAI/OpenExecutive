@@ -101,6 +101,14 @@ def test_a_follow_up_is_kept_only_once_it_names_who_it_means() -> None:
     assert kg.clean_question("What is her approval limit?", "what is her approval limit") == ""
     # A word that only contains one (the, here, other) is fine.
     assert kg.clean_question("Where is the other office?", "where is the other office") != ""
+    # A name filled in from earlier turns isn't held against the question,
+    # and a question that names someone may still say his or her.
+    assert kg.clean_question("Is Maria Gonzalez remote?", "is she remote?") == "Is Maria Gonzalez remote?"
+    assert kg.clean_question(
+        "Does Alex Chen get to expense his flights?", "does he get to expense his flights"
+    ) == "Does Alex Chen get to expense his flights?"
+    # A name alone doesn't make up a question nobody asked.
+    assert kg.clean_question("Is Maria Gonzalez remote?", "what is our refund policy") == ""
 
 
 def test_a_line_leaves_and_a_dismissed_one_stays_gone_for_who_asked(db: Path) -> None:
