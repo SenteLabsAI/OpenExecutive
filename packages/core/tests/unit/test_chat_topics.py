@@ -141,6 +141,8 @@ def test_a_no_topic_reply_is_never_a_topic() -> None:
     # Real topics that merely contain the words stay.
     assert store.clean_topic_name("None of the above deal") == "None of the above deal"
     assert store.clean_topic_name("Write-off review") == "Write-off review"
+    assert store.clean_topic_name("NA expansion") == "NA expansion"
+    assert store.clean_topic_name("Nothing Bundt Cakes") == "Nothing Bundt Cakes"
 
 
 def test_startup_drops_a_saved_no_topic_topic(people: dict[str, int], db: Path) -> None:
@@ -160,6 +162,21 @@ def test_startup_drops_a_saved_no_topic_topic(people: dict[str, int], db: Path) 
     assert _topic_of("b") == (None, "auto")
     assert _topic_of("c")[0] is not None
     assert {t["area"] for t in store.topics_with_areas(alex)} <= {None, ""}
+
+
+def test_startup_leaves_a_topic_the_owner_named_or_filed(people: dict[str, int], db: Path) -> None:
+    alex = people["alex"]
+    for sid in ("a", "b", "c"):
+        _chat(alex, sid)
+    named, _ = store.set_auto_topic("a", alex, "Acme renewal")
+    store.rename_topic(alex, named or 0, "Other")
+    filed, _ = store.set_auto_topic("b", alex, "Write none")
+    store.file_session("c", alex, topic_id=filed)
+    episodic.initialize_db(db)
+    # Owner-kept rows stay, whatever their name, with their chats.
+    assert {t["name"] for t in store.list_topics(alex)} == {"Other", "Write none"}
+    assert _topic_of("a")[0] == named
+    assert _topic_of("c") == (filed, "owner")
 
 
 # ── naming a new chat ────────────────────────────────────────────────────

@@ -29,7 +29,7 @@ PROMPT_TOPICS = 60
 # "(none)", "Write none" (the prompt's own words echoed back), "No topic".
 _NO_TOPIC = re.compile(
     r"^(?:(?:write|topic|area|answer)\s*:?\s*)?[(\[<]?\s*"
-    r"(?:none|nothing|no topic|no area|n/?a|-|other|empty|leave (?:it )?empty)"
+    r"(?:none|no topic|no area|n/a|-|other)"
     r"\s*[)\]>]?$",
     re.IGNORECASE,
 )
@@ -53,11 +53,12 @@ def clean_topic_name(raw: str | None) -> str | None:
 
 
 def drop_no_topic_topics(conn: Any) -> int:
-    """Remove topics saved from a "no topic" reply (such as "Write none").
-    Their chats go under no topic, as the model meant, and aren't asked
-    about again; an area saved the same way is cleared. Returns how many
-    topics went. Runs at startup."""
-    rows = conn.execute("SELECT id, name FROM chat_topics").fetchall()
+    """Remove topics the model saved from a "no topic" reply (such as
+    "Write none"). Their chats go under no topic, as the model meant, and
+    aren't asked about again; an area saved the same way is cleared. A topic
+    or area the owner named or kept is left alone, whatever its name.
+    Returns how many topics went. Runs at startup."""
+    rows = conn.execute("SELECT id, name FROM chat_topics WHERE kept = 0").fetchall()
     ids = [int(r[0]) for r in rows if is_no_topic(str(r[1]))]
     for topic_id in ids:
         conn.execute(
@@ -69,11 +70,12 @@ def drop_no_topic_topics(conn: Any) -> int:
         if owned is None:
             conn.execute("DELETE FROM chat_topics WHERE id = ?", (topic_id,))
     areas = conn.execute(
-        "SELECT DISTINCT area FROM chat_topics WHERE area IS NOT NULL AND area != ''"
+        "SELECT DISTINCT area FROM chat_topics "
+        "WHERE area IS NOT NULL AND area != '' AND area_kept = 0"
     ).fetchall()
     for (area,) in areas:
         if is_no_topic(str(area)):
-            conn.execute("UPDATE chat_topics SET area = '' WHERE area = ?", (area,))
+            conn.execute("UPDATE chat_topics SET area = '' WHERE area = ? AND area_kept = 0", (area,))
     return len(ids)
 
 
