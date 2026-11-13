@@ -672,6 +672,31 @@ def _targets(tool: str, tool_input: dict[str, Any]) -> tuple[list[str], list[str
     return addresses, [person.full_name] if person.full_name else []
 
 
+def _rule_targets(tool: str, tool_input: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """The addresses and names Your rules see: who an id-addressed tool
+    reaches, and everyone a booking invites, so a rule naming a person or
+    company meets a meeting with them too. Someone the People list doesn't
+    have counts as someone new."""
+    addresses, names = _targets(tool, tool_input)
+    if tool not in _BOOK_TOOLS:
+        return addresses, names
+    raw = tool_input.get("attendee_person_ids")
+    from openexecutive.people import store
+
+    for item in raw if isinstance(raw, list) else []:
+        try:
+            person = store.get_person(int(item))
+        except (TypeError, ValueError):
+            person = None
+        if person is None:
+            addresses.append(f"unknown-person:{item}")
+            continue
+        addresses.extend(a for a in [person.email, *person.email_aliases] if a)
+        if person.full_name:
+            names.append(person.full_name)
+    return addresses, names
+
+
 # The tools that only send one person a message: the one they name by id.
 _DIRECT_MESSAGE_TOOLS = frozenset({"message_person", "send_slack_dm", "send_telegram_message", "send_discord_dm"})
 
@@ -2060,8 +2085,8 @@ def _hit(name: str, tool_input: dict[str, Any], *, mcp: bool) -> tuple[Hit | Non
     try:
         lead = get(SCOPE_EXECUTIVE)
         rules = list_rules([SCOPE_COMPANY])
-        text = "\n".join([*_strings(tool_input), *_targets(name, tool_input)[1]])
-        addresses, _ = _targets(name, tool_input)
+        addresses, names = _rule_targets(name, tool_input)
+        text = "\n".join([*_strings(tool_input), *names])
         recipients = sorted({a.lower() for a in [*_EMAIL_RE.findall(text), *addresses]})
         # A rule naming someone ("Always wait for Dana Price") meets mail to
         # their address too.
@@ -2259,8 +2284,8 @@ def _asked_hit(name: str, tool_input: dict[str, Any], *, mcp: bool) -> Hit | Non
     try:
         lead = get(SCOPE_EXECUTIVE)
         rules = list_rules([SCOPE_COMPANY])
-        text = "\n".join([*_strings(tool_input), *_targets(name, tool_input)[1]])
-        addresses, _ = _targets(name, tool_input)
+        addresses, names = _rule_targets(name, tool_input)
+        text = "\n".join([*_strings(tool_input), *names])
         recipients = sorted({a.lower() for a in [*_EMAIL_RE.findall(text), *addresses]})
         # A rule naming someone ("Always wait for Dana Price") meets mail to
         # their address too.

@@ -68,6 +68,30 @@ def test_a_waits_rule_naming_someone_holds_mail_to_their_address(owner: Any) -> 
     assert hit is not None and hit.kind == "rule"
 
 
+def test_a_waits_rule_naming_someone_holds_a_meeting_with_them(owner: Any) -> None:
+    """Your rules see everyone a booking invites: "Always wait for Dana
+    Park" and a rule on her company hold a call booked with her."""
+    dana = people_store.find_person_by_address(DANA, include_contacts=True)
+    assert dana is not None
+    booked: list[dict[str, Any]] = []
+
+    async def create_calendar_event(tool_input: dict[str, Any]) -> str:
+        booked.append(tool_input)
+        return json.dumps({"status": "booked"})
+
+    book = ttl.asked_handlers({"create_calendar_event": create_calendar_event})["create_calendar_event"]
+    step = {"title": "Catch up", "start": "2026-11-20T15:00:00Z", "end": "2026-11-20T15:30:00Z",
+            "attendee_person_ids": [dana.id]}
+    assert json.loads(asyncio.run(book(step))) == {"status": "booked"}
+    for kind, value in (("person", "Dana Park"), ("domain", DANA.split("@")[1])):
+        rule = ttl.add_rule(ttl.SCOPE_COMPANY, kind, value, created_by="t")
+        held = json.loads(asyncio.run(book(step)))
+        assert held["status"] == "waiting_for_approval" and len(booked) == 1
+        hit, _ = ttl._hit("create_calendar_event", step, mcp=False)
+        assert hit is not None and hit.kind == "rule"
+        ttl.delete_rule(rule.id, ttl.SCOPE_COMPANY)
+
+
 def test_in_training_holds_an_asked_step_until_allowed(owner: Any) -> None:
     seen, call_tool = _calls()
     asked = ttl.asked_call_tool(call_tool)
