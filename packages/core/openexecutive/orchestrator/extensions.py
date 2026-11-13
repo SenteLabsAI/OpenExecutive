@@ -49,8 +49,10 @@ stop the step where it is (``workflows/action_step.py``):
   from there, a no skips it.
 - ``workflow_wait(key, what)``: something the tool needs isn't there yet (a
   device that isn't connected). The run pauses, and ``resumer.resume_waiting(key)``
-  runs the step again once it is; with no sign of it in time, the run stops
-  and says so.
+  runs the step again once it is; ``resumer.stop_waiting(key)`` stops it
+  there instead, when the person says not to go on (a Stop the tool shows
+  them); with no sign of it in time, the run stops and says so. The tool
+  that pauses calls one of them when it hears.
 
 A tool may sit in a ``tool_groups`` group (opened with open_tools) instead of
 on the direct list, may describe its chip, may name the activity line the chat

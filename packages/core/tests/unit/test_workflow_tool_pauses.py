@@ -117,9 +117,11 @@ async def _collect(wf: DynamicWorkflow) -> list[Any]:
     return [e async for e in wf.run(wf.input_model()(), store=None)]  # type: ignore[arg-type]
 
 
-def _resume(state: WorkflowResumeState, decision: str) -> list[Any]:
+def _resume(
+    state: WorkflowResumeState, decision: str, resolution: WaitForHumanResolution | None = None
+) -> list[Any]:
     wf = DynamicWorkflow(_defn())
-    resolution = WaitForHumanResolution(
+    resolution = resolution or WaitForHumanResolution(
         run_id="run-1", reply_text=decision, source_channel="web",
         parsed_decision={"decision": decision}, person_id=7,
     )
@@ -338,6 +340,26 @@ def test_a_no_while_it_waits_stops_the_run(
     events = _waited(monkeypatch, browser, [_resp(_use(BROWSE, {"do": "look"}, "tu_1"))])
     _install(monkeypatch, _ScriptedProvider([]))  # the step does not run again
     resumed = _resume(events[-1].resume_state, "reject")
+    errors = [e.message for e in resumed if getattr(e, "type", "") == "error"]
+    assert errors == ["Stopped at 'Place the order': you stopped it while it waited for your browser."]
+
+
+def test_stop_waiting_stops_a_waiting_run_with_its_plain_error(
+    monkeypatch: pytest.MonkeyPatch, browser: _Browser, audit: list[dict[str, Any]], _isolated: Path
+) -> None:
+    events = _waited(monkeypatch, browser, [_resp(_use(BROWSE, {"do": "look"}, "tu_1"))])
+    pause = events[-1]
+    until = datetime.now(UTC) + timedelta(hours=1)
+    wf_persistence.create_run("r-stop", "buy_wf", "Weekly order", {})
+    wf_persistence.save_checkpoint(
+        run_id="r-stop", state_json=pause.model_dump_json(), awaiting_person_id=7,
+        awaiting_until=until, resume_state_json=pause.resume_state.model_dump_json(),
+    )
+    monkeypatch.setattr(resumer, "_kick_resume", lambda run_id, db_path=None: None)
+    assert asyncio.run(resumer.stop_waiting("device:7")) == 1
+    stored = WaitForHumanResolution.model_validate_json(wf_persistence.get_run("r-stop")["resolution_json"])  # type: ignore[index]
+    _install(monkeypatch, _ScriptedProvider([]))  # the step does not run again
+    resumed = _resume(pause.resume_state, "", stored)
     errors = [e.message for e in resumed if getattr(e, "type", "") == "error"]
     assert errors == ["Stopped at 'Place the order': you stopped it while it waited for your browser."]
 
