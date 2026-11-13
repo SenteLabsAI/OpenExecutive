@@ -401,6 +401,7 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
     # (orchestrator.outside_content.SENDER).
     from openexecutive.orchestrator.outside_content import answers_off_team_mail
 
+    separate_turn: Any = None
     if _step_already_on_card(current_session.get()):
         turn = current_session.get()
         if tool_input.get("separate") is not True:
@@ -412,7 +413,7 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
             logger.info("create_alert: not raised, this email already has a separate card: %.120s",
                         tool_input.get("subject", ""))
             return SEPARATE_CARD_RAISED
-        turn.separate_cards = int(getattr(turn, "separate_cards", 0) or 0) + 1
+        separate_turn = turn  # counted once the card is raised
     if answers_off_team_mail():
         private = True
         sender = getattr(current_session.get(), "email_from", "") or ""
@@ -472,6 +473,8 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
             return ask_first
         event.external_id = _fresh_external_id(event.source, event.external_id, folds=event.follow_up)
         schedule_evaluation(event)
+        if separate_turn is not None:
+            separate_turn.separate_cards = int(getattr(separate_turn, "separate_cards", 0) or 0) + 1
         logger.info("create_alert: scheduled subject=%r", tool_input["subject"])
         audit_log(
             "alert",

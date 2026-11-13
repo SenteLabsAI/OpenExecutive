@@ -108,6 +108,9 @@ def test_an_email_turn_with_a_held_step_raises_no_second_card() -> None:
         assert json.loads(out)["status"] == "step_already_on_card"
         # One card about something else goes; the mail can't ask for more.
         other = {"subject": "Possible fraud", "body": "New bank details", "separate": True}
+        # A call that isn't raised (a missing field) doesn't use it up.
+        bad = json.loads(asyncio.run(alert_tools.handle_create_alert({**other, "body": ""})))
+        assert "error" in bad and session.separate_cards == 0
         with (
             patch("openexecutive.alerts.pipeline.schedule_evaluation"),
             patch("openexecutive.audit.log_event", new=lambda *_a, **_k: None),
