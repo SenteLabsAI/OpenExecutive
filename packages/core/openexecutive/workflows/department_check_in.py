@@ -35,6 +35,20 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# How a review grades a goal, shared by the check-in, the weekly review and
+# the review of goals no check-in covers (departments/goal_review.py). A goal
+# with no number is still graded (skipped, it was never reviewed), and one
+# whose progress says it is finished is closed, not left open as "Done".
+VERDICT_STATUS_SHAPE = '"status": "on_track" | "at_risk" | "off_track" | "done", '
+GRADING_RULES = (
+    "Grade every goal. One with a number: its current value against its target and how "
+    "much of its period is left. One with no number: from its progress text, its period "
+    "and what the context shows was done: on_track while it is moving or its period has "
+    "time left, at_risk when its period is nearly over with little shown, off_track when "
+    "its period has passed unfinished. Use done only when its progress says it is "
+    "finished or its target is met. Never invent a number that is not given."
+)
+
 # Actor on the check-in's own `goal_status_review` audit row. `needs_check_in`
 # ignores that row: it lands after the Goals are stamped reviewed, so counting
 # it as "new" would re-run every check-in.
@@ -196,16 +210,17 @@ class DepartmentCheckInWorkflow(Workflow):
             query=(
                 f"Review the current Goal progress for the {state.config.title} department "
                 f"for the period {period}. For each Goal, assess whether it is "
-                "on_track, at_risk, or off_track based on the current value vs. target.\n\n"
+                "on_track, at_risk, off_track or done.\n\n"
+                f"{GRADING_RULES}\n\n"
                 "Return ONLY a JSON object on its own — no prose before or after, "
                 "no markdown fences — with this exact shape:\n"
                 '{"verdicts": [{"goal_id": <int from the [id=N] prefix>, '
-                '"status": "on_track" | "at_risk" | "off_track", '
+                f"{VERDICT_STATUS_SHAPE}"
                 '"rationale": "<one short sentence>"}, ...], '
                 '"narrative": "<one paragraph rendered into the check-in report; '
                 'mention any goal that moved status since the last period>"}\n\n'
                 "Use the integer id from each Goal's `[id=N]` prefix below. "
-                "Skip Goals you cannot grade. Include every Goal you do grade — "
+                "Include every Goal you grade — "
                 "the verdict is persisted back to the database.\n\n"
                 f"{goal_context}"
             ),
@@ -475,7 +490,7 @@ def _render_audit(entries: Sequence[object]) -> str:
     return "\n".join(lines)
 
 
-_VALID_GOAL_STATUSES = frozenset({"on_track", "at_risk", "off_track"})
+_VALID_GOAL_STATUSES = frozenset({"on_track", "at_risk", "off_track", "done"})
 
 
 def _parse_verdicts(text: str) -> tuple[list[dict[str, Any]], str]:

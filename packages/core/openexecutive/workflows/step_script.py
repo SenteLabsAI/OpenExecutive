@@ -230,6 +230,7 @@ CHAT_OWN_TOOLS: tuple[str, ...] = (
     "create_goal",
     "find_alerts",
     "list_department_goals",
+    "list_my_activity",
     "list_open_loops",
     "list_people",
     "list_watchlist",

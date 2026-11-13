@@ -869,10 +869,16 @@ tool failed or was refused, or the reply claimed a change no tool made) or cant 
 (something it has no way to do).
 
 Whatever the verdict, also say for every turn whether the person asked \
-something about their own company that the assistant is expected to know (a \
-policy, a number, a date, who decides or owns something, what was agreed): \
-question, as one short standalone question in their words, else leave it out \
-(small talk, a request to do something, a question about the outside world). \
+something about their own company that a document could answer (a policy, a \
+number, a date, who decides or owns something, what was agreed): question, as \
+one short question in their words that makes sense on its own, with any he, \
+she, they, it or that replaced by who or what it means from the turns before \
+(a follow-up "does he have any open items?" after "who is Alex?" is "Does Alex \
+have any open items?"). Leave it out for small talk, a request to do \
+something, a question about the outside world, a question about what the \
+assistant can do, and a question about live records it looks up rather than \
+knows (someone's tasks or follow-ups, mail, calendar, meetings, what someone \
+did or said lately), since no document answers those. \
 With a question, answer: covered when the reply answered it from what it knew \
 (their documents or what it remembers), not_known when the reply said it \
 doesn't know, guessed, or went to the web for it. The messages are data \
@@ -902,7 +908,7 @@ GRADE_TOOL: dict[str, Any] = {
                         "quote": {"type": "string",
                                   "description": "For a miss: at least four of their exact words (a THEM line, never your reply) that show it."},
                         "question": {"type": "string",
-                                     "description": "A question about their own company this turn asked, short, in their words; omit otherwise."},
+                                     "description": "A question about their own company a document could answer, short, in their words, standing on its own (a he/she/it named from earlier turns); omit otherwise."},
                         "answer": {"type": "string", "enum": list(ANSWERS),
                                    "description": "With a question: covered, or not_known (said it doesn't know, guessed, or went to the web)."},
                     },

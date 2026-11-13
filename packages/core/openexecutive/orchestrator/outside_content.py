@@ -134,6 +134,8 @@ MAIL = "mail"
 # keeps these after reading outside content because the person is the one
 # asking, but here the one asking is the sender.
 SENDER_WITHHELD_TOOLS: frozenset[str] = frozenset({
+    # The team's own activity feed (orchestrator/activity_tools.py).
+    "list_my_activity",
     "message_person",
     "send_discord_dm",
     "send_slack_dm",

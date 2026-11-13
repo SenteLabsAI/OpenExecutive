@@ -103,6 +103,7 @@ _LABELS: dict[str, str] = {
     # Watchlist
     "add_watchlist_entry": "Adding to the watchlist…",
     "list_watchlist": "Checking the watchlist…",
+    "list_my_activity": "Checking what I did…",
     "remove_watchlist_entry": "Updating the watchlist…",
     "tune_watchlist_entry": "Tuning the watchlist…",
 
