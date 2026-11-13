@@ -73,6 +73,7 @@ MAIL_TOUCHED_ALLOWED_TOOLS: frozenset[str] = frozenset({
     "get_artifact",
     "list_artifacts",
     "list_department_goals",
+    "list_my_activity",
     "list_open_loops",
     "list_people",
     "list_saved_tools",

@@ -61,13 +61,15 @@ GROUPS: dict[str, tuple[str, tuple[str, ...]]] = {
         ),
     ),
     "watch_and_alerts": (
-        "keep an eye on topics, people or competitors (the watch list), alerts, executive research runs",
+        "keep an eye on topics, people or competitors (the watch list), alerts, executive research runs, "
+        "what you did on your own lately (your activity)",
         (
             "ack_alert",
             "add_watchlist_entry",
             "answer_card",
             "create_alert",
             "find_alerts",
+            "list_my_activity",
             "list_watchlist",
             "remove_watchlist_entry",
             "run_executive_research",
