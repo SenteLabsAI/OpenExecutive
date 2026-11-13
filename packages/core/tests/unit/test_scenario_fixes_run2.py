@@ -53,6 +53,13 @@ def test_the_same_email_twice_is_answered_once(tmp_path: Path) -> None:
     assert email_repeats.is_copy(key, "m7", now=now + timedelta(hours=25), db_path=path) is False
 
 
+def test_mail_with_files_is_never_matched_as_a_copy() -> None:
+    # The same note can carry a different attachment.
+    body = "Please see the attached invoice for the March order, thanks a lot"
+    assert email_repeats.fingerprint("dana@x.example", "Invoice", body) is not None
+    assert email_repeats.fingerprint("dana@x.example", "Invoice", body, has_attachments=True) is None
+
+
 def test_an_email_turn_with_a_held_step_raises_no_second_card() -> None:
     session = Session(session_id="email:t1")
     session.origin_channel = "email"

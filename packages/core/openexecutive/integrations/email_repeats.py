@@ -9,7 +9,8 @@ vouched for, for a day, and ``is_copy`` leaves alone a later message that
 matches one.
 
 Short mail ("yes", "thanks") is never matched: the same few words can be a
-new answer to a new question.
+new answer to a new question. Nor is mail with files: the same note can
+carry a different attachment.
 """
 
 from __future__ import annotations
@@ -38,9 +39,12 @@ def _db_path(db_path: Path | None) -> Path:
     return Path(episodic.DB_PATH)
 
 
-def fingerprint(from_addr: str, subject: str, body: str) -> str | None:
+def fingerprint(from_addr: str, subject: str, body: str, *, has_attachments: bool = False) -> str | None:
     """The sender, subject and words of a message as one hash, or None when
-    the text is too short to tell a copy from a new message."""
+    the text is too short to tell a copy from a new message, or it carries
+    files."""
+    if has_attachments:
+        return None
     words = re.findall(r"\w+", body.casefold())
     if len(words) < MIN_WORDS:
         return None
