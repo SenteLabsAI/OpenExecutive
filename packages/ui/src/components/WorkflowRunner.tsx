@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Button from "@/components/ui/Button";
@@ -11,6 +11,7 @@ import {
   runWorkflow,
   stopWorkflowRun,
 } from "@/lib/api";
+import { shownSteps } from "@/lib/workflowRun";
 
 type StepState = "pending" | "running" | "done" | "skipped" | "paused";
 
@@ -23,22 +24,23 @@ interface StepStatus {
 interface WorkflowRunnerProps {
   workflow: WorkflowMeta;
   inputs: Record<string, unknown>;
-  onCancel: () => void;
+  /** Back to the workflow's details and form, once the run has failed or stopped. */
+  onBack: () => void;
 }
 
-export default function WorkflowRunner({
-  workflow,
-  inputs,
-  onCancel,
-}: WorkflowRunnerProps) {
+/**
+ * Runs the workflow as soon as it mounts: the Run or Run it now that showed
+ * it was the person's go, so there is no second confirm here. Approvals, Your
+ * rules and In training still hold a step mid-run, with an Approve card.
+ */
+export default function WorkflowRunner({ workflow, inputs, onBack }: WorkflowRunnerProps) {
   const router = useRouter();
   const [steps, setSteps] = useState<StepStatus[]>(
-    workflow.steps.map((s) => ({ def: s, state: "pending" }))
+    shownSteps(workflow.steps).map((s) => ({ def: s, state: "pending" }))
   );
   const [runId, setRunId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [streaming, setStreaming] = useState(false);
-  const [started, setStarted] = useState(false);
+  const [streaming, setStreaming] = useState(true);
   const [paused, setPaused] = useState<WorkflowEvent | null>(null);
   const [stopped, setStopped] = useState(false);
   const [stopping, setStopping] = useState(false);
@@ -56,18 +58,12 @@ export default function WorkflowRunner({
     }
   }
 
-  async function handleStart() {
-    setStarted(true);
-    setStreaming(true);
-    setError(null);
-    setRunId(null);
-    setPaused(null);
-    setStopped(false);
-    setSteps(workflow.steps.map((s) => ({ def: s, state: "pending" })));
-
+  async function start() {
     try {
       for await (const evt of runWorkflow(workflow.name, inputs)) {
-        applyEvent(evt);
+        // The run goes on server-side after the person leaves this page;
+        // its events must not move them from wherever they went.
+        if (mountedRef.current) applyEvent(evt);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -141,89 +137,95 @@ export default function WorkflowRunner({
     }
   }
 
+  // One run per mount, even when React runs effects twice in development.
+  const startedRef = useRef(false);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  useEffect(() => {
+    if (startedRef.current) return;
+    startedRef.current = true;
+    void start();
+    // Once, on mount: the inputs are fixed for this run.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
-    <div className="space-y-6">
-      {!started && (
-        <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-line bg-surface-elevated p-5 shadow-sm">
-          <Button variant="primary" onClick={handleStart} className="px-7">
-            Run workflow
-          </Button>
-          <Button variant="ghost" onClick={onCancel}>
-            Back to the details
-          </Button>
-          <span className="text-sm text-fg-muted sm:ml-auto">
-            ~{workflow.estimated_minutes} min · {workflow.steps.length} steps
+    <div className="rounded-2xl border border-line bg-surface-elevated p-5 shadow-sm sm:p-6">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-lg font-semibold text-fg">Progress</h3>
+        {streaming && !stopped && (
+          <span className="flex items-center gap-3">
+            <span className="text-xs text-amber-400 flex items-center gap-1.5">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+              Running
+            </span>
+            {runId && (
+              <Button variant="secondary" onClick={handleStop} disabled={stopping}>
+                {stopping ? "Stopping…" : "Stop run"}
+              </Button>
+            )}
           </span>
+        )}
+        {stopped && <span className="text-xs text-fg-muted">Stopped</span>}
+        {!streaming && !error && !stopped && paused && (
+          <span className="text-xs text-amber-400">Paused</span>
+        )}
+        {!streaming && !error && !paused && !stopped && runId && (
+          <span className="text-xs text-emerald-400">Complete</span>
+        )}
+        {error && <span className="text-xs text-red-400">Failed</span>}
+      </div>
+      <ol className="space-y-3">
+        {steps.map((s, i) => (
+          <li key={s.def.id} className="flex gap-3">
+            <StepIndicator state={s.state} index={i + 1} />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-baseline justify-between gap-3">
+                <div className="text-[15px] text-fg font-medium">
+                  {s.def.title}
+                </div>
+                <div className="text-[10px] text-fg-muted uppercase tracking-wide">
+                  {s.state}
+                </div>
+              </div>
+              <div className="text-sm text-fg-muted mt-0.5">
+                {s.def.description}
+              </div>
+              {s.summary && (
+                <div className="text-xs text-fg-muted mt-1.5 italic">
+                  {s.summary}
+                </div>
+              )}
+            </div>
+          </li>
+        ))}
+      </ol>
+      {paused && (
+        <div className="mt-4">
+          <PausedNotice event={paused} runId={runId} />
         </div>
       )}
-
-      {started && (
-        <div className="rounded-2xl border border-line bg-surface-elevated p-5 shadow-sm sm:p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-semibold text-fg">Progress</h3>
-            {streaming && !stopped && (
-              <span className="flex items-center gap-3">
-                <span className="text-xs text-amber-400 flex items-center gap-1.5">
-                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-                  Running
-                </span>
-                {runId && (
-                  <Button variant="secondary" onClick={handleStop} disabled={stopping}>
-                    {stopping ? "Stopping…" : "Stop run"}
-                  </Button>
-                )}
-              </span>
-            )}
-            {stopped && <span className="text-xs text-fg-muted">Stopped</span>}
-            {!streaming && !error && !stopped && paused && (
-              <span className="text-xs text-amber-400">Paused</span>
-            )}
-            {!streaming && !error && !paused && !stopped && runId && (
-              <span className="text-xs text-emerald-400">Complete</span>
-            )}
-            {error && <span className="text-xs text-red-400">Failed</span>}
-          </div>
-          <ol className="space-y-3">
-            {steps.map((s, i) => (
-              <li key={s.def.id} className="flex gap-3">
-                <StepIndicator state={s.state} index={i + 1} />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-baseline justify-between gap-3">
-                    <div className="text-[15px] text-fg font-medium">
-                      {s.def.title}
-                    </div>
-                    <div className="text-[10px] text-fg-muted uppercase tracking-wide">
-                      {s.state}
-                    </div>
-                  </div>
-                  <div className="text-sm text-fg-muted mt-0.5">
-                    {s.def.description}
-                  </div>
-                  {s.summary && (
-                    <div className="text-xs text-fg-muted mt-1.5 italic">
-                      {s.summary}
-                    </div>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ol>
-          {paused && (
-            <div className="mt-4">
-              <PausedNotice event={paused} runId={runId} />
-            </div>
-          )}
-          {stopped && (
-            <div className="mt-4 text-sm text-fg-muted rounded-md border border-line p-3">
-              Stopped. Nothing more runs. What it already did stays done.
-            </div>
-          )}
-          {error && (
-            <div className="mt-4 text-sm text-red-400 bg-red-500/5 border border-red-500/20 rounded-md p-3">
-              <div className="font-medium mb-1">Workflow failed</div>
-              <div className="text-xs">{error}</div>
-            </div>
-          )}
+      {stopped && (
+        <div className="mt-4 text-sm text-fg-muted rounded-md border border-line p-3">
+          Stopped. Nothing more runs. What it already did stays done.
+        </div>
+      )}
+      {error && (
+        <div className="mt-4 text-sm text-red-400 bg-red-500/5 border border-red-500/20 rounded-md p-3">
+          <div className="font-medium mb-1">Workflow failed</div>
+          <div className="text-xs">{error}</div>
+        </div>
+      )}
+      {!streaming && (error || stopped) && (
+        <div className="mt-4">
+          <Button variant="secondary" onClick={onBack}>
+            Back to the details
+          </Button>
         </div>
       )}
     </div>

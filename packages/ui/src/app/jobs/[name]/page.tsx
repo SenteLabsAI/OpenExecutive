@@ -17,6 +17,7 @@ import {
   getWorkflowSample,
 } from "@/lib/api";
 import { describeCadenceLocal } from "@/lib/workflowChanges";
+import { shownSteps, startsOnArrival, takeRunOnArrival } from "@/lib/workflowRun";
 import { Spinner } from "@/components/ui/Spinner";
 
 type FormState = Record<string, string>;
@@ -143,6 +144,13 @@ export default function JobDetailPage() {
         if (appliedAny) setPrefillBanner("suggestion");
         setForm(initial);
         initializedForWorkflowRef.current = name;
+        const filled = (wf.input_schema.required ?? []).every((f) =>
+          Boolean(initial[f]?.trim()),
+        );
+        // Arrived from a list's Run: start now, unless details are needed.
+        // The note is taken here, after the cancelled check, so StrictMode's
+        // throwaway first fetch can't use it up.
+        if (startsOnArrival(takeRunOnArrival(name), filled)) setRunning(true);
         if (wf.is_custom) {
           getCustomWorkflow(name)
             .then((d) => !cancelled && setCustomDef(d))
@@ -158,6 +166,9 @@ export default function JobDetailPage() {
         const message = e instanceof Error ? e.message : String(e);
         const custom = await getCustomWorkflow(name).catch(() => null);
         if (cancelled) return;
+        // It didn't load, so it can't run: drop Run's note, so a later visit
+        // doesn't start it.
+        takeRunOnArrival(name);
         if (custom && !custom.is_active) setPendingDef(custom);
         else setLoadError(message);
       });
@@ -223,9 +234,6 @@ export default function JobDetailPage() {
     []
   );
 
-  const handleCancel = useCallback(() => {
-    setRunning(false);
-  }, []);
 
   if (pendingDef) {
     return (
@@ -260,19 +268,17 @@ export default function JobDetailPage() {
   const props = workflow.input_schema.properties ?? {};
   const hasInputs = Object.keys(props).length > 0;
   // "Load context" is setup every run does, not something this workflow does.
-  const steps = workflow.steps
-    .filter((s) => s.id !== "context")
-    .map((s) => {
-      const custom = customDef?.steps.find((c) => c.id === s.id);
-      const detail = !custom
-        ? ""
-        : custom.kind === "approval_gate"
-          ? custom.question
-          : custom.kind === "synthesis"
-            ? custom.instructions
-            : custom.goal;
-      return { id: s.id, title: s.title, detail: s.description || detail };
-    });
+  const steps = shownSteps(workflow.steps).map((s) => {
+    const custom = customDef?.steps.find((c) => c.id === s.id);
+    const detail = !custom
+      ? ""
+      : custom.kind === "approval_gate"
+        ? custom.question
+        : custom.kind === "synthesis"
+          ? custom.instructions
+          : custom.goal;
+    return { id: s.id, title: s.title, detail: s.description || detail };
+  });
   const editHref = workflow.is_custom
     ? `/jobs/new?edit=${encodeURIComponent(workflow.name)}`
     : null;
@@ -509,7 +515,7 @@ export default function JobDetailPage() {
             <WorkflowRunner
               workflow={workflow}
               inputs={form}
-              onCancel={handleCancel}
+              onBack={() => setRunning(false)}
             />
           )}
         </div>
