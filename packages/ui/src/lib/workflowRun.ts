@@ -21,7 +21,7 @@ export function stepCount(steps: readonly { id: string }[]): string {
 // workflow but never start one.
 const NOTE_PREFIX = "oe.runOnArrival:";
 /** A note older than this is from an abandoned navigation, not this one. */
-export const RUN_NOTE_MAX_AGE_MS = 30_000;
+export const RUN_NOTE_MAX_AGE_MS = 10_000;
 
 type NoteStore = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 

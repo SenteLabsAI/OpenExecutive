@@ -166,6 +166,9 @@ export default function JobDetailPage() {
         const message = e instanceof Error ? e.message : String(e);
         const custom = await getCustomWorkflow(name).catch(() => null);
         if (cancelled) return;
+        // It didn't load, so it can't run: drop Run's note, so a later visit
+        // doesn't start it.
+        takeRunOnArrival(name);
         if (custom && !custom.is_active) setPendingDef(custom);
         else setLoadError(message);
       });
