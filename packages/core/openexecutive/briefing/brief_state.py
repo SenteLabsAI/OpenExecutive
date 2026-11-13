@@ -431,6 +431,21 @@ def carried_lines(
     return lines
 
 
+# Handled kinds whose summary carries a watched page's own words.
+_OUTSIDE_HANDLED_KINDS = frozenset({"quiet_watch_found"})
+
+
+def handled_line(h: dict[str, Any]) -> str:
+    """One handled row as a brief's prompt lists it. A quiet watch's find
+    is the page's own words, so it goes in as untrusted content."""
+    summary = str(h.get("summary", ""))[:140]
+    if h.get("kind") in _OUTSIDE_HANDLED_KINDS:
+        from openexecutive.orchestrator.content_trust import wrap_untrusted
+
+        summary = wrap_untrusted(summary, source="watched page")
+    return f"- [{str(h.get('at', ''))[:10]}] {h.get('kind', '')}: {summary}"
+
+
 def handled_since(
     since: datetime, limit: int = 20, *, include_private: bool = False
 ) -> list[dict[str, Any]]:

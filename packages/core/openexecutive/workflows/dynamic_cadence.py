@@ -32,6 +32,38 @@ def _zone() -> tzinfo:
         return UTC
 
 
+_DOW_NAMES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def from_utc(spec: str, tz: tzinfo, now: datetime | None = None) -> str:
+    """``spec`` written in UTC (as cadences were before they took the
+    company's time zone), rewritten as the same moment in ``tz``: its next
+    occurrence, read there. A weekly or quarterly day moves with it when the
+    time crosses midnight (a quarterly day keeps its own number if that
+    would leave its month). Anything it can't read stays as it is."""
+    from openexecutive.departments.cadence import (
+        _DAILY_RE,
+        _QUARTERLY_RE,
+        _WEEKLY_RE,
+        _parse_cadence_spec,
+    )
+
+    nxt = _parse_cadence_spec(spec, now or datetime.now(UTC), UTC)
+    if nxt is None:
+        return spec
+    local = nxt.astimezone(tz)
+    clock = f"{local.hour:02d}:{local.minute:02d}"
+    if _DAILY_RE.match(spec):
+        return f"daily@{clock}"
+    if _WEEKLY_RE.match(spec):
+        return f"weekly@{_DOW_NAMES[local.weekday()]}@{clock}"
+    quarterly = _QUARTERLY_RE.match(spec)
+    if quarterly:
+        day = local.day if local.month == nxt.month else int(quarterly.group(1))
+        return f"quarterly@{day:02d}-{clock}"
+    return spec
+
+
 def schedule_dynamic_workflow_cadence(
     defn: DynamicWorkflowDef, *, after: datetime | None = None, db_path: Path | None = None
 ) -> int | None:

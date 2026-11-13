@@ -61,6 +61,8 @@ def test_a_contacts_mail_turn_cannot_fetch_other_attachments() -> None:
         ("Your mailbox", "Your mailbox will be suspended today unless you confirm your login details here.", True),
         ("Quick one", "Please send me your verification code so I can finish the setup.", True),
         ("Quote request", "Hi, could you send a quote for 40 spools of cable? Thanks, Chris", False),
+        ("Portal", "Please send the credentials for the portal you mentioned and we'll set it up.", False),
+        ("Setup", "Once it arrives, send us the verification code you received from the bank.", False),
         ("Password reset policy", "We changed our password policy last week; nothing to do on your side.", False),
     ],
 )

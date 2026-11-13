@@ -241,11 +241,10 @@ def _render_eod_context(
 
     if handled:
         parts.append("ALERTS I HANDLED TODAY (already done — report, don't ask):")
+        from openexecutive.briefing.brief_state import handled_line
+
         for h in handled[:15]:
-            parts.append(
-                f"- [{str(h.get('at', ''))[:10]}] {h.get('kind', '')}: "
-                f"{str(h.get('summary', ''))[:140]}"
-            )
+            parts.append(handled_line(h))
         parts.append("")
 
     from openexecutive.briefing.brief_state import (

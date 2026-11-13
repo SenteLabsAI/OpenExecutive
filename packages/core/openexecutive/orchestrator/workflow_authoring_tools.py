@@ -212,10 +212,11 @@ def _reads_refusal(defn: Any) -> str | None:
 
 def _person_asked() -> bool:
     """Whether a person on the team asked for this save in their own words
-    this turn, on a surface that verified it is them, with nothing read this
-    turn trying to give orders: their ask is the yes, as it is for anything
-    else they ask for in chat (``history_chat.verified_speaker``). Fails
-    closed. Never raises."""
+    this turn, on a surface that verified it is them, with nothing read from
+    outside this turn (checked or not: an unflagged page can still be the
+    one asking): their ask is the yes, as it is for anything else they ask
+    for in chat (``history_chat.verified_speaker``). Fails closed. Never
+    raises."""
     try:
         from openexecutive.memory.history_chat import verified_speaker
         from openexecutive.orchestrator import outside_content
@@ -229,7 +230,7 @@ def _person_asked() -> bool:
         if person is None or getattr(person, "kind", "team") != "team":
             return False
         state = outside_content.current()
-        if state is not None and state.flags:
+        if state is not None and (state.flags or state.sources or state.pending):
             return False
         return verified_speaker(session, person)
     except Exception:
