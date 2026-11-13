@@ -328,6 +328,34 @@ def test_another_word_makes_another_figure() -> None:
     assert sorted(f["figure"] for f in wo.list_figures(1)) == ["$108,000", "$4.2M", "$9,000", "12%"]
 
 
+def test_the_same_value_under_another_name_is_kept_once() -> None:
+    _keep(1, "Launch date", "Monday, Nov 16", "Launch plan")
+    _keep(1, "Open Executive launch date", "Monday, Nov 16", "Goals list")
+    _keep(1, "Apple Developer Program enrollment ID", "7VJ6K57LAJ", "Enrollment email")
+    _keep(1, "Apple Developer enrollment ID", "7VJ6K57LAJ", "Enrollment page")
+    _keep(1, "Phone for Play Console verification", "+1 4078644111", "Play Console")
+    _keep(1, "Contact phone for Play Console verification", "+14078644111", "Play Console")
+    assert sorted(f["subject"] for f in wo.list_figures(1)) == [
+        "Apple Developer enrollment ID", "Contact phone for Play Console verification", "Open Executive launch date"]
+
+
+def test_the_same_value_on_another_thing_stays_apart() -> None:
+    _keep(1, "Headcount", "14", "People list")
+    _keep(1, "Headcount plan", "14", "People list")
+    _keep(1, "Play Console developer fee", "$25", "Play Console")
+    _keep(1, "Domain renewal fee", "$25", "Registrar")
+    _keep(1, "Q3 revenue", "$1.2M", "Ledger")
+    _keep(1, "Q3 revenue target", "$12M", "Ledger")
+    assert len(wo.list_figures(1)) == 6
+
+
+def test_the_pass_is_told_to_keep_only_lasting_business_figures() -> None:
+    prompt = wo._PROMPT.casefold()
+    for words in ("lasting knowledge about the business", "shopping", "web search", "live counts",
+                  "none is the\nusual answer"):
+        assert words in prompt, words
+
+
 def test_figures_from_one_turn_never_replace_each_other() -> None:
     ids = wo.add_figures(1, [wo.Figure("Reserves held", "$1", "Ledger"), wo.Figure("reserves held", "$2", "Ledger")],
                          session_id="s1", private=False)
