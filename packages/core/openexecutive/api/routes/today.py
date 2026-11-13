@@ -1479,7 +1479,8 @@ RHYTHM_WORKFLOWS: frozenset[str] = frozenset({
 # Runs that are never a row of their own. The daily look back says nothing
 # on its own ("Looked back on the day", with no line and no link, since its
 # write-up isn't screened for what is private to the owner), and what it did
-# shows as rows of its own (the Take the lead rows below).
+# shows as rows of its own (the Take the lead rows below). It is left out of
+# every reader of this feed on purpose, All activity included.
 _NEVER_IN_FEED: frozenset[str] = frozenset({"executive_reflection"})
 
 
