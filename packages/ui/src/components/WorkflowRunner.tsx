@@ -61,7 +61,9 @@ export default function WorkflowRunner({ workflow, inputs, onBack }: WorkflowRun
   async function start() {
     try {
       for await (const evt of runWorkflow(workflow.name, inputs)) {
-        applyEvent(evt);
+        // The run goes on server-side after the person leaves this page;
+        // its events must not move them from wherever they went.
+        if (mountedRef.current) applyEvent(evt);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -137,6 +139,13 @@ export default function WorkflowRunner({ workflow, inputs, onBack }: WorkflowRun
 
   // One run per mount, even when React runs effects twice in development.
   const startedRef = useRef(false);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
   useEffect(() => {
     if (startedRef.current) return;
     startedRef.current = true;
