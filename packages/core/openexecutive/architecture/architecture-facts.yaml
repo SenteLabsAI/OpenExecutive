@@ -5394,7 +5394,8 @@ chat:
     counts it would look up again (sign-ups, a waitlist, open issues, stars)
     are left out, since they filled the list with noise. Same subject (stem
     key) replaces, and so does the same value under another name for it
-    (same_figure: two shared subject words, half the shorter's); 200 per person;
+    (same_figure: a value of 6+ characters, one subject's words a subset
+    of the other's, at least two); 200 per person;
     WORKED_OUT_MAX_PER_DAY passes (default 40); WORKED_OUT_ENABLED. Read back
     by build_worked_out_block as a <worked_out> user-turn block, up to five
     by shared words with the message, labelled data and "from before", only

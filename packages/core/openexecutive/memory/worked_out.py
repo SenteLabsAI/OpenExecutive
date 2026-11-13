@@ -176,15 +176,17 @@ def _value(figure: str) -> str:
 
 def same_figure(a_key: str, a_figure: str, b_key: str, b_figure: str) -> bool:
     """Whether two figures are one thing kept twice under other names: the
-    same value, and subjects that share at least two words and half the
-    shorter one's ("Launch date" and "Open Executive launch date", both
-    "Monday, Nov 16"). One word in common is not enough: "Headcount" and
-    "Headcount plan" stay apart even when both are 14."""
-    if _value(a_figure) != _value(b_figure):
+    same value, at least six characters long, and one subject's words all in
+    the other's, at least two of them ("Launch date" and "Open Executive
+    launch date", both "Monday, Nov 16"). A short value ("14", "$25",
+    "$1.2M") is too common to say two subjects are one thing, and a subject
+    that adds a word the other lacks on both sides ("Q3 headcount plan",
+    "Q4 headcount plan") is another thing."""
+    value = _value(a_figure)
+    if len(value) < 6 or value != _value(b_figure):
         return False
     a, b = set(a_key.split()), set(b_key.split())
-    shared = len(a & b)
-    return shared >= 2 and shared * 2 >= min(len(a), len(b))
+    return len(a & b) >= 2 and (a <= b or b <= a)
 
 
 def _numbers(text: str) -> set[str]:
