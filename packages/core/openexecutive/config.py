@@ -343,6 +343,14 @@ class Settings(BaseSettings):
     local_include_usage_accounting: bool = Field(
         False, alias="LOCAL_INCLUDE_USAGE_ACCOUNTING"
     )
+    # Ask a streaming OpenAI-compatible backend for the final usage chunk via
+    # `stream_options: {"include_usage": true}`. UNLIKE
+    # LOCAL_INCLUDE_USAGE_ACCOUNTING above, this IS part of the OpenAI request
+    # schema, so it defaults ON: without it the spec lets a backend omit usage
+    # from a stream entirely, and every streamed turn records 0 tokens in the
+    # `cache_event` audit row — which is most of what /audit/usage reports.
+    # Turn it off only for a strict backend that rejects the field.
+    local_stream_usage: bool = Field(True, alias="LOCAL_STREAM_USAGE")
     # Whether LOCAL_BASE_URL accepts PDFs as OpenAI `file` content parts —
     # true for OpenAI's own API (https://api.openai.com/v1), false for
     # Ollama / LM Studio / vLLM. Off, a PDF for a local model is OCR'd on
