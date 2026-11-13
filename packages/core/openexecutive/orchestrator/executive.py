@@ -2584,6 +2584,12 @@ class Executive:
         leading = bool(unattended_withheld) and take_the_lead.executive_on()
         if leading:
             turn_handlers = take_the_lead.gated_handlers(turn_handlers, source="scheduled")
+        # A step someone asked for on a turn that isn't the owner's own ask
+        # (a teammate, a contact's mail) also meets the owner's Waits rules,
+        # then In training, after Approvals.
+        asked_checks = not leading and not replaying and take_the_lead.asked_checks_apply(current_session.get())
+        if asked_checks:
+            turn_handlers = take_the_lead.asked_handlers(turn_handlers)
         # A team member's turn runs like the owner's: Approvals decides each
         # step (orchestrator.levels), and a held one is their own card.
         # A replay (memory.replay): outermost, so a tool that would send,
@@ -3401,6 +3407,8 @@ class Executive:
                 guarded_call_tool = typed_booking_only(booking_offered, guard_call_tool(
                     take_the_lead.gated_call_tool(self._mcp_gateway.call_tool, source="scheduled")
                     if leading
+                    else take_the_lead.asked_call_tool(self._mcp_gateway.call_tool)
+                    if asked_checks
                     else self._mcp_gateway.call_tool
                 ))
                 _mcp_dispatch = {
@@ -3519,6 +3527,8 @@ class Executive:
                 script_call = typed_booking_only(booking_offered, guard_call_tool(
                     take_the_lead.gated_call_tool(self._mcp_gateway.call_tool, source="scheduled")
                     if leading
+                    else take_the_lead.asked_call_tool(self._mcp_gateway.call_tool)
+                    if asked_checks
                     else self._mcp_gateway.call_tool
                 ))
                 # The Executive's own tools a script may call this turn: the

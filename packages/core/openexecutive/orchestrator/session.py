@@ -222,6 +222,13 @@ class Session:
     # outside content (``orchestrator.outside_content.SENDER``). Set by the
     # email poller only.
     sender_off_team: bool = False
+    # How many steps this turn put on an Approve card (``note_step_held``).
+    # An email turn whose step already waits on a card raises no second
+    # card about the same mail (``alert_tools.handle_create_alert``).
+    steps_held: int = 0
+    # How many cards such a turn raised anyway as about something else
+    # ('separate'): at most one, since the mail itself can ask for more.
+    separate_cards: int = 0
     # Act as me for the turn in progress (``delegation.settings.TurnDelegation``),
     # pinned at its start by ``pin_turn_delegation``: whether the speaker has
     # it on, whether ``ghostwrite_email`` is offered, and whether the turn has
@@ -301,3 +308,15 @@ class Session:
             else:
                 history = history[1:]
         return history
+
+
+def note_step_held() -> None:
+    """Count a step the current turn put on an Approve card. Never raises."""
+    try:
+        from openexecutive.orchestrator.schedule_tools import current_session
+
+        session = current_session.get()
+        if isinstance(session, Session):
+            session.steps_held += 1
+    except Exception:  # noqa: BLE001 - a count only
+        pass

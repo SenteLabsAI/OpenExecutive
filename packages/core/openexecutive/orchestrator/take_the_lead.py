@@ -588,6 +588,21 @@ def _known(address: str) -> bool:
         return False
 
 
+def _names_of(addresses: list[str]) -> list[str]:
+    """The People names (contacts too) of these addresses. Never raises."""
+    from openexecutive.people.store import find_person_by_address
+
+    names: list[str] = []
+    for address in addresses[:20]:
+        try:
+            person = find_person_by_address(address, include_contacts=True)
+        except Exception:
+            continue
+        if person is not None and person.full_name:
+            names.append(person.full_name)
+    return names
+
+
 def _team_only(tool: str, tool_input: dict[str, Any]) -> bool:
     """Whether everyone the action reaches is on the team. Anyone else (a
     contact, someone unknown) is the principal's to approve: only their
@@ -657,6 +672,31 @@ def _targets(tool: str, tool_input: dict[str, Any]) -> tuple[list[str], list[str
     return addresses, [person.full_name] if person.full_name else []
 
 
+def _rule_targets(tool: str, tool_input: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """The addresses and names Your rules see: who an id-addressed tool
+    reaches, and everyone a booking invites, so a rule naming a person or
+    company meets a meeting with them too. Someone the People list doesn't
+    have counts as someone new."""
+    addresses, names = _targets(tool, tool_input)
+    if tool not in _BOOK_TOOLS:
+        return addresses, names
+    raw = tool_input.get("attendee_person_ids")
+    from openexecutive.people import store
+
+    for item in raw if isinstance(raw, list) else []:
+        try:
+            person = store.get_person(int(item))
+        except (TypeError, ValueError):
+            person = None
+        if person is None:
+            addresses.append(f"unknown-person:{item}")
+            continue
+        addresses.extend(a for a in [person.email, *person.email_aliases] if a)
+        if person.full_name:
+            names.append(person.full_name)
+    return addresses, names
+
+
 # The tools that only send one person a message: the one they name by id.
 _DIRECT_MESSAGE_TOOLS = frozenset({"message_person", "send_slack_dm", "send_telegram_message", "send_discord_dm"})
 
@@ -703,6 +743,23 @@ def _mail_recipient_strings(value: Any, norm: Any) -> Iterator[str]:
         yield value
 
 
+def _mail_addresses(tool_input: dict[str, Any], norm: Any) -> set[str] | None:
+    """Every address a mail send's recipient fields name, lowercased, read
+    both as the pattern sees them and as a mail header parser would; None
+    when the two can disagree (an "@" the pattern doesn't account for, as in
+    "dana @co.example"), so a check built on it fails closed."""
+    from email.utils import getaddresses
+
+    found: set[str] = set()
+    for text in _mail_recipient_strings(tool_input, norm):
+        seen = _EMAIL_RE.findall(text)
+        if text.count("@") != len(seen):
+            return None
+        found |= {a.lower() for a in seen}
+        found |= {a.strip().lower() for _n, a in getaddresses([text]) if "@" in a}
+    return found
+
+
 def _mail_only_to_principal(tool: str, tool_input: dict[str, Any]) -> bool:
     """Whether a mail send goes only to the principal's own
     addresses. Mail to them reaches no one new, however many other addresses
@@ -720,11 +777,7 @@ def _mail_only_to_principal(tool: str, tool_input: dict[str, Any]) -> bool:
     if _normalize_tool_name(str(tool or "")) not in _MAIL_SEND_TOOLS:
         return False
     try:
-        recipients = {
-            a.lower()
-            for text in _mail_recipient_strings(tool_input, _norm_key)
-            for a in _EMAIL_RE.findall(text)
-        }
+        recipients = _mail_addresses(tool_input, _norm_key)
         if not recipients:
             return False
         from openexecutive.people.store import find_principal_person
@@ -738,6 +791,35 @@ def _mail_only_to_principal(tool: str, tool_input: dict[str, Any]) -> bool:
     return recipients <= own
 
 
+def _money(value: str) -> str:
+    """An amount rule's value as the card says it: "$250", "$1,500"."""
+    number = _number(value)
+    if number is None:
+        return value
+    return f"${number:,.0f}" if number == int(number) else f"${number:,.2f}"
+
+
+def _mail_label(tool: str, tool_input: dict[str, Any], *, recipient: bool) -> str | None:
+    """"Email Leo Park" for a mail send to one person (their name from
+    People, contacts too, else the address), "Email 3 people" for more; only
+    where ``recipient`` (the approval card). None when it isn't a mail send."""
+    from openexecutive.orchestrator.mcp_gateway import _norm_key, _normalize_tool_name
+
+    if _normalize_tool_name(str(tool or "")) not in _MAIL_SEND_TOOLS:
+        return None
+    if not recipient:
+        return "Send an email"
+    try:
+        parsed = _mail_addresses(tool_input, _norm_key)
+        found = sorted(parsed) if parsed is not None else []
+    except Exception:
+        return "Send an email"
+    if len(found) == 1:
+        names = _names_of(found)
+        return f"Email {names[0] if names else found[0]}"
+    return f"Email {len(found)} people" if found else "Send an email"
+
+
 def _rule_hit(rules: list[Rule], text: str, recipients: list[str]) -> Hit | None:
     """The first Waits rule that ``text`` / ``recipients`` match."""
     lowered = text.lower()
@@ -747,19 +829,19 @@ def _rule_hit(rules: list[Rule], text: str, recipients: list[str]) -> Hit | None
         value = rule.value
         if rule.kind == RULE_PERSON:
             if "@" in value and value in recipients:
-                return Hit("rule", f"your rule about {value}", rule.id)
+                return Hit("rule", f"your rule about {value} says to wait", rule.id)
             if "@" not in value and re.search(rf"\b{re.escape(value.lower())}\b", lowered):
-                return Hit("rule", f"your rule about {value}", rule.id)
+                return Hit("rule", f"your rule about {value} says to wait", rule.id)
         elif rule.kind == RULE_DOMAIN:
             if any(r.endswith("@" + value) or r.endswith("." + value) for r in recipients):
-                return Hit("rule", f"your rule about {value}", rule.id)
+                return Hit("rule", f"your rule about {value} says to wait", rule.id)
         elif rule.kind == RULE_WORDS:
             if value.lower() in lowered:
-                return Hit("rule", f'your rule about "{value}"', rule.id)
+                return Hit("rule", f'your rule about "{value}" says to wait', rule.id)
         elif rule.kind == RULE_AMOUNT:
             limit = _number(value) or 0
             if any(a >= limit for a in amounts(text)):
-                return Hit("rule", f"your rule about amounts of {value} or more", rule.id)
+                return Hit("rule", f"your rule about amounts of {_money(value)} or more says to wait", rule.id)
     return None
 
 
@@ -947,6 +1029,26 @@ def _names(names: list[str]) -> str:
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
 
+def _mail_to_one_person(tool: str, tool_input: dict[str, Any]) -> Any:
+    """The People entry (a contact too) a mail send reaches when it reaches
+    exactly one address, in every recipient field (To, Cc, Bcc, however
+    spelled), and that address is theirs. Else None. Never raises."""
+    try:
+        from openexecutive.orchestrator.mcp_gateway import _norm_key, _normalize_tool_name
+        from openexecutive.people.store import find_person_by_address
+
+        if _normalize_tool_name(str(tool or "")) not in _MAIL_SEND_TOOLS:
+            return None
+        found = _mail_addresses(tool_input, _norm_key)
+        if found is None or len(found) != 1:
+            return None
+        person = find_person_by_address(next(iter(found)), include_contacts=True)
+        return person if person is not None and person.id is not None else None
+    except Exception:
+        logger.warning("take_the_lead: couldn't read who an email reaches", exc_info=True)
+        return None
+
+
 def allowance(tool: str, tool_input: dict[str, Any], *, mcp: bool = False) -> tuple[str, str] | None:
     """The action and who (or what) it is for, as ``(key, label)``: what one
     Allow covers. "Message Priya Nair" covers any message to her on any
@@ -954,6 +1056,11 @@ def allowance(tool: str, tool_input: dict[str, Any], *, mcp: bool = False) -> tu
     exactly them. None when it can't be pinned to someone or something on
     the People list (nothing to allow, so it keeps asking)."""
     if mcp:
+        mailed = _mail_to_one_person(tool, tool_input)
+        if mailed is not None:
+            # An email to one person on People (a contact too) is "Message
+            # them", the same Allow as a message to them on any channel.
+            return f"{FEATURE}|message|person:{mailed.id}", f"Message {mailed.full_name or mailed.email}"[:200]
         # A connected tool is allowed for one named file or record, and
         # never when it reaches people: who it reaches isn't on the People
         # list, so one Allow would cover anyone (a mail send, a share).
@@ -1467,7 +1574,11 @@ def summarize(tool: str, tool_input: dict[str, Any], *, mcp: bool = False, quote
     label = _TOOL_LABELS.get(tool) or tool.replace("_", " ").strip().capitalize()
     if mcp:
         bare = tool.split("__", 1)[-1]
-        label = _connected_label(tool, tool_input, recipient=quote) or bare.replace("_", " ").strip().capitalize()
+        label = (
+            _mail_label(tool, tool_input, recipient=quote)
+            or _connected_label(tool, tool_input, recipient=quote)
+            or bare.replace("_", " ").strip().capitalize()
+        )
     if tool == "message_person":
         try:
             from openexecutive.people.store import get_person
@@ -1680,6 +1791,17 @@ def _approver_for(kind: str, text: str, reason: str) -> int | None:
         return None
 
 
+def _asker_id() -> int | None:
+    """The person whose turn this is, or None. Never raises."""
+    try:
+        from openexecutive.orchestrator.schedule_tools import current_session
+
+        value = getattr(current_session.get(), "caller_person_id", None)
+        return int(value) if value is not None else None
+    except Exception:
+        return None
+
+
 def _principal_id() -> int | None:
     from openexecutive.people.registry import get_principal
 
@@ -1845,6 +1967,10 @@ def hold(
         approver = _approver_for(hit.kind, "\n".join(_strings(tool_input)), hit.reason)
     else:
         approver = _principal_id()
+    if source == "chat" and approver is not None and approver == _asker_id():
+        # Someone asked for it on their own turn: the owner's rule holds it
+        # for the owner, never for the one who asked.
+        approver = _principal_id()
     private = _is_principal(approver)
     # What it would say quotes the Executive's context: on a card that sits
     # on the team's Today only the plain line shows; the approver reads the
@@ -1896,6 +2022,9 @@ def hold(
         )
     except Exception:
         logger.exception("take_the_lead: couldn't put decision %d on Today", decision_id)
+    from openexecutive.orchestrator.session import note_step_held
+
+    note_step_held()
     record(scope=SCOPE_EXECUTIVE, source=source, tool=tool, summary=summarize(tool, tool_input, mcp=mcp, quote=False),
            status="waiting",
            why=f"It waited because {hit.reason}.", decision_id=decision_id, db_path=db_path,
@@ -1956,9 +2085,12 @@ def _hit(name: str, tool_input: dict[str, Any], *, mcp: bool) -> tuple[Hit | Non
     try:
         lead = get(SCOPE_EXECUTIVE)
         rules = list_rules([SCOPE_COMPANY])
-        text = "\n".join([*_strings(tool_input), *_targets(name, tool_input)[1]])
-        addresses, _ = _targets(name, tool_input)
+        addresses, names = _rule_targets(name, tool_input)
+        text = "\n".join([*_strings(tool_input), *names])
         recipients = sorted({a.lower() for a in [*_EMAIL_RE.findall(text), *addresses]})
+        # A rule naming someone ("Always wait for Dana Price") meets mail to
+        # their address too.
+        text = "\n".join([text, *_names_of(recipients)])
         rule = _rule_hit(rules, text, recipients)
         if rule is not None:
             return rule, None
@@ -2071,6 +2203,7 @@ _SOURCE_WHY: dict[str, str] = {
     "reflection": "It came up while it looked over what's going on.",
     "research": "It came up in its research.",
     "scheduled": "Something you or it scheduled came due.",
+    "chat": "Someone asked for it.",
 }
 
 
@@ -2117,6 +2250,127 @@ def gated_call_tool(call_tool: _Handler, *, source: str) -> _Handler:
             return await call_tool(tool_input)
 
         return await _gated(name, _inner, inner_input, source=source, mcp=True)
+
+    return _call
+
+
+# --------------------------------------------------------------------------- #
+# Your rules and In training on a step someone asked for
+# --------------------------------------------------------------------------- #
+# Approvals (orchestrator.levels) decides first on every turn. On a turn
+# someone is in, what it lets run still meets the owner's Waits rules, then
+# In training, as an unattended run's steps do (``_hit``). The owner's own ask
+# is the yes: their turns skip both. Unattended runs go through ``_gated``.
+
+
+def asked_checks_apply(session: Any) -> bool:
+    """Whether this turn's steps meet Your rules and In training here: a
+    turn someone is in (a teammate, a contact's mail, a shared chat) that is
+    not the owner's own ask. Fails closed: no session, or an error, is yes."""
+    if session is None:
+        return True
+    if getattr(session, "unattended", False) is True:
+        return False
+    try:
+        from openexecutive.orchestrator.content_trust import principal_speaking
+
+        return not principal_speaking(session)
+    except Exception:
+        logger.warning("take_the_lead: couldn't tell who asked — checking the rules", exc_info=True)
+        return True
+
+
+def _asked_hit(name: str, tool_input: dict[str, Any], *, mcp: bool) -> Hit | None:
+    """Why an asked-for step waits: a Waits rule, then In training. Never
+    raises: an error holds."""
+    try:
+        lead = get(SCOPE_EXECUTIVE)
+        rules = list_rules([SCOPE_COMPANY])
+        addresses, names = _rule_targets(name, tool_input)
+        text = "\n".join([*_strings(tool_input), *names])
+        recipients = sorted({a.lower() for a in [*_EMAIL_RE.findall(text), *addresses]})
+        # A rule naming someone ("Always wait for Dana Price") meets mail to
+        # their address too.
+        text = "\n".join([text, *_names_of(recipients)])
+        rule = _rule_hit(rules, text, recipients)
+        if rule is not None:
+            return rule
+        if lead.training:
+            grant = allowance(name, tool_input, mcp=mcp)
+            if (find_allowed(grant[0]) if grant is not None else None) is None:
+                return Hit(TRAINING, "it's in training and you haven't allowed this yet")
+        return None
+    except Exception:
+        logger.warning("take_the_lead: the rules check failed — holding the step", exc_info=True)
+        return Hit("rule", "its rules couldn't be read")
+
+
+async def _asked(name: str, inner: _Handler, tool_input: dict[str, Any], *, mcp: bool) -> Any:
+    if (not mcp and _only_to_principal(name, tool_input)) or (mcp and _mail_only_to_principal(name, tool_input)):
+        return await inner(tool_input)
+    hit = _asked_hit(name, tool_input, mcp=mcp)
+    if hit is None:
+        return await inner(tool_input)
+    if mcp and not str(name or "").strip():
+        return json.dumps({"error": "call_tool needs the tool's name: find it with search_tools first."})
+    missing = [] if mcp else missing_args(name, tool_input)
+    if missing:
+        return json.dumps({"error": (
+            f"{name} was not done: it needs {', '.join(missing)}. Call it again with "
+            f"{'them' if len(missing) > 1 else 'it'} filled in."
+        )})
+    try:
+        decision_id = hold(name, tool_input, hit, source="chat", mcp=mcp)
+    except Exception:
+        logger.exception("take_the_lead: couldn't hold %s", name)
+        return json.dumps({"error": f"{name} was not done: it needs the owner's approval first. Do not retry."})
+    return json.dumps({
+        "status": "waiting_for_approval",
+        "decision_instance_id": decision_id,
+        "message": (
+            f"Not done yet: it waits on an Approve card for the owner because {hit.reason}. "
+            "Tell them in one line it's waiting. Do not retry or work around it."
+        ),
+    })
+
+
+def asked_handlers(handlers: dict[str, Any]) -> dict[str, Any]:
+    """``handlers`` with every acting tool behind Your rules and In training."""
+    out = dict(handlers)
+    for name, inner in handlers.items():
+        if name in ACTING_TOOLS:
+            async def _wrapped(tool_input: dict[str, Any], _name: str = name, _inner: Any = inner) -> Any:
+                return await _asked(_name, _inner, tool_input, mcp=False)
+
+            out[name] = _wrapped
+    return out
+
+
+def asked_call_tool(call_tool: _Handler) -> _Handler:
+    """The MCP gateway's ``call_tool`` with acting tools behind Your rules
+    and In training."""
+
+    async def _call(tool_input: dict[str, Any]) -> Any:
+        name = str(tool_input.get("name") or "")
+        if not mcp_tool_acts(name):
+            return await call_tool(tool_input)
+        arguments = tool_input.get("arguments")
+        if arguments is None:
+            arguments = {}
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except (ValueError, RecursionError):
+                arguments = None
+        if not isinstance(arguments, dict):
+            # Run as-is it would skip the rules; held as-is it would be
+            # approved as a different call.
+            return json.dumps({"error": f"{name} was not done: its arguments must be an object."})
+
+        async def _inner(_: dict[str, Any]) -> Any:
+            return await call_tool(tool_input)
+
+        return await _asked(name, _inner, arguments, mcp=True)
 
     return _call
 

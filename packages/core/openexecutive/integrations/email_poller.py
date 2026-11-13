@@ -478,10 +478,27 @@ async def _prove_sender(gateway: Any, message_id: str, from_addr: str) -> bool:
 
     if await fact_confirmation.sender_authenticated(gateway, message_id, from_addr):
         return True
-    if _MIME_HEADER_RE.search(await fact_confirmation.read_raw(gateway, message_id)):
+    raw = await fact_confirmation.read_raw(gateway, message_id)
+    if _MIME_HEADER_RE.search(raw):
+        _log_unconfirmed(message_id, raw, from_addr)
         return False
     await asyncio.sleep(_PROVE_RETRY_S)
-    return await fact_confirmation.sender_authenticated(gateway, message_id, from_addr)
+    if await fact_confirmation.sender_authenticated(gateway, message_id, from_addr):
+        return True
+    _log_unconfirmed(message_id, raw, from_addr)
+    return False
+
+
+def _log_unconfirmed(message_id: str, raw: str, from_addr: str) -> None:
+    """Which part of the sender check said no, for the log
+    (``fact_confirmation.why_not_authenticated``). Never raises."""
+    from openexecutive.integrations import fact_confirmation
+
+    try:
+        why = fact_confirmation.why_not_authenticated(raw, from_addr)
+    except Exception:  # noqa: BLE001 - a diagnostic only
+        why = "unreadable"
+    logger.info("sender not confirmed for message=%s: %s", message_id, why)
 
 
 async def _handle_one_email(
@@ -610,6 +627,23 @@ async def _handle_mail(
         # finds it in the inbox. A source's mail is left to the source.
         logger.warning("skipping message=%s with no sender", message_id)
         if mailbox is not None and done is not None:
+            await done()
+        return _SKIPPED
+    from openexecutive.integrations import email_repeats
+
+    repeat_key = email_repeats.fingerprint(
+        # Only the parsed body: the raw text carries per-copy headers.
+        from_addr, msg.subject, msg.body_text, has_attachments=msg.has_attachments or bool(msg.attachments),
+    )
+    # Checked before the turn and noted after it (_run_executive): the mail
+    # loops handle one message at a time, each turn awaited before the next,
+    # so a second copy is never in flight with the first. A turn that times
+    # out is not noted, so its retry runs again.
+    if await asyncio.to_thread(email_repeats.is_copy, repeat_key, message_id):
+        # The same email again (a second delivery, or sent twice): the first
+        # copy was answered, so this one is marked read and left alone.
+        logger.info("skipping message=%s: a copy of one already handled", message_id)
+        if done is not None:
             await done()
         return _SKIPPED
 
@@ -813,6 +847,7 @@ async def _handle_mail(
                 teammate_authenticated=teammate_authenticated,
                 source=None if mailbox is not None else mail,
                 prove_sender=prove,
+                repeat_key=repeat_key,
             ) or "answered"
         except EmailTurnTimeout as exc:
             # Past EMAIL_TURN_TIMEOUT_S: the turn was cancelled where it
@@ -1146,6 +1181,7 @@ async def _run_executive(
     teammate_authenticated: bool | None = None,
     source: InboundMail | None = None,
     prove_sender: Callable[[], Awaitable[bool]] | None = None,
+    repeat_key: str | None = None,
 ) -> str | None:
     """The Executive's turn for one email. Mail from the mailbox is answered
     with its send tool (``reply_block``); mail from a mail source
@@ -1487,8 +1523,36 @@ async def _run_executive(
         raise
     if source is None:
         _note_reply_outcome(session, person, raw_email, message_id, thread_id, from_addr, response)
+        await _note_if_answered(repeat_key, message_id, session, from_addr)
         return None
-    return await _send_answer(source, response, answer_to, session_id or session.session_id)
+    outcome = await _send_answer(source, response, answer_to, session_id or session.session_id)
+    await _note_if_answered(repeat_key, message_id, session, from_addr, answered=outcome == "answered")
+    return outcome
+
+
+async def _note_if_answered(
+    repeat_key: str | None, message_id: str, session: Any, from_addr: str, *, answered: bool = False,
+) -> None:
+    """Note an email as answered (``integrations.email_repeats``), so a copy
+    of it is left alone, once its turn ran for a sender the mail provider
+    vouched for and the sender got something: a reply, or a step waiting on
+    an Approve card. A turn that sent nothing is not noted, so the same email
+    sent again is handled again."""
+    if repeat_key is None or True not in (
+        session.email_authenticated, session.email_sender_authenticated,
+    ):
+        return
+    sender = from_addr.strip().lower()
+    if not (
+        answered
+        or sender in session.mail_sent_to
+        or message_id in session.mail_replied_ids
+        or int(getattr(session, "steps_held", 0) or 0) > 0
+    ):
+        return
+    from openexecutive.integrations import email_repeats
+
+    await asyncio.to_thread(email_repeats.remember, repeat_key, message_id)
 
 
 def _note_reply_outcome(
