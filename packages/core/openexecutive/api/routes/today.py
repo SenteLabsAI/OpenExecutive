@@ -2905,8 +2905,9 @@ def _done_for_you(request: Request, caller: int | None, now: datetime) -> list[D
             continue
         seen.add(key)
         title = item.summary or item.kind
-        if item.mail_to and owner:
-            # The owner's Done for you says who and what.
+        # The owner's Done for you says who an email went to and what; so
+        # does a teammate's, for one that went to them (they got it too).
+        if item.mail_to and (owner or {a.strip().lower() for a in mailed} & reader_emails):
             who = _mail_names(item.mail_to)
             title = f"Emailed {who}" + (" (after a yes)" if title.endswith("(after a yes)") else "")
             if item.mail_subject:
