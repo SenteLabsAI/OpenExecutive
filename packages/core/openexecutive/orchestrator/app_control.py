@@ -497,10 +497,10 @@ async def handle_do_in_app(tool_input: dict[str, Any]) -> str:
     except Refused as exc:
         return _error(str(exc))
     except HTTPException as exc:
-        if held and exc.status_code == 409 and "caller_signing_required" in str(exc.detail):
-            # Hands-off ran it, but the route wants the person's own signed
-            # request (turning on something that sends as them): their tap
-            # on a card is that request.
+        if exc.status_code == 409 and "caller_signing_required" in str(exc.detail):
+            # The route wants the person's own signed request (turning on
+            # something that sends as them, changing Your rules), which a
+            # chat turn never is: their tap on a card is that request.
             return _card_result(person.id, session, action, item_id, value, title or "", details)
         _audit("app_action_refused", f"{action.name} refused", {**details, "status": exc.status_code})
         return _error(refusal_text(exc))

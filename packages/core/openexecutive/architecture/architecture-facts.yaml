@@ -940,6 +940,26 @@ routing:
     nothing like later in the message (said_no), and one approved or answered card per message (TurnOutside.card_answered),
     bound that. A team member's own DMs show the board's cards routed to
     them (attach_briefing_context -> render_and_trust(routed_to=...)).
+    allow=true on an approve is an In training card's "on its own next time" tick
+    (resolve_in_chat(allow=True), which makes the tick's own checks), taken only on a server
+    that signs requests (handle_it.signing_ok, the tick's rule) and when the person's own
+    message also says so (said_next_time: a yes plus "and next time", "from now on" or "going
+    forward", and nothing that keeps it asking, such as "ask me", "this once" or "first").
+    WHY: a typed "yes, and next time too" did only the once.
+  app_control_checks: |
+    Chat changes the three checks through do_in_app, with the routes the Delegate buttons call:
+    set_approvals_level (PUT /executive/outside-content), add_waits_rule / add_goes_rule /
+    remove_rule (POST and DELETE /take-the-lead/rules) and change_setting as_you_training /
+    as_me_training (PUT /delegation/training, PUT /take-the-lead). A change that holds more
+    (a lower level, a Waits rule, removing a Goes rule, In training on) is done in the turn;
+    one that lets more go (a higher level, a Goes rule, removing a Waits rule, leaving
+    training) is a card, and raising the level from a chat turn is always a card (a turn that
+    began on Hands-off can't raise it back after it was lowered). The value is checked and normalised before any card (prepare), so the
+    card says what the tap does. A route that wants the person's own signed request answers
+    409 caller_signing_required from a chat turn (app_control_catalog._signed), and do_in_app
+    then leaves a card, held or not, since the tap is that request. WHY: chat could change
+    settings but not the checks, so "always wait for Dana" or "go back to Careful" had to be
+    done on the screen.
   alert_tools: |
     `ack_alert(alert_id, status)` lets the Executive clear a briefing
     proposal from the user's "Needs you" list directly from a chat turn —
