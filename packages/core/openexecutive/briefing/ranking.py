@@ -180,6 +180,23 @@ def watch_slug_from_tags(topic_tags: list[str]) -> str | None:
     return None
 
 
+def watch_slug_of(alert: Any) -> str | None:
+    """The slug of the watch that raised ``alert``: a watch adapter's alert
+    (``source`` is one of the adapter kinds) carrying ``external:<slug>``.
+    ``None`` for anything else, such as an app's ``external:app-entries``
+    card, so only a real watch's card offers to steer it. The tag is written
+    by triage from text that includes the outside source, so it must agree
+    with the dedup key the watch pipeline sets itself (``watch:<slug>``)."""
+    if getattr(alert, "source", None) not in _EXTERNAL_SOURCES:
+        return None
+    dedup = str(getattr(alert, "dedup_key", "") or "")
+    if not dedup.startswith("watch:"):
+        return None
+    slug = dedup[len("watch:"):]
+    tagged = watch_slug_from_tags(list(getattr(alert, "topic_tags", None) or []))
+    return slug if slug and tagged == slug else None
+
+
 def score_and_categorize(
     alert: Any,
     *,

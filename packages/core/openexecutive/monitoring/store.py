@@ -575,6 +575,24 @@ _ALLOWED_UPDATE_COLUMNS: frozenset[str] = frozenset({
 })
 
 
+def set_watchlist_notes_if(
+    item_id: int,
+    expected: str,
+    notes: str,
+    *,
+    db_path: Path | None = None,
+) -> bool:
+    """Set one watch's notes only while they still read ``expected``
+    (compare-and-set), so a reply never overwrites a change made since it
+    was read. False when the notes changed or the row is gone."""
+    with _get_conn(db_path) as conn:
+        cursor = conn.execute(
+            "UPDATE watchlist SET notes = ? WHERE id = ? AND notes = ?",
+            (notes, item_id, expected),
+        )
+        return cursor.rowcount > 0
+
+
 def update_watchlist_fields(
     item_id: int,
     fields: dict[str, Any],

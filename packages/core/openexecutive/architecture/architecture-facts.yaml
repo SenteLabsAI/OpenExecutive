@@ -6502,6 +6502,28 @@ external_monitoring:
     relevance. Gated globally by EXTERNAL_MONITOR_ENRICHMENT_ENABLED and
     per-row by config_json.enrich; when enrichment is off those signals stay
     LOW and still reach the person, only_big or not.
+    The watch's notes (its What I know) go in the turn fenced in
+    <watch_notes>, and `emit_relevance` may answer skip: true when they say
+    to skip a change like this one; that signal is recorded as
+    suppressed_by_notes and never promoted, and last_check_note says "You
+    told it to skip this, so it stayed quiet." The query adapter gets the
+    same notes, so the search leaves those results out in the first place.
+  steering: |
+    `monitoring.steer` + `POST /alerts/{id}/steer` — the person replies on a
+    watch's card ("that's our own repo, we just moved it"). /today marks
+    such cards with `watch_slug` (`briefing.ranking.watch_slug_of`: source
+    is a watch adapter kind and an `external:<slug>` tag names the watch).
+    One forced `steer_watch` call on the utility-fast model (constant system
+    prompt; watch, current notes, card, the watch's other open cards the
+    caller may clear, and the reply each fenced in the user turn) returns
+    new notes (<=500 chars, cut at a line), a one-line reply as I, and which
+    listed cards the reply also answers. The route writes the notes, marks
+    this card and those `dismissed` WITHOUT record_ack_feedback (a
+    correction does not lower trust_score), audits `watch_steered`, and
+    returns previous_notes + closed_alert_ids; the card's Undo is PATCH
+    /watchlist/{slug} with the old notes + POST /alerts/{id}/reopen. 60
+    calls an hour. No approval and no gate: it changes only the watch's
+    notes, the same field the watch page and tune_watchlist_entry edit.
   alerts_integration: |
     `promote_signal_to_alert` builds an `AlertEvent(source=signal_kind,
     external_id=dedup_key, subject, body)` whose body interleaves the

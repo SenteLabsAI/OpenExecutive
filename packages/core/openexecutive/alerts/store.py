@@ -381,6 +381,17 @@ def set_status(alert_id: int, status: str, db_path: Path | None = None) -> bool:
         return cursor.rowcount > 0
 
 
+def set_status_if_open(alert_id: int, status: str, db_path: Path | None = None) -> bool:
+    """Move an alert to ``status`` only while it is still open (``unread`` or
+    ``read``). False when it is missing or was answered meanwhile."""
+    with _get_conn(db_path) as conn:
+        cursor = conn.execute(
+            "UPDATE alerts SET status = ? WHERE id = ? AND status IN ('unread', 'read')",
+            (status, alert_id),
+        )
+        return cursor.rowcount > 0
+
+
 def set_snoozed_until(
     alert_id: int, until: str | None, db_path: Path | None = None
 ) -> bool:

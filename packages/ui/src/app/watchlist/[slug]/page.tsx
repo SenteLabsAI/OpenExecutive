@@ -631,6 +631,26 @@ export default function WatchDetailPage() {
             </div>
           )}
 
+          <div id="what-i-know" className="rounded-2xl border border-line bg-surface-elevated p-5 mb-4">
+            <h2 className="text-base font-semibold text-fg">What I know</h2>
+            <p className="text-sm text-fg-muted mt-0.5 mb-2">
+              I read this every time I check, before I tell you anything. Reply to one of its cards and I add to it.
+            </p>
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              onBlur={saveNotes}
+              rows={4}
+              maxLength={500}
+              placeholder="e.g. This is our own repo. Skip changes to it; tell me about copies."
+              aria-label="What I know"
+              className="w-full px-3.5 py-2.5 text-[15px] rounded-xl bg-surface border border-line focus:outline-none focus:ring-2 focus:ring-accent/40"
+            />
+            {savingNotes && (
+              <p className="text-xs text-fg-subtle mt-1">Saving…</p>
+            )}
+          </div>
+
           <div className="rounded-2xl border border-line bg-surface-elevated p-5 mb-4">
             <h2 className="text-base font-semibold text-fg mb-3">What it does</h2>
             <div className="divide-y divide-line">
@@ -696,23 +716,6 @@ export default function WatchDetailPage() {
                 </Row>
               )}
             </div>
-          </div>
-
-          <div className="rounded-2xl border border-line bg-surface-elevated p-5 mb-4">
-            <h2 className="text-base font-semibold text-fg mb-2">Notes</h2>
-            <textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              onBlur={saveNotes}
-              rows={3}
-              maxLength={500}
-              placeholder="Why are we watching this?"
-              aria-label="Notes"
-              className="w-full px-3.5 py-2.5 text-[15px] rounded-xl bg-surface border border-line focus:outline-none focus:ring-2 focus:ring-accent/40"
-            />
-            {savingNotes && (
-              <p className="text-xs text-fg-subtle mt-1">Saving…</p>
-            )}
           </div>
 
           <div className="rounded-2xl border border-line bg-surface-elevated p-5 mb-4">

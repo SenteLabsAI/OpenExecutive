@@ -51,6 +51,7 @@ from openexecutive.monitoring.models import (
     OUTCOME_HELD_DIGEST,
     OUTCOME_SUPPRESSED_BASELINE,
     OUTCOME_SUPPRESSED_BELOW_FLOOR,
+    OUTCOME_SUPPRESSED_BY_NOTES,
     OUTCOME_SUPPRESSED_DRY_RUN,
     OUTCOME_SUPPRESSED_LOW_RELEVANCE,
     OUTCOME_SUPPRESSED_STALE,
@@ -872,6 +873,7 @@ _HELD_WORDS: dict[str, str] = {
     OUTCOME_SUPPRESSED_DRY_RUN: "It is watching quietly, so it did not tell you.",
     OUTCOME_SUPPRESSED_BELOW_FLOOR: "Not a big change, so it stayed quiet.",
     OUTCOME_SUPPRESSED_LOW_RELEVANCE: "Not close enough to your company, so it stayed quiet.",
+    OUTCOME_SUPPRESSED_BY_NOTES: "You told it to skip this, so it stayed quiet.",
     OUTCOME_HELD_DIGEST: "It already told you today, so this waits for the next summary.",
     OUTCOME_HELD_BRIEF: "It is watching quietly, so this goes in your next brief.",
 }
@@ -1238,6 +1240,15 @@ async def _maybe_enrich(
             "monitoring.pipeline: persisting enrichment failed for signal %d",
             signal_id,
         )
+
+    # Only notes on the watch can ask to skip: with none, a skip could only
+    # have come from the outside text itself.
+    if result.skip and item.notes.strip():
+        _suppress(
+            signal_id, item, signal, OUTCOME_SUPPRESSED_BY_NOTES,
+            tally=tally, db_path=db_path,
+        )
+        return False, payload
 
     if result.relevance_score < settings.external_monitor_enrichment_min_relevance:
         _suppress(

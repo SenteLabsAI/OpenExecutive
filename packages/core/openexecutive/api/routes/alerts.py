@@ -614,6 +614,130 @@ def reopen_alert(alert_id: int, request: Request) -> Alert:
     return updated
 
 
+class SteerBody(BaseModel):
+    # Bounded in monitoring.steer, not with max_length, so a 422 never
+    # echoes what the person wrote.
+    text: str = ""
+
+
+class SteerResponse(BaseModel):
+    """What changed when the person replied to a watch's card, and what the
+    card needs to undo it: PATCH the watch's notes back to
+    ``previous_notes`` and reopen each id in ``closed_alert_ids``."""
+
+    reply: str
+    watch_slug: str
+    watch_title: str
+    notes: str
+    previous_notes: str
+    closed_alert_ids: list[int]
+
+
+def _watch_cards_to_offer(
+    slug: str, alert_id: int, request: Request
+) -> list[Alert]:
+    """The watch's other open cards this caller can see and close."""
+    from openexecutive.briefing.ranking import watch_slug_of
+
+    viewer = _caller_viewer(request)
+    principal = _caller_is_principal(request)
+    out: list[Alert] = []
+    for status in ("unread", "read"):
+        for alert in store.list_alerts(status=status, limit=200):
+            if alert.id is None or alert.id == alert_id or watch_slug_of(alert) != slug:
+                continue
+            if is_private_alert(alert) and not principal:
+                continue
+            if not visible_alert(alert, viewer) or not _caller_may_clear(alert, request):
+                continue
+            out.append(alert)
+    return out
+
+
+@router.post("/alerts/{alert_id}/steer", response_model=SteerResponse)
+async def steer_watch_from_alert(
+    alert_id: int, body: SteerBody, request: Request
+) -> SteerResponse:
+    """Reply to a watch's card to correct it ("that's our own repo"). The
+    Executive folds the line into the watch's notes, which every later
+    check reads before it tells anyone, closes this card and any other open
+    card of the watch the line also answers, and says what it changed."""
+    from openexecutive.api import caller as api_caller
+    from openexecutive.briefing.ranking import watch_slug_of
+    from openexecutive.monitoring import store as monitoring_store
+    from openexecutive.monitoring.describe import watch_title
+    from openexecutive.monitoring.steer import SteerError, check_text, plan_steer
+
+    def _refuse(exc: SteerError) -> HTTPException:
+        code = {"empty": 422, "too_long": 422, "too_many": 429}.get(exc.code, 503)
+        return HTTPException(status_code=code, detail=exc.message)
+
+    try:
+        line = check_text(body.text)
+    except SteerError as exc:
+        raise _refuse(exc) from exc
+    existing = _visible_alert(alert_id, request)
+    slug = watch_slug_of(existing)
+    if slug is None:
+        raise HTTPException(status_code=409, detail="This card isn't from your watch list.")
+    if not _caller_may_clear(existing, request):
+        raise HTTPException(status_code=403, detail=_NOT_YOURS)  # input-safety
+    item = monitoring_store.get_watchlist_item_by_slug(slug)
+    if item is None or item.id is None:
+        raise HTTPException(status_code=409, detail="The watch behind this card is gone.")
+
+    others = _watch_cards_to_offer(slug, alert_id, request)
+    try:
+        plan = await plan_steer(
+            item, existing, line, others, caller_key=api_caller.caller(request).email
+        )
+    except SteerError as exc:
+        raise _refuse(exc) from exc
+
+    # The model call takes seconds: if the card was answered or the watch's
+    # notes were changed meanwhile, don't overwrite either.
+    now_card = store.get_alert(alert_id)
+    if now_card is None or now_card.status not in ("unread", "read"):
+        raise HTTPException(status_code=409, detail="This card was just answered.")
+    if not monitoring_store.set_watchlist_notes_if(item.id, item.notes, plan.notes):
+        raise HTTPException(
+            status_code=409, detail="The watch just changed. Try again."
+        )
+    still_offered = {a.id for a in _watch_cards_to_offer(slug, alert_id, request)}
+    closed: list[int] = []
+    # Closed as dismissed so the card's Undo (reopen) works, but without the
+    # dismiss feedback: a correction is not a vote against the watch. Only
+    # an open card moves, so one answered meanwhile keeps its answer.
+    for card_id in [alert_id, *plan.close_card_ids]:
+        if card_id != alert_id and card_id not in still_offered:
+            continue
+        if store.set_status_if_open(card_id, "dismissed"):
+            closed.append(card_id)
+
+    from openexecutive.audit import log_event as audit_log
+
+    audit_log(
+        "watch_steered",
+        f"Steered watch {slug} from alert {alert_id}; closed {len(closed)} card(s)",
+        actor="user",
+        details={
+            "alert_id": alert_id,
+            "watchlist_id": item.id,
+            "watchlist_slug": slug,
+            "closed_alert_ids": closed,
+            "by": api_caller.actor(request),
+        },
+    )
+    return SteerResponse(
+        reply=plan.reply,
+        watch_slug=slug,
+        watch_title=watch_title(item),
+        notes=plan.notes,
+        previous_notes=item.notes,
+        closed_alert_ids=closed,
+    )
+
+
 class ReviewResponse(BaseModel):
     reviewed: int
     closed: int
