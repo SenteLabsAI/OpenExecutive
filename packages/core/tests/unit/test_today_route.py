@@ -3133,6 +3133,17 @@ def test_a_teammate_sees_the_teams_work_in_done_for_you_as_activity_shows_it(
     sam = client.get("/today", headers={"x-caller-email": "sam@example.com"}).json()["done_for_you"]
     assert [r["title"] for r in sam] == ["Sent an email"]
     assert "Pricing" not in sam[0]["detail"]
+    # One that went to them too says who and what: they got it.
+    take_the_lead.record(
+        scope=take_the_lead.SCOPE_EXECUTIVE, source="scheduled", tool=send, summary="Send gmail message",
+        status="done",
+        mail=take_the_lead.mail_sent(send, {"to": ["riley@example.com", "sam@example.com"], "subject": "Launch notes"}),
+    )
+    mailed = [
+        r for r in client.get("/today", headers={"x-caller-email": "sam@example.com"}).json()["done_for_you"]
+        if "Launch notes" in r["title"]
+    ]
+    assert [r["title"] for r in mailed] == ["Emailed Riley Park and Sam Reyes: Launch notes"]
     jordan = client.get("/today", headers={"x-caller-email": "jordan@example.com"}).json()["done_for_you"]
     titles = {r["title"] for r in jordan}
     assert "Emailed Riley Park: Pricing for Q3" in titles
