@@ -316,10 +316,15 @@ async def today_briefing() -> str:
     mime_type="application/json",
 )
 async def today_activity() -> str:
-    from openexecutive.api.routes.today import _build_activity
+    from openexecutive.api.routes.today import _build_activity, principal_id
 
     who = await _require_person()
-    activity = await asyncio.to_thread(_build_activity, 20, viewer=who.person_id)
+    viewer = who.person_id
+    if viewer is None and who.is_principal:
+        # The principal with no roster id of their own (a local, unsigned
+        # caller): their own items are the roster principal's.
+        viewer = await asyncio.to_thread(principal_id)
+    activity = await asyncio.to_thread(_build_activity, 20, viewer=viewer)
     return _json(activity.model_dump(mode="json"))
 
 
