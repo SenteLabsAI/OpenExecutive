@@ -5687,6 +5687,13 @@ export interface ProposalItem {
   // The watch that raised this card, when a watch did: the card offers a
   // reply that steers it (steerAlert) and links to its page.
   watch_slug?: string | null;
+  // The person changed the plan with a reply on the card: it reads "If you
+  // approve · Updated" and offers Undo change.
+  plan_changed?: boolean;
+  // Who changed it, when it wasn't the reader: "Updated by <name>".
+  plan_changed_by?: string | null;
+  // Whether a reply on the card can change its plan (POST /alerts/{id}/plan).
+  plan_editable?: boolean;
   // Set when this proposal is backed by a decision_instance (a gated calendar
   // booking awaiting approval). The briefing routes Approve/Reject to the
   // /decisions endpoints (which book/cancel server-side) instead of the
@@ -6606,11 +6613,13 @@ export interface DecisionInstance {
 
 // Approve a proposal card that has no decision behind it: the server records
 // who approved it, claims it and carries it out (alerts/approvals.py).
-export async function approveAlert(alertId: number, editedBody?: string): Promise<AlertApproval> {
+// `plan` is the "If you approve" plan the card showed: the server goes ahead
+// only while the card still shows it (a reply can change it).
+export async function approveAlert(alertId: number, editedBody?: string, plan?: string): Promise<AlertApproval> {
   const res = await fetch(`${API_BASE}/alerts/${alertId}/approve`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ edited_body: editedBody ?? null }),
+    body: JSON.stringify({ edited_body: editedBody ?? null, plan: plan ?? null }),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
@@ -6650,6 +6659,39 @@ export async function undoSteer(result: SteerResult): Promise<void> {
   for (const id of result.closed_alert_ids) {
     await reopenAlert(id);
   }
+}
+
+// A card's plan after a reply changed it (or Undo change put one back).
+export interface PlanResult {
+  plan: string;
+  previous_plan: string;
+  reply: string;
+  changed: boolean;
+}
+
+// Reply on a card to change what approving it does: the Executive rewrites
+// the card's "If you approve" plan, and Approve then does exactly that.
+export async function changeCardPlan(alertId: number, text: string): Promise<PlanResult> {
+  const res = await fetch(`${API_BASE}/alerts/${alertId}/plan`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(body ? detailOf(body) : "Couldn't send that. Try again.");
+  }
+  return res.json();
+}
+
+// Undo change: the plan the last reply replaced.
+export async function undoCardPlan(alertId: number): Promise<PlanResult> {
+  const res = await fetch(`${API_BASE}/alerts/${alertId}/plan/undo`, { method: "POST" });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(body ? detailOf(body) : "Couldn't undo that. Try again.");
+  }
+  return res.json();
 }
 
 

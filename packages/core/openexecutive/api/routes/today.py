@@ -206,6 +206,17 @@ class ProposalItem(BaseModel):
     # The watch that raised this card, when a watch did: the card offers a
     # reply that steers it (POST /alerts/{id}/steer) and links to its page.
     watch_slug: str | None = None
+    # The person changed this card's plan with a reply on it
+    # (POST /alerts/{id}/plan): it reads "If you approve · Updated" and
+    # offers Undo change (POST /alerts/{id}/plan/undo).
+    plan_changed: bool = False
+    # Who made the last change, when it wasn't the reader: the card reads
+    # "Updated by <name>", so nobody approves someone else's plan as the
+    # Executive's own.
+    plan_changed_by: str | None = None
+    # Whether a reply on the card can change its plan (alerts/replan.py):
+    # only a card whose Approve carries its plan out as a chat turn.
+    plan_editable: bool = False
     # Set when this proposal is backed by a decision_instance (a gated
     # calendar booking awaiting approval). The UI routes Approve/Reject to
     # the /decisions endpoints (which book/cancel server-side) instead of the
@@ -410,6 +421,38 @@ def _watch_trust_by_slug(alerts: list[Any]) -> dict[str, float]:
     except Exception:
         logger.debug("today: watch trust lookup failed", exc_info=True)
         return {}
+
+
+def _mark_plan_changes(items: list[ProposalItem], viewer: Any = None) -> None:
+    """Flag the cards whose plan someone changed from a reply, and name
+    who when it wasn't the reader. Best effort: a card simply reads
+    unchanged if this fails."""
+    try:
+        from openexecutive.alerts.replan import last_changers
+
+        changed = last_changers([p.alert_id for p in items if p.alert_id])
+    except Exception:
+        logger.warning("today: couldn't read changed plans", exc_info=True)
+        return
+    reader = getattr(viewer, "person_id", None)
+    names: dict[int, str] = {}
+    for p in items:
+        if p.alert_id not in changed:
+            continue
+        p.plan_changed = True
+        by = changed[p.alert_id]
+        if by is None or by == reader:
+            continue
+        if by not in names:
+            person = None
+            try:
+                from openexecutive.people import store as people_store
+
+                person = people_store.get_person(by)
+            except Exception:
+                logger.warning("today: couldn't name who changed a plan", exc_info=True)
+            names[by] = " ".join(person.full_name.split()) if person is not None else "someone on the team"
+        p.plan_changed_by = names[by]
 
 
 def _group_requests(items: list[ProposalItem]) -> None:
@@ -1153,6 +1196,7 @@ def _build_today(
 
     from openexecutive.alerts import lifecycle as lifecycle_module
     from openexecutive.alerts.lifecycle import list_live_alerts
+    from openexecutive.alerts.replan import plan_refusal
     from openexecutive.alerts.store import count_superseded_by
     from openexecutive.briefing.ranking import score_and_categorize, watch_slug_of
     from openexecutive.workflows.failure_alerts import SOURCE as FAILED_RUN_SOURCE
@@ -1203,6 +1247,7 @@ def _build_today(
             category=item_category,
             surfaced_reason=item_reason,
             watch_slug=watch_slug_of(alert),
+            plan_editable=plan_refusal(alert) is None,
             decision_instance_id=_parse_decision_instance_id(alert.topic_tags or []),
             failed_run_id=(
                 failed_run_id(alert.topic_tags or [])
@@ -1236,6 +1281,7 @@ def _build_today(
     # sort preserves the recency order within equal category/score bands.
     # The UI further splits action items into "Needs you" / "Across the
     # team" and collapses the monitoring tail.
+    _mark_plan_changes(proposal_items, viewer)
     proposal_items.sort(key=lambda p: p.created_at, reverse=True)
     proposal_items.sort(key=lambda p: (0 if p.category == "action" else 1, -p.score))
     _group_requests(proposal_items)
