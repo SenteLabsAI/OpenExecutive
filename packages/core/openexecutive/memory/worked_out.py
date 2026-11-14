@@ -43,7 +43,6 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 TABLE = "worked_out"
-PASSES_TABLE = "worked_out_passes"
 MAX_PER_PERSON = 200
 MAX_PER_TURN = 5
 MAX_SHOWN = 5
@@ -124,14 +123,6 @@ def _connect(db_path: Path | None) -> sqlite3.Connection:
         ")"
     )
     conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{TABLE}_person ON {TABLE}(person_id, created_at DESC)")
-    conn.execute(
-        f"CREATE TABLE IF NOT EXISTS {PASSES_TABLE} ("
-        "  person_id INTEGER NOT NULL,"
-        "  day TEXT NOT NULL,"
-        "  passes INTEGER NOT NULL DEFAULT 0,"
-        "  PRIMARY KEY (person_id, day)"
-        ")"
-    )
     conn.commit()
     return conn
 
@@ -379,33 +370,6 @@ def edit_figure(figure_id: int, *, person_id: int, subject: str | None = None, f
     return _out(saved) if saved is not None else None
 
 
-def take_pass(person_id: int, day: str, limit: int, *, db_path: Path | None = None) -> bool:
-    """Count one turn that keeps figures for ``person_id`` on ``day``; False
-    once ``limit`` turns did. Fails closed."""
-    try:
-        conn = _connect(db_path)
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            conn.execute(f"DELETE FROM {PASSES_TABLE} WHERE day < ?", (day,))  # noqa: S608
-            row = conn.execute(f"SELECT passes FROM {PASSES_TABLE} WHERE person_id = ? AND day = ?",  # noqa: S608
-                               (person_id, day)).fetchone()
-            if row is not None and int(row[0]) >= limit:
-                conn.rollback()
-                return False
-            conn.execute(
-                f"INSERT INTO {PASSES_TABLE} (person_id, day, passes) VALUES (?, ?, 1) "  # noqa: S608
-                "ON CONFLICT(person_id, day) DO UPDATE SET passes = passes + 1",
-                (person_id, day),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-    except Exception:
-        logger.warning("worked_out: couldn't count the turn, keeping nothing", exc_info=True)
-        return False
-    return True
-
-
 # --------------------------------------------------------------------------- #
 # Read back
 # --------------------------------------------------------------------------- #
@@ -547,9 +511,8 @@ def keep_turn_figures(reply: str, calls: list[tuple[str, str]] | None, *, sessio
     """Keep the figures the Executive chose this turn (its ``keep_figure``
     calls), once its reply is written: each is checked again against the
     reply and what the turn read (``check_figure``), so only a figure the
-    person was shown, from a source the turn read, is kept. At most
-    ``MAX_PER_TURN``; ``worked_out_max_per_day`` turns a day keep any.
-    Blocking (SQLite): call it off the event loop. Never raises."""
+    person was shown, from a source the turn read, is kept. Blocking
+    (SQLite): call it off the event loop. Never raises."""
     try:
         if not _enabled() or person_id is None or session is None or _blocked_session(session):
             return []
@@ -565,13 +528,6 @@ def keep_turn_figures(reply: str, calls: list[tuple[str, str]] | None, *, sessio
         read = _read_text(list(calls or []))
         figures = [f for f in (check_figure(raw, reply=reply, read=read, today=today)
                                for raw in noted[:MAX_PER_TURN]) if f is not None]
-        if not figures:
-            return []
-        from openexecutive.config import get_settings
-
-        if not take_pass(person_id, today.isoformat(), int(get_settings().worked_out_max_per_day),
-                         db_path=db_path):
-            return []
         ids = add_figures(person_id, figures, session_id=str(getattr(session, "session_id", "") or ""),
                           private=private, db_path=db_path)
     except Exception:

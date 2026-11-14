@@ -286,14 +286,6 @@ def test_a_turn_keeps_at_most_five(own_turn: None) -> None:
     assert len(wo.keep_turn_figures(reply, calls, session=_session(), person_id=1, private=False)) == 5
 
 
-def test_turns_that_keep_stop_at_the_daily_cap(own_turn: None, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("openexecutive.config.get_settings",
-                        lambda: SimpleNamespace(worked_out_max_per_day=1, worked_out_enabled=True))
-    calls = [("read_document", READ), _noted()]
-    assert wo.keep_turn_figures(REPLY, calls, session=_session(), person_id=1, private=False)
-    assert wo.keep_turn_figures(REPLY, calls, session=_session(), person_id=1, private=False) == []
-
-
 def test_the_tool_tells_the_executive_what_is_worth_keeping() -> None:
     from openexecutive.orchestrator.figure_tools import KEEP_FIGURE_TOOL
 
