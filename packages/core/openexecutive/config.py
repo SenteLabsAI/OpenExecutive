@@ -1169,7 +1169,6 @@ class Settings(BaseSettings):
     # What it worked out (memory.worked_out): figures the Executive worked
     # out, kept with their source for that person's later turns.
     worked_out_enabled: bool = Field(True, alias="WORKED_OUT_ENABLED")
-    worked_out_max_per_day: int = Field(40, ge=0, alias="WORKED_OUT_MAX_PER_DAY")
     # Replay of the misses (memory.replay): nightly, the turns the review
     # graded a miss run again with today's lessons and facts, in a dry run,
     # and a judge says whether they would now go right. At most MAX_CASES a

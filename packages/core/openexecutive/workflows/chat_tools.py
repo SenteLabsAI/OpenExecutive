@@ -131,6 +131,7 @@ ACCESS: dict[str, tuple[str, str]] = {
     "remember_fact": (CHAT_ONLY, "changes what the Executive takes as fact"),
     "forget_fact": (CHAT_ONLY, "changes what the Executive takes as fact"),
     "update_company_profile": (CHAT_ONLY, "changes the company profile"),
+    "keep_figure": (CHAT_ONLY, "keeps a figure for the person in their own conversation"),
     "create_goal": (CHAT_ONLY, "only the principal starts a goal"),
     "record_decision_outcome": (CHAT_ONLY, "only the principal records an outcome"),
     "assign_open_loop": (CHAT_ONLY, "takes the task in the speaker's own words"),

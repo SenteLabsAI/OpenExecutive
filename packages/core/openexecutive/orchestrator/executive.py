@@ -123,6 +123,10 @@ from openexecutive.orchestrator.fact_tools import (
     FACT_TOOL_HANDLERS,
     FACT_TOOLS,
 )
+from openexecutive.orchestrator.figure_tools import (
+    WORKED_OUT_TOOL_HANDLERS,
+    WORKED_OUT_TOOLS,
+)
 from openexecutive.orchestrator.file_tools import FILE_TOOL_HANDLERS, FILE_TOOLS
 from openexecutive.orchestrator.form_tools import (
     FORM_TOOL_HANDLERS,
@@ -875,6 +879,7 @@ _ALL_SKILL_TOOLS = [
     *DEPARTMENT_TOOLS,
     *DECISION_TOOLS,
     *FACT_TOOLS,
+    *WORKED_OUT_TOOLS,
     *DOCUMENT_TOOLS,
     *BROADCAST_TOOLS,
     *WATCHLIST_TOOLS,
@@ -909,6 +914,7 @@ _ALL_SKILL_HANDLERS = {
     **DEPARTMENT_TOOL_HANDLERS,
     **DECISION_TOOL_HANDLERS,
     **FACT_TOOL_HANDLERS,
+    **WORKED_OUT_TOOL_HANDLERS,
     **DOCUMENT_TOOL_HANDLERS,
     **BROADCAST_TOOL_HANDLERS,
     **WATCHLIST_TOOL_HANDLERS,
@@ -947,10 +953,12 @@ def _private_tool_row(tool_name: str) -> bool:
     """Whether a tool's dispatch audit row is private to the principal: Act as
     me reads the speaker's own mailbox, and the fact tools' input quotes the
     principal verbatim and ties a fact to their chat session and turn, which
-    ``GET /memories/facts`` hides from everyone else."""
+    ``GET /memories/facts`` hides from everyone else. A kept figure
+    (``keep_figure``) is the speaker's own and may come from their mail."""
     return (
         tool_name in DELEGATION_TOOL_NAMES
         or tool_name in FACT_TOOL_HANDLERS
+        or tool_name in WORKED_OUT_TOOL_HANDLERS
         or tool_name in _OWN_RECALL_TOOL_NAMES
         # An installed extension's tool that quotes the speaker's own data
         # (orchestrator/extensions.py, private_row).
@@ -1845,16 +1853,19 @@ class Executive:
                     note_ask, own_text, session=session, person_id=person_id, calls=turn_calls,
                 )
 
-            # What it worked out (memory.worked_out): figures the reply worked
-            # out from what the turn read, kept for this person alone (private
-            # when the turn touched their mailbox).
-            from openexecutive.memory.worked_out import schedule_worked_out_pass
+            # What it worked out (memory.worked_out): the figures the
+            # Executive chose to keep this turn (keep_figure), checked against
+            # the reply now that it is written and kept for this person alone
+            # (private when the turn touched their mailbox).
+            from openexecutive.memory.worked_out import KEEP_TOOL, keep_turn_figures
 
             # Not from a turn the person wrote nothing in (``memory_text=""``,
             # e.g. an app's own ask): its numbers repeat what it was shown.
-            if own_text.strip():
-                schedule_worked_out_pass(full_response, turn_calls, session=session,
-                                         person_id=person_id, private=touched_mail, asked=own_text)
+            # Most turns keep nothing: only a turn that called keep_figure
+            # opens the database.
+            if own_text.strip() and any(name == KEEP_TOOL for name, _ in turn_calls):
+                await asyncio.to_thread(keep_turn_figures, full_response, turn_calls, session=session,
+                                        person_id=person_id, private=touched_mail)
 
             # Mirror the completed exchange into Honcho so its server-side
             # extraction can update the peer card. Fire-and-forget; the
@@ -2427,11 +2438,11 @@ class Executive:
                 )
 
             # What it worked out — see stream_chat.
-            from openexecutive.memory.worked_out import schedule_worked_out_pass
+            from openexecutive.memory.worked_out import KEEP_TOOL, keep_turn_figures
 
-            if own_text.strip():
-                schedule_worked_out_pass(final_response, turn_calls, session=session,
-                                         person_id=person_id, private=touched_mail, asked=own_text)
+            if own_text.strip() and any(name == KEEP_TOOL for name, _ in turn_calls):
+                await asyncio.to_thread(keep_turn_figures, final_response, turn_calls, session=session,
+                                        person_id=person_id, private=touched_mail)
 
         # Mirror the completed exchange into Honcho (see stream_chat for
         # rationale, and for why a turn private to the principal — or one

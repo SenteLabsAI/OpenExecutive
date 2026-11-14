@@ -93,6 +93,7 @@ _LABELS: dict[str, str] = {
     "create_goal": "Adding a goal…",
     "record_decision_outcome": "Recording how a decision turned out…",
     "remember_fact": "Noting that for good…",
+    "keep_figure": "Keeping that figure…",
     "forget_fact": "Dropping an old fact…",
     "update_company_profile": "Updating the company profile…",
 
@@ -200,6 +201,7 @@ _PRIORITY: tuple[frozenset[str], ...] = (
         "remember_fact",
         "forget_fact",
         "update_company_profile",
+        "keep_figure",
         "close_open_loop",
         "reopen_open_loop",
         "update_open_loop",
