@@ -230,6 +230,30 @@ _COLLECTING: ContextVar[bool] = ContextVar("executive_collecting", default=False
 _OWN_RECALL_TOOL_NAMES: frozenset[str] = HISTORY_TOOL_NAMES | CHAT_SEARCH_TOOL_NAMES
 
 
+def _own_tool_call(tu: dict[str, Any], handlers: Any) -> dict[str, Any] | None:
+    """A ``call_tool`` that names one of the turn's own built-in tools, as
+    that tool's call (same id), or None. Only a plain name the gateway can't
+    hold (no server prefix) with object arguments."""
+    if tu.get("name") != "call_tool" or not isinstance(tu.get("input"), dict):
+        return None
+    named = tu["input"].get("name")
+    if not isinstance(named, str) or not named or "__" in named or named in MCP_TOOL_NAMES:
+        return None
+    if named not in handlers:
+        return None
+    arguments = tu["input"].get("arguments")
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except (ValueError, RecursionError):
+            return None
+    if arguments is None:
+        arguments = {}
+    if not isinstance(arguments, dict):
+        return None
+    return {**tu, "name": named, "input": arguments}
+
+
 def _private_to_principal(session: Any) -> bool:
     """Whether this turn is about the principal's private mail (set by the
     email poller for mail from a contact and mail the principal forwarded)."""
@@ -2887,6 +2911,13 @@ class Executive:
                         group_results[tu["id"]] = error or ""
                     else:
                         tool_uses[i] = call
+                else:
+                    # A built-in tool asked for through the gateway
+                    # (call_tool name="create_alert") is that tool's own call,
+                    # checked by its own name: the gateway doesn't have it.
+                    own = _own_tool_call(tu, turn_handlers)
+                    if own is not None:
+                        tool_uses[i] = own
             # The turn's one full re-read of a result the reading budget cut
             # is answered from that result, never by running the tool again
             # (it may have been a write).

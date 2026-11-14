@@ -15,12 +15,53 @@ Row encoding (mirrors ``departments/cadence.py``):
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 
 from openexecutive.workflows.dynamic_models import DynamicWorkflowDef
 
 logger = logging.getLogger(__name__)
+
+
+def _zone() -> tzinfo:
+    try:
+        from openexecutive.memory.workspace_settings import get_user_timezone
+
+        return get_user_timezone()
+    except Exception:
+        return UTC
+
+
+_DOW_NAMES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def from_utc(spec: str, tz: tzinfo, now: datetime | None = None) -> str:
+    """``spec`` written in UTC (as cadences were before they took the
+    company's time zone), rewritten as the same moment in ``tz``: its next
+    occurrence, read there. A weekly or quarterly day moves with it when the
+    time crosses midnight (a quarterly day keeps its own number if that
+    would leave its month). Anything it can't read stays as it is."""
+    from openexecutive.departments.cadence import (
+        _DAILY_RE,
+        _QUARTERLY_RE,
+        _WEEKLY_RE,
+        _parse_cadence_spec,
+    )
+
+    nxt = _parse_cadence_spec(spec, now or datetime.now(UTC), UTC)
+    if nxt is None:
+        return spec
+    local = nxt.astimezone(tz)
+    clock = f"{local.hour:02d}:{local.minute:02d}"
+    if _DAILY_RE.match(spec):
+        return f"daily@{clock}"
+    if _WEEKLY_RE.match(spec):
+        return f"weekly@{_DOW_NAMES[local.weekday()]}@{clock}"
+    quarterly = _QUARTERLY_RE.match(spec)
+    if quarterly:
+        day = local.day if local.month == nxt.month else int(quarterly.group(1))
+        return f"quarterly@{day:02d}-{clock}"
+    return spec
 
 
 def schedule_dynamic_workflow_cadence(
@@ -38,7 +79,9 @@ def schedule_dynamic_workflow_cadence(
     from openexecutive.memory.episodic import insert_scheduled_action
 
     base = (after or datetime.now(UTC)).astimezone(UTC)
-    run_at = _parse_cadence_spec(defn.cadence, base)
+    # A cadence's times are the company's own (Settings), summer time and
+    # all: "weekly@mon@09:00" is 9 AM there every Monday.
+    run_at = _parse_cadence_spec(defn.cadence, base, _zone())
     if run_at is None:
         logger.warning(
             "dynamic_cadence: invalid spec %r for workflow %r", defn.cadence, defn.name

@@ -2,8 +2,16 @@
 
 import { useEffect, useState } from "react";
 
+import HeldFieldsEdit, { heldFields } from "@/components/HeldFieldsEdit";
 import Button from "@/components/ui/Button";
-import { approveDecision, getDecision, rejectDecision, type DecisionInstance } from "@/lib/api";
+import {
+  approveDecision,
+  approveLeadCard,
+  getDecision,
+  rejectDecision,
+  type DecisionInstance,
+  type LeadCardField,
+} from "@/lib/api";
 
 // The chat: a step the Executive held for your OK (orchestrator/levels.py,
 // or a teammate's step their department held), shown under its reply.
@@ -14,6 +22,7 @@ interface HeldPayload {
   summary: string;
   reason: string;
   details: { field: string; value: string }[];
+  fields: LeadCardField[];
 }
 
 function readPayload(instance: DecisionInstance): HeldPayload | null {
@@ -28,6 +37,7 @@ function readPayload(instance: DecisionInstance): HeldPayload | null {
         field: String(d.field ?? ""),
         value: String(d.value ?? ""),
       })),
+      fields: heldFields(raw.fields),
     };
   } catch {
     return null;
@@ -39,6 +49,7 @@ const DONE = new Set(["approved_unchanged", "approved_with_edit", "executed"]);
 export default function ChatHeldActionCard({ id }: { id: number }) {
   const [instance, setInstance] = useState<DecisionInstance | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -77,6 +88,20 @@ export default function ChatHeldActionCard({ id }: { id: number }) {
       {payload.reason && !done && (
         <p className="mt-1.5 text-sm text-fg-muted">I waited because {payload.reason}.</p>
       )}
+      {editing && !done ? (
+        <HeldFieldsEdit
+          id={instance.id}
+          fields={payload.fields}
+          busy={busy !== null}
+          onCancel={() => setEditing(false)}
+          onApprove={(changed) =>
+            void act("Doing it…", () =>
+              Object.keys(changed).length > 0 ? approveLeadCard(instance.id, { input: changed }) : approveDecision(instance.id),
+            )
+          }
+        />
+      ) : (
+      <>
       {payload.details.length > 0 && !done && (
         <dl className="mt-3 flex flex-col gap-2 rounded-xl border border-line bg-surface p-3">
           {payload.details.map((d) => (
@@ -98,6 +123,11 @@ export default function ChatHeldActionCard({ id }: { id: number }) {
           >
             {busy ?? "Approve"}
           </Button>
+          {payload.fields.length > 0 && (
+            <Button variant="secondary" onClick={() => setEditing(true)} disabled={busy !== null}>
+              Edit
+            </Button>
+          )}
           <Button
             variant="ghost"
             className="ml-auto"
@@ -107,6 +137,8 @@ export default function ChatHeldActionCard({ id }: { id: number }) {
             Not now
           </Button>
         </div>
+      )}
+      </>
       )}
       {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
     </article>

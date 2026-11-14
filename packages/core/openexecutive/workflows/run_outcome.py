@@ -45,6 +45,21 @@ _MAX_LINE = 160
 _TITLE_NOISE = re.compile(r"\s*(\(.*\)|\d{4}-\d{2}-\d{2}|\d{4}-W\d{2})\s*$")
 
 
+# What a run's log title says about how it started, never shown to anyone.
+HOW_IT_STARTED: tuple[str, ...] = (
+    "(periodic)", "(post-onboarding auto-fire)", "(chat-tool fire)",
+)
+
+
+def shown_title(title: str) -> str:
+    """A run's title as people read it: without the note on how it started
+    ("Post-mortem (chat-tool fire)" reads "Post-mortem")."""
+    for note in HOW_IT_STARTED:
+        if title.endswith(note):
+            return title[: -len(note)].rstrip() or title
+    return title
+
+
 def has_write_up(artifact: str | None) -> bool:
     """Whether the run kept a write-up worth opening."""
     return (artifact or "").strip() not in _EMPTY_ARTIFACTS

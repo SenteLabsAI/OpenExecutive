@@ -134,7 +134,7 @@ def _as_me_unchanged(times: int) -> str:
 
 
 def test_keep_asking_on_an_as_me_suggestion(owner: Any) -> None:
-    ttl.set_(ttl.SCOPE_EXECUTIVE, enabled=True, training=True, updated_by="t")
+    ttl.set_(ttl.SCOPE_EXECUTIVE, training=True, updated_by="t")
     key = _as_me_unchanged(ttl.SUGGEST_AFTER)
     [suggested] = ttl.suggestions()
     assert suggested.key == key and suggested.last_at
@@ -193,7 +193,7 @@ def test_a_teammate_cant_answer_someone_elses_offers(client: TestClient, owner: 
     sam = "sam@co.example"
     people_store.upsert_person(full_name="Sam Teammate", email=sam)
     people_registry.invalidate()
-    ttl.set_(ttl.SCOPE_EXECUTIVE, enabled=True, training=True, updated_by="t")
+    ttl.set_(ttl.SCOPE_EXECUTIVE, training=True, updated_by="t")
     as_me_key = _as_me_unchanged(ttl.SUGGEST_AFTER)
     training.set_(owner.id, {training.TRAINING: True}, updated_by="t")
     _sent_unchanged(owner)

@@ -57,50 +57,32 @@ test("a step's apps are listed once, in order", () => {
   assert.deepEqual(stepApps([]), []);
 });
 
-test("schedules show in the viewer's own time, with summer time", () => {
+test("schedules show as the company's clock says them", () => {
   const winter = new Date(Date.UTC(2026, 10, 8, 12));
   const summer = new Date(Date.UTC(2026, 6, 8, 12));
-  assert.equal(describeCadenceLocal("weekly@mon@14:00", "America/New_York", winter), "Mondays at 9:00 AM EST");
-  assert.equal(describeCadenceLocal("weekly@mon@14:00", "America/New_York", summer), "Mondays at 10:00 AM EDT");
-  assert.equal(describeCadenceLocal("daily@02:00", "America/New_York", winter), "Every day at 9:00 PM EST");
-  assert.equal(describeCadenceLocal("weekly@mon@02:00", "America/New_York", winter), "Sundays at 9:00 PM EST");
+  assert.equal(describeCadenceLocal("weekly@mon@09:00", "America/New_York", winter), "Mondays at 9:00 AM");
+  assert.equal(describeCadenceLocal("weekly@mon@09:00", "America/New_York", summer), "Mondays at 9:00 AM");
+  assert.equal(describeCadenceLocal("daily@21:00"), "Every day at 9:00 PM");
+  assert.equal(describeCadenceLocal("quarterly@15-09:00"), "Quarterly on day 15 at 9:00 AM");
   assert.equal(describeCadenceLocal(null), "Only when you run it");
   assert.equal(describeCadenceLocal("odd"), "odd");
 });
 
-test("an impossible time falls back to the saved text instead of rolling over", () => {
-  assert.equal(describeCadenceLocal("daily@25:00", "America/New_York"), "Every day at 25:00 UTC");
-  assert.equal(describeCadenceLocal("weekly@mon@09:60", "America/New_York"), "Every Monday at 09:60 UTC");
+test("an impossible time falls back to the saved text", () => {
+  assert.equal(describeCadenceLocal("daily@25:00"), "Every day at 25:00");
+  assert.equal(describeCadenceLocal("weekly@mon@09:60"), "Every Monday at 09:60");
 });
 
-test("a quarterly run names the local day", () => {
-  const now = new Date(Date.UTC(2026, 10, 8, 12));
-  assert.equal(
-    describeCadenceLocal("quarterly@01-02:00", "America/New_York", now),
-    "Quarterly on day 31 at 9:00 PM EST",
-  );
-  assert.equal(
-    describeCadenceLocal("quarterly@15-14:00", "America/New_York", now),
-    "Quarterly on day 15 at 9:00 AM EST",
-  );
-  // Oct 20: Oct 15 has passed, so the next run is Jan 15, in winter time.
-  const oct = new Date(Date.UTC(2026, 9, 20, 12));
-  assert.equal(
-    describeCadenceLocal("quarterly@15-14:00", "America/New_York", oct),
-    "Quarterly on day 15 at 9:00 AM EST",
-  );
-});
-
-test("a schedule change can be said in local time", async () => {
+test("a schedule change is said as the company's clock does", async () => {
   const { describeChanges } = await import("../src/lib/workflowChanges.ts");
   const before = { name: "w", title: "W", description: "", section: "S", estimated_minutes: 5, input_fields: [], steps: [], cadence: "weekly@mon@02:00", cadence_person_id: 1 };
   const after = { ...before, cadence: "daily@02:00" };
   const labels = { person: () => "Sam", specialist: (k) => k, tool: (t) => t };
   const local = (c) => describeCadenceLocal(c, "America/New_York", new Date(Date.UTC(2026, 10, 8, 12)));
   assert.deepEqual(describeChanges(before, after, { ...labels, cadence: local }), [
-    "Schedule: Every day at 9:00 PM EST, sent to Sam (was: Sundays at 9:00 PM EST)",
+    "Schedule: Every day at 2:00 AM, sent to Sam (was: Mondays at 2:00 AM)",
   ]);
   assert.deepEqual(describeChanges(before, after, labels), [
-    "Schedule: Every day at 02:00 UTC, sent to Sam (was: Every Monday at 02:00 UTC)",
+    "Schedule: Every day at 2:00 AM, sent to Sam (was: Every Monday at 2:00 AM)",
   ]);
 });

@@ -655,8 +655,10 @@ def render_briefing_context(
             parts.append("")
         if handled:
             parts.append("HANDLED OVERNIGHT BY THE EXECUTIVE (already done — report, don't ask):")
+            from openexecutive.briefing.brief_state import handled_line
+
             for h in handled[:15]:
-                parts.append(f"- [{str(h.get('at', ''))[:10]}] {h.get('kind', '')}: {str(h.get('summary', ''))[:140]}")
+                parts.append(handled_line(h))
             parts.append("")
         if pending_watch_suggestions > 0:
             n = pending_watch_suggestions

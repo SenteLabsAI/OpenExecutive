@@ -805,20 +805,43 @@ _DELEGATED_INVITE = DecisionClassSpec(
 async def _carry_out_department_action(
     instance: DecisionInstance, body: ApproveBody, request: Request, resolver: int | None
 ) -> DecisionInstance:
-    """A team member's send or edit their department held
-    (orchestrator.department_gate): do that exact call, once (claimed first),
-    as it stands, and record who approved it."""
-    return await _run_department_action(instance, resolver, by_principal=_approver_is_principal(request))
+    """A step held for a yes (orchestrator.department_gate): do that exact
+    call, once (claimed first), and record who approved it. ``edits.input``
+    changes the card's editable fields first (an email's subject and text,
+    a message; ``take_the_lead.apply_edits``): the owner's, or the card's
+    own approver's."""
+    from openexecutive.orchestrator import card_details, take_the_lead
+
+    payload = _parse_payload(instance)
+    edits = body.edits or {}
+    if edits.get("input") is not None:
+        mine = resolver is not None and resolver == instance.approver_person_id
+        if not (_approver_is_principal(request) or mine):
+            raise HTTPException(status_code=403, detail="Only the person this card waits on can change it before approving.")
+        if len(card_details.held_steps(payload)) > 1:
+            raise HTTPException(status_code=422, detail="This one can't be changed from its card.")
+        source: dict[str, Any] = payload["input"] if isinstance(payload.get("input"), dict) else {}
+        try:
+            new_input, _changed = take_the_lead.apply_edits(
+                str(payload.get("tool") or ""), source, edits["input"], mcp=bool(payload.get("mcp")),
+            )
+        except take_the_lead.EditError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        payload = {**payload, "input": new_input}
+    return await _run_department_action(
+        instance, resolver, by_principal=_approver_is_principal(request), payload=payload,
+    )
 
 
 async def _run_department_action(
     instance: DecisionInstance, resolver: int | None, *, by_principal: bool,
+    payload: dict[str, Any] | None = None,
 ) -> DecisionInstance:
     from openexecutive.audit import log_event
     from openexecutive.memory.decision_ledger import claim_for_execution, finish_execution
     from openexecutive.orchestrator import take_the_lead
 
-    payload = _parse_payload(instance)
+    payload = payload if payload is not None else _parse_payload(instance)
     if not claim_for_execution(instance.id, resolver_person_id=resolver):
         raise HTTPException(status_code=409, detail="Someone else resolved this decision first.")
     try:

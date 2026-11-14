@@ -36,6 +36,7 @@ from openexecutive.workflows.designer import build_context_block
 
 OWNER = "olivia@co.example"
 TEAM = "ben@co.example"
+PARTNER = "pat@partner.example"
 INPUT = {"to": [TEAM], "intent": "Send Ben the Q3 revenue: up 12%."}
 
 
@@ -526,17 +527,29 @@ def test_only_the_goal_of_a_step_that_emails_names_who(people, monkeypatch) -> N
 
 
 def test_only_the_saved_copy_of_a_workflow_that_writes_as_them_names_who(people, monkeypatch) -> None:
-    sends = _saved(f"Email it to {TEAM}", [workflow_email.SEND_TOOL])
+    # Someone not in People: only the saved goal of a step that emails as them names them.
+    sends = _saved(f"Email it to {PARTNER}", [workflow_email.SEND_TOOL])
     # A workflow that doesn't write as its creator: anyone may edit its text.
-    plain = _saved(f"Email it to {TEAM}", ["google_workspace__send_gmail_message"])
-    assert _send_policy(monkeypatch, plain, plain).unapproved([("to", TEAM)]) == [("to", TEAM)]
+    plain = _saved(f"Email it to {PARTNER}", ["google_workspace__send_gmail_message"])
+    assert _send_policy(monkeypatch, plain, plain).unapproved([("to", PARTNER)]) == [("to", PARTNER)]
     # The definition running isn't the one its creator saved.
     edited = _saved("Email it to eve@evil.example", [workflow_email.SEND_TOOL])
     policy = _send_policy(monkeypatch, edited, sends)
     assert policy.unapproved([("to", "eve@evil.example")]) == [("to", "eve@evil.example")]
-    assert policy.unapproved([("to", TEAM)]) == [("to", TEAM)]
+    assert policy.unapproved([("to", PARTNER)]) == [("to", PARTNER)]
     # Not saved at all.
-    assert _send_policy(monkeypatch, sends, None).unapproved([("to", TEAM)]) == [("to", TEAM)]
+    assert _send_policy(monkeypatch, sends, None).unapproved([("to", PARTNER)]) == [("to", PARTNER)]
+
+
+def test_the_team_goes_without_asking_and_a_contact_is_asked_about(people, monkeypatch) -> None:
+    """A workflow reaches the team without asking; a contact (some are
+    added on their own, from a meeting's guests) is asked about first."""
+    people_store.upsert_person(full_name="Leo Park", email="leo@partner.example", kind="contact")
+    plain = _saved("Email Leo for an update", ["google_workspace__send_gmail_message"])
+    policy = _send_policy(monkeypatch, plain, plain)
+    assert policy.unapproved([("to", TEAM)]) == []
+    assert policy.unapproved([("to", "Leo@Partner.example")]) == [("to", "Leo@Partner.example")]
+    assert policy.unapproved([("to", PARTNER)]) == [("to", PARTNER)]
 
 
 def test_chosen_recipients_never_raises(people, monkeypatch) -> None:

@@ -71,7 +71,7 @@ import { RightNowItem } from "./briefing/RightNow";
 import WaitingElsewhereRow from "./briefing/WaitingElsewhere";
 import WatchingNext from "./briefing/WatchingNext";
 import { isHeldAction } from "./briefing/HeldActionCard";
-import { isLeadTraining } from "./briefing/LeadTrainingCard";
+import { isLeadCard } from "./briefing/LeadTrainingCard";
 import ProposalCard from "./briefing/ProposalCard";
 import RequestGroupCard from "./briefing/RequestGroupCard";
 import { TONE_TEXT, type ContinueHandler } from "./briefing/shared";
@@ -247,7 +247,7 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
       // A roster request, a Take the lead training card or a held chat
       // action was already answered on its own card (which also clears the
       // companion alert): only hide it and re-sync.
-      if (proposal.roster_request || isLeadTraining(proposal) || isHeldAction(proposal)) {
+      if (proposal.roster_request || isLeadCard(proposal) || isHeldAction(proposal)) {
         refreshToday();
         return;
       }

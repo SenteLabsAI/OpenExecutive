@@ -349,6 +349,27 @@ _CREATED_KEY_RE = re.compile(r"(^id$|_id$|[a-z0-9]Id$|link$|Link$|url$|Url$)")
 _MIN_CREATED_VALUE = 6
 
 
+def people_addresses() -> set[str]:
+    """Every address of someone on the team, archived left out. Contacts
+    are not in it: some are added on their own (a meeting's guests, people
+    the owner mailed), and a workflow's step has no rules or In training
+    around it, so a contact is asked about once like anyone outside. Never
+    raises: an error is none."""
+    try:
+        from openexecutive.people.store import list_people
+
+        return {
+            a.strip().lower()
+            for p in list_people()
+            if getattr(p, "kind", "team") == "team"
+            for a in [p.email or "", *p.email_aliases]
+            if a and "@" in a
+        }
+    except Exception:
+        logger.warning("action_step: couldn't read People's addresses", exc_info=True)
+        return set()
+
+
 class TargetPolicy:
     """Which targets a run may write to without asking. One per run.
 
@@ -356,6 +377,8 @@ class TargetPolicy:
     - values approved for this workflow before (``approved_targets``) — by the
       owner answering a held write, never by anything the model or a page can
       write;
+    - the addresses of the team (``people_addresses``): only an admin adds
+      a teammate;
     - in a workflow that writes or reads as its creator, their own addresses
       and the addresses in the goal of a step that emails as them
       (``workflow_email.chosen_recipients``):
@@ -384,7 +407,10 @@ class TargetPolicy:
     ) -> TargetPolicy:
         from openexecutive.delegation.workflow_email import chosen_recipients
 
-        return cls(approved=approved_values(defn.name) | chosen_recipients(defn), created=created)
+        return cls(
+            approved=approved_values(defn.name) | chosen_recipients(defn) | people_addresses(),
+            created=created,
+        )
 
     def _trusted(self, value: str) -> bool:
         norm = normalize_value(value)

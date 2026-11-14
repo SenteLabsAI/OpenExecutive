@@ -4,6 +4,7 @@ import contextlib
 import contextvars
 import json
 import logging
+import re
 import uuid
 from collections.abc import Iterator
 from typing import Any
@@ -384,6 +385,14 @@ def _step_already_on_card(session: Any) -> bool:
         return False
 
 
+_UTC_ASIDE = re.compile(r"\s*\((?:\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?\s*)?(?:UTC|GMT|Z)\)", re.IGNORECASE)
+
+
+def without_utc(text: str) -> str:
+    """``text`` without a time's UTC aside in brackets, "(19:00 UTC)"."""
+    return _UTC_ASIDE.sub("", text)
+
+
 async def handle_create_alert(tool_input: dict[str, Any]) -> str:
     from openexecutive.alerts.models import AlertEvent
     from openexecutive.alerts.pipeline import schedule_evaluation
@@ -431,6 +440,9 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
             f"create_alert needs {' and '.join(missing)}: pass a short 'subject' "
             "headline and a 'body' saying what needs attention"
         )})
+    # A time is said once, in the company's time zone: "11:00am ET (16:00
+    # UTC)" reads as "11:00am ET".
+    tool_input = {**tool_input, **{k: without_utc(str(tool_input[k])) for k in ("subject", "body")}}
     source, external_id, from_address = (
         str(tool_input.get("source") or "unknown"),
         str(tool_input.get("external_id") or ""),

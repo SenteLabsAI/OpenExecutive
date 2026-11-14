@@ -572,7 +572,7 @@ export default function WatchDetailPage() {
                     ? "It waits for your OK. Approve it on the watch list and it starts telling you."
                     : item.mode === "active"
                       ? "It tells you in your briefing."
-                      : "It keeps watching quietly and doesn't tell you."}
+                      : "It puts what it finds in your next brief, never on a card."}
                 </p>
               </div>
               {!isSuggestion && (
@@ -584,7 +584,7 @@ export default function WatchDetailPage() {
                   {(
                     [
                       ["active", "Alert me"],
-                      ["dry_run", "Watch quietly"],
+                      ["dry_run", "Only in my brief"],
                     ] as const
                   ).map(([value, label]) => (
                     <button

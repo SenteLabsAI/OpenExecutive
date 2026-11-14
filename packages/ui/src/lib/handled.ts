@@ -33,6 +33,7 @@ export const HANDLED_KINDS: Record<string, { order: number; verb: string }> = {
   suggested_workflow: { order: 3, verb: "suggested a workflow" },
   watching: { order: 3, verb: "started watching" },
   stopped_watching: { order: 3, verb: "stopped watching" },
+  quiet_watch_found: { order: 3, verb: "noted from a quiet watch" },
 };
 export const handledOrder = (kind: string) => HANDLED_KINDS[kind]?.order ?? 4;
 export const handledVerb = (kind: string) => HANDLED_KINDS[kind]?.verb ?? kind;
