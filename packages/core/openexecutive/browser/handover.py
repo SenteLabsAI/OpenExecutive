@@ -91,17 +91,16 @@ def one_line(text: object, cap: int) -> str:
 
 
 def _drop(handover: Handover) -> None:
-    """Forget a hand-over that was left over: a turn still waiting on it is
-    told to stop now rather than sitting out its wait, since its bar can no
-    longer be answered."""
+    """Forget a hand-over that was left over, as a closed card does: a turn
+    still waiting on it is told to stop now rather than sitting out its wait,
+    and its bar comes down, since it can no longer be answered."""
     _open.pop(handover.id, None)
-    future = handover.future
-    if future is None or future.done():
-        return
 
-    def _stop() -> None:
-        if not future.done():
+    def _close() -> None:
+        future = handover.future
+        if future is not None and not future.done():
             future.set_result("stop")
+        end_bar(handover)
 
     loop = handover.loop
     try:
@@ -109,9 +108,9 @@ def _drop(handover: Handover) -> None:
     except RuntimeError:
         here = None
     if loop is None or loop is here:
-        _stop()
+        _close()
     elif not loop.is_closed():
-        loop.call_soon_threadsafe(_stop)
+        loop.call_soon_threadsafe(_close)
 
 
 def _prune(now: float | None = None) -> None:

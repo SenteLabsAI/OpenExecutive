@@ -172,7 +172,9 @@ def test_a_person_keeps_only_a_few_open() -> None:
     assert len([h for h in browser_handover._open.values() if h.person_id == 7]) == browser_handover.MAX_PER_PERSON
 
 
-async def test_a_turn_waiting_on_a_left_over_hand_over_stops_at_once() -> None:
+async def test_a_turn_waiting_on_a_left_over_hand_over_stops_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    ended: list[str] = []
+    monkeypatch.setattr(browser_handover, "end_bar", lambda h: ended.append(h.id))
     oldest = browser_handover.start(7, "sign in")
     waiting = asyncio.ensure_future(browser_handover.wait(oldest, timeout=30))
     await asyncio.sleep(0)
@@ -180,6 +182,8 @@ async def test_a_turn_waiting_on_a_left_over_hand_over_stops_at_once() -> None:
         browser_handover.start(7, f"step {i}")
     assert browser_handover.get(oldest.id) is None
     assert await asyncio.wait_for(waiting, 1) == "stop"
+    # Its bar comes down too, as when its card is closed.
+    assert ended == [oldest.id]
 
 
 async def test_not_connected_says_so_and_makes_no_card(alerts_db: Path, chat_turn: None) -> None:
