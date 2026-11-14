@@ -77,7 +77,7 @@ export default function BrowserExtensionCard({
               rel={storeUrl ? "noopener noreferrer" : undefined}
               className="text-sm font-medium text-accent hover:underline"
             >
-              Don&apos;t have it? Add to Chrome
+              {storeUrl ? "Don't have it? Add to Chrome" : "Don't have it? Open Settings"}
             </a>
             <Button variant="ghost" className="ml-auto" onClick={onDismiss}>
               Not now

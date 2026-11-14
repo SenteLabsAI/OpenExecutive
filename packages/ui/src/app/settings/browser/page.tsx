@@ -15,11 +15,11 @@ import { getBrowserStatus, type BrowserStatus } from "@/lib/api";
 // connected and whether "Stay connected" is ticked in it (what workflows
 // need). Three states: not set up (how to set it up), set up, and connected
 // with Stay connected off (the one step left). With no install page
-// (BROWSER_EXTENSION_URL set empty) it says how to load it from the
-// repository instead.
+// (BROWSER_EXTENSION_URL unset) it only says the extension still needs to be
+// set up; how to load it is in docs/browser_extension_setup.md, for whoever
+// runs the install.
 
 const RECHECK_MS = 10_000;
-const GUIDE_URL = "https://github.com/ForeactLabs/OpenExecutive/blob/main/docs/browser_extension_setup.md";
 
 type Tone = "ok" | "off" | "muted";
 
@@ -46,13 +46,7 @@ function Row({ title, line, pill }: { title: string; line: string; pill?: ReactN
 }
 
 function AddToChrome({ storeUrl }: { storeUrl: string | null }) {
-  if (!storeUrl) {
-    return (
-      <a href={GUIDE_URL} target="_blank" rel="noopener noreferrer" className="self-start text-sm font-medium text-accent hover:underline">
-        How to load it from this repository
-      </a>
-    );
-  }
+  if (!storeUrl) return null;
   return (
     <a href={storeUrl} target="_blank" rel="noopener noreferrer" className={`${buttonClass("primary")} self-start`}>
       Add to Chrome
@@ -73,12 +67,14 @@ function NotSetUp({ storeUrl }: { storeUrl: string | null }) {
         action={<Pill tone="muted">Not connected</Pill>}
       >
         <div className="flex flex-col gap-4">
-          <AddToChrome storeUrl={storeUrl} />
+          {storeUrl ? (
+            <AddToChrome storeUrl={storeUrl} />
+          ) : (
+            <p className="text-sm text-fg-muted">The extension still needs to be set up for Open Executive here.</p>
+          )}
           <ol className="list-decimal space-y-1.5 pl-5 text-[15px] text-fg">
             <li>
-              {storeUrl
-                ? "Press Add to Chrome, then Add extension."
-                : "Load the extension in Chrome (chrome://extensions, Developer mode, Load unpacked)."}
+              {storeUrl ? "Press Add to Chrome, then Add extension." : "Add the Open Executive extension to Chrome."}
             </li>
             <li>With Open Executive open in a tab, click the extension&apos;s icon and press Connect.</li>
             <li>Allow it on all sites when Chrome asks.</li>

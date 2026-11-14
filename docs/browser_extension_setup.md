@@ -38,7 +38,7 @@ only ever uses the browser of the person it's working for.
    repo.
 3. Pin the extension so its button stays in the toolbar.
 
-Settings → Browser shows these steps.
+Until then, Settings → Browser says the extension still needs to be set up.
 
 **Or use the published extension** (optional). Set `BROWSER_EXTENSION_URL` to
 its Chrome Web Store listing,
@@ -61,7 +61,7 @@ Settings → Browser shows whether it's connected and has a few things to try.
 
 | Variable | Default | What it does |
 |---|---|---|
-| `BROWSER_EXTENSION_URL` | unset | Where the **Add to Chrome** button goes: your own listing's `https://` address, or the published one above. Unset or empty shows only the steps to load it from this repo |
+| `BROWSER_EXTENSION_URL` | unset | Where the **Add to Chrome** button goes: your own listing's `https://` address, or the published one above. Unset or empty shows no button, and Settings says the extension still needs to be set up |
 | `OE_BROWSER_OFF` | unset | Set to `1` to turn browser use off for everyone. The Executive gets no browser tools, and Settings → Browser says it's off |
 
 ## Make it your own

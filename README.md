@@ -444,7 +444,7 @@ the app refuses to start.
 | `EMAIL_POLL_INTERVAL_SECONDS` | No | `60` | How often to poll for new email |
 | `TELEGRAM_BOT_TOKEN` | No | — | Telegram bot token (from @BotFather) |
 | `TELEGRAM_WEBHOOK_SECRET` | No | — | Random string for webhook validation |
-| `BROWSER_EXTENSION_URL` | No | — | Where Add to Chrome goes (your own listing, or the published one); unset shows the load unpacked steps only ([setup](docs/browser_extension_setup.md)) |
+| `BROWSER_EXTENSION_URL` | No | — | Where Add to Chrome goes (your own listing, or the published one); unset shows no button: load it from the repo ([setup](docs/browser_extension_setup.md)) |
 | `OE_BROWSER_OFF` | No | — | `1` turns browser use off |
 | `DISCORD_BOT_TOKEN` | No | — | Discord bot token (Developer Portal → Bot tab) |
 | `DISCORD_APP_ID` | No | — | Discord application ID (General Information tab) |

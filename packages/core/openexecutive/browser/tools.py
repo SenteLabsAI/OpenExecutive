@@ -330,7 +330,8 @@ def _away() -> bool:
 
 
 # Where people get the extension. By default there is no install button:
-# Settings shows how to load the extension from this repository.
+# Settings says it still needs to be set up (docs/browser_extension_setup.md
+# has the load-unpacked steps for whoever runs the install).
 # ``BROWSER_EXTENSION_URL`` sets an https page for Add to Chrome: an install's
 # own listing or build, or the published Open Executive listing
 # (``PUBLISHED_URL``), which connects to any Open Executive site.
