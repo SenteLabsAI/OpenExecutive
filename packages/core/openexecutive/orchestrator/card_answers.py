@@ -36,6 +36,10 @@ plainly theirs (``refusal``):
   card 12" says nothing here;
 - an approval needs this turn's message to say yes (``said_yes``), so a
   question about a card never approves it;
+- "yes, and next time too" on an In training card also does the card's
+  tick (``allow``): only when the message says so (``said_next_time``), and
+  ``resolve_in_chat`` makes the tick's own checks (a training card, the
+  owner, room on the allowed list);
 - every reply has to be about that card (``_about_card``): the message
   names it, or the reply it answers asked about it, or it is the only card
   shown. A bare "ok" to some other question never approves a card the
@@ -157,6 +161,29 @@ def said_no(message: str) -> bool:
     return bool(_DROP.search(text)) and not _KEEP.search(text) and not _YES.search(text)
 
 
+# "Yes, and next time too", "from now on", "always": the person also lets it
+# do this on its own next time (an In training card's tick).
+_NEXT_TIME = re.compile(
+    r"\b(?:(?:and|also) next time|next time too|next time as well|from now on|going forward|"
+    r"(?:do|send|book) (?:it|this|these|them) on (?:its|your) own|without asking)\b",
+    re.IGNORECASE,
+)
+# "...but ask me next time", "this once", "run these by me first": still asks.
+_STILL_ASKS = re.compile(
+    r"\b(?:ask|check with|run (?:it|this|these|them) by|by me|this once|just once|only|first|"
+    r"before|each time|every time)\b",
+    re.IGNORECASE,
+)
+
+
+def said_next_time(message: str) -> bool:
+    """Whether ``message`` says yes for next time too, plainly: a yes as
+    ``said_yes``, words that mean from now on, and nothing that keeps it
+    asking ("but ask me next time", "this once")."""
+    text = unicodedata.normalize("NFKC", message or "").replace("’", "'")
+    return said_yes(message) and bool(_NEXT_TIME.search(text)) and not _STILL_ASKS.search(text)
+
+
 def said_yes(message: str) -> bool:
     """Whether ``message`` says yes to something, plainly: a yes word, no
     no word, and not a question."""
@@ -202,6 +229,15 @@ ANSWER_CARD_TOOL: dict[str, Any] = {
                 "description": (
                     "For 'answer': the person's answer or the choice they "
                     "picked, in their own words."
+                ),
+            },
+            "allow": {
+                "type": "boolean",
+                "description": (
+                    "For 'approve' on an In training card: true when the person "
+                    "also says to do it on its own next time ('yes, and next time "
+                    "too', 'from now on'), as the card's tick does. Leave it out "
+                    "otherwise: approving does it once."
                 ),
             },
         },
@@ -316,7 +352,15 @@ def _audit(event: str, alert: Any, person_id: int | None, **extra: Any) -> None:
     )
 
 
-async def _decision(alert: Any, person: Any, *, approve: bool) -> str:
+def _signed_here() -> bool:
+    """Whether this server ties a request to the person (signed sign-ins or
+    local login): the rule the card's own tick has (decisions approve)."""
+    from openexecutive.delegation.handle_it import signing_ok
+
+    return signing_ok()
+
+
+async def _decision(alert: Any, person: Any, *, approve: bool, allow: bool = False) -> str:
     from fastapi import HTTPException
 
     from openexecutive.api.routes.decisions import resolve_in_chat
@@ -332,13 +376,18 @@ async def _decision(alert: Any, person: Any, *, approve: bool) -> str:
     if instance_id is None or decision_alert_external_id(instance_id) != external:
         return _error("This card's decision can't be found. Point them at the card.")
     try:
-        instance = await resolve_in_chat(instance_id, person, approve=approve)
+        instance = await resolve_in_chat(instance_id, person, approve=approve, allow=allow)
     except HTTPException as exc:
         return _error(f"{exc.detail} Say so in a line.")
     return json.dumps({
         "alert_id": alert.id, "headline": alert.headline, "reply": APPROVE if approve else DISMISS,
         "status": instance.status,
-        "note": "Done as the card's button would. Say in a few words what happened.",
+        **({"allow_asked": True} if allow else {}),
+        "note": (
+            "Done as the card's button with its tick would. If the card offered doing it on its "
+            "own next time, it now does; say what happened in a few words."
+            if allow else "Done as the card's button would. Say in a few words what happened."
+        ),
     })
 
 
@@ -395,9 +444,20 @@ async def handle_answer_card(tool_input: dict[str, Any]) -> str:
     if alert.source == DECISION_ALERT_SOURCE:
         if reply == ANSWER:
             return _error("This card is approved or skipped, not answered. Ask whether to go ahead.")
+        allow = reply == APPROVE and tool_input.get("allow") is True
+        if allow and not said_next_time(message):
+            return _error(
+                "Their message doesn't say to do it on its own next time. Approve it once, or ask "
+                "whether to let it do this on its own from now on."
+            )
+        if allow and not _signed_here():
+            return _error(
+                "Doing it on its own next time needs signed sign-ins on this server. Approve it "
+                "once, and say they can tick the card's box in the app."
+            )
         if reply == APPROVE:
             _mark_answered(session)
-        return await _decision(alert, person, approve=reply == APPROVE)
+        return await _decision(alert, person, approve=reply == APPROVE, allow=allow)
 
     if reply == DISMISS:
         if alert.status not in ("unread", "read"):

@@ -1841,7 +1841,7 @@ class Executive:
             # e.g. an app's own ask): its numbers repeat what it was shown.
             if own_text.strip():
                 schedule_worked_out_pass(full_response, turn_calls, session=session,
-                                         person_id=person_id, private=touched_mail)
+                                         person_id=person_id, private=touched_mail, asked=own_text)
 
             # Mirror the completed exchange into Honcho so its server-side
             # extraction can update the peer card. Fire-and-forget; the
@@ -2407,7 +2407,7 @@ class Executive:
 
             if own_text.strip():
                 schedule_worked_out_pass(final_response, turn_calls, session=session,
-                                         person_id=person_id, private=touched_mail)
+                                         person_id=person_id, private=touched_mail, asked=own_text)
 
         # Mirror the completed exchange into Honcho (see stream_chat for
         # rationale, and for why a turn private to the principal — or one

@@ -17,7 +17,7 @@ from openexecutive.alerts import store as alert_store
 from openexecutive.alerts.store import initialize_db, insert_alert
 from openexecutive.briefing.context import render_and_trust
 from openexecutive.orchestrator import card_answers, outside_content
-from openexecutive.orchestrator.card_answers import handle_answer_card, said_yes
+from openexecutive.orchestrator.card_answers import handle_answer_card, said_next_time, said_yes
 from openexecutive.orchestrator.schedule_tools import current_session
 from openexecutive.orchestrator.session import Session
 from openexecutive.people import store as people_store
@@ -219,7 +219,8 @@ def test_a_decision_card_is_carried_out_as_a_tap(people: SimpleNamespace, monkey
     alert_id = _alert(source=DECISION_ALERT_SOURCE, external_id="decision:7", headline="Book the Dogwood call")
     seen: list[tuple[int, int, bool]] = []
 
-    async def resolve(instance_id: int, person: Any, *, approve: bool) -> Any:
+    async def resolve(instance_id: int, person: Any, *, approve: bool, allow: bool = False) -> Any:
+        assert not allow
         seen.append((instance_id, person.id, approve))
         return SimpleNamespace(status="executed")
 
@@ -345,3 +346,58 @@ def test_no_problem_is_a_yes_not_a_no(people: SimpleNamespace) -> None:
     assert said_yes("Yes, no problem, go ahead")
     assert not card_answers.said_no("Yes, no problem, go ahead")
     assert not card_answers.said_no("ok, no, drop it")
+
+
+@pytest.mark.parametrize("text", ["yes, and next time too", "Yes, send it from now on", "ok go ahead, going forward too"])
+def test_a_yes_for_next_time_too(text: str) -> None:
+    assert said_next_time(text)
+
+
+@pytest.mark.parametrize("text", [
+    "yes", "next time ask me", "not from now on", "should it always do this?",
+    "Yes, send it, but ask me next time", "Yes send it. Always ask me before emailing Acme though",
+    "Sure, go ahead this once, I'd rather approve these each time", "Approve it. In future run these by me first",
+    "Yes, send it. He always pays on time", "yes, and next time too, but only for Dana",
+])
+def test_anything_else_is_not_for_next_time(text: str) -> None:
+    assert not said_next_time(text)
+
+
+def _training_card(monkeypatch: pytest.MonkeyPatch) -> tuple[int, list[tuple[bool, bool]]]:
+    from openexecutive.memory.decision_ledger import DECISION_ALERT_SOURCE
+
+    alert_id = _alert(source=DECISION_ALERT_SOURCE, external_id="decision:7", headline="Book the Dogwood call")
+    seen: list[tuple[bool, bool]] = []
+
+    async def resolve(instance_id: int, person: Any, *, approve: bool, allow: bool = False) -> Any:
+        seen.append((approve, allow))
+        return SimpleNamespace(status="executed")
+
+    monkeypatch.setattr("openexecutive.api.routes.decisions.resolve_in_chat", resolve)
+    return alert_id, seen
+
+
+def test_yes_and_next_time_too_does_the_cards_tick(people: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    alert_id, seen = _training_card(monkeypatch)
+    monkeypatch.setattr(card_answers, "_signed_here", lambda: True)
+    with _turn(people.principal, "yes book the Dogwood call, and next time too"):
+        out = _call(alert_id=alert_id, reply="approve", allow=True)
+    assert out.get("allow_asked") is True, out
+    assert seen == [(True, True)]
+
+
+def test_next_time_from_chat_needs_signed_sign_ins(people: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    alert_id, seen = _training_card(monkeypatch)
+    monkeypatch.setattr(card_answers, "_signed_here", lambda: False)
+    with _turn(people.principal, "yes book the Dogwood call, and next time too"):
+        out = _call(alert_id=alert_id, reply="approve", allow=True)
+    assert "error" in out
+    assert seen == []
+
+
+def test_a_plain_yes_never_allows_for_next_time(people: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    alert_id, seen = _training_card(monkeypatch)
+    with _turn(people.principal, "yes book it"):
+        out = _call(alert_id=alert_id, reply="approve", allow=True)
+    assert "error" in out
+    assert seen == []

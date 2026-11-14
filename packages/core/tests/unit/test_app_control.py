@@ -463,3 +463,151 @@ def test_a_chat_turn_never_counts_as_a_signed_request() -> None:
 
     with verified.from_chat():
         assert verified.caller_refusal(Caller("user", "olivia@co.example"), "olivia@co.example") is not None
+
+
+# --------------------------------------------------------------------------- #
+# The checks: Approvals, Your rules, In training
+# --------------------------------------------------------------------------- #
+
+
+def test_a_lower_level_is_set_now_and_a_higher_one_waits(
+    roster: dict[str, Any], client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.orchestrator import outside_mode
+
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.stored_mode())
+    session = _web(roster["owner"], "s-lvl")
+    outside_mode.set_mode(outside_mode.OUTSIDERS, updated_by="test")
+    out = _run(app_control.handle_do_in_app,
+               {"action": "set_approvals_level", "id": "approvals", "value": "careful"}, session)
+    assert out == {"status": "done", "did": "Set Approvals to Careful"}, out
+    assert outside_mode.stored_mode() == outside_mode.ASK
+    out = _run(app_control.handle_do_in_app,
+               {"action": "set_approvals_level", "id": "approvals", "value": "Hands-off"}, session)
+    assert out["status"] == "waiting_for_approval"
+    assert out["card"] == "Set “Approvals” to Hands-off"
+    assert outside_mode.stored_mode() == outside_mode.ASK
+    out = _run(app_control.handle_do_in_app,
+               {"action": "set_approvals_level", "id": "approvals", "value": "loose"}, session)
+    assert "error" in out
+    # The owner's tap sets it.
+    held = _run(app_control.handle_do_in_app,
+                {"action": "set_approvals_level", "id": "approvals", "value": "balanced"}, session)
+    assert held["card"] == "Set “Approvals” to Balanced"
+    assert client.post(f"/decisions/{held['decision_id']}/approve", json={}, headers=OWNER).status_code == 200
+    assert outside_mode.stored_mode() == outside_mode.OUTSIDERS
+
+
+def test_the_route_decides_who_changes_approvals(roster: dict[str, Any]) -> None:
+    from openexecutive.orchestrator import outside_mode
+
+    outside_mode.set_mode(outside_mode.OUTSIDERS, updated_by="test")
+    out = _run(app_control.handle_do_in_app,
+               {"action": "set_approvals_level", "id": "approvals", "value": "careful"}, _web(roster["ben"], "s-b"))
+    assert "error" in out, out
+    assert outside_mode.stored_mode() == outside_mode.OUTSIDERS
+
+
+def test_a_waits_rule_is_added_now_and_a_goes_rule_waits(
+    roster: dict[str, Any], client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.api.routes import take_the_lead as lead_route
+    from openexecutive.orchestrator import take_the_lead
+
+    app = client.app
+    assert isinstance(app, FastAPI)
+    app.include_router(lead_route.router)
+    session = _web(roster["owner"], "s-r")
+    out = _run(app_control.handle_do_in_app,
+               {"action": "add_waits_rule", "id": "new", "value": "domain: Acme.com"}, session)
+    assert out == {"status": "done", "did": "Added a rule: anything with acme.com always waits"}, out
+    out = _run(app_control.handle_do_in_app,
+               {"action": "add_goes_rule", "id": "new", "value": "amount: 500"}, session)
+    assert out["status"] == "waiting_for_approval"
+    assert out["card"] == "Add a rule that goes on its own: amount: 500"
+    out = _run(app_control.handle_do_in_app, {"action": "add_goes_rule", "id": "new", "value": "words: free"}, session)
+    assert out == {"error": "A words rule can only wait for you."}
+    [waits] = take_the_lead.list_rules([take_the_lead.SCOPE_COMPANY])
+    assert waits.effect == take_the_lead.EFFECT_WAIT
+    out = _run(app_control.handle_do_in_app, {"action": "add_waits_rule", "id": "new", "value": "acme.com"}, session)
+    assert "error" in out
+
+    # The owner's tap adds the Goes rule (a signed request on this computer).
+    monkeypatch.setenv("OE_LOCAL_LOGIN", "1")
+    res = client.post(f"/decisions/{_run(app_control.handle_do_in_app, {'action': 'add_goes_rule', 'id': 'new', 'value': 'amount: 500'}, session)['decision_id']}/approve", json={}, headers=OWNER)
+    assert res.status_code == 200, res.text
+    rules = take_the_lead.list_rules([take_the_lead.SCOPE_COMPANY])
+    assert [(r.kind, r.effect) for r in rules] == [("domain", "wait"), ("amount", "go")]
+
+    # Removing a Goes rule holds more: now. Removing a Waits rule lets more go: a card.
+    found = {i["title"]: i["id"] for i in _run(app_control.handle_find_in_app, {"kind": "rule"}, session)["items"]}
+    assert app_control.CATALOG.actions["remove_rule"].needs_tap(found["anything with acme.com always waits"], "")
+    assert not app_control.CATALOG.actions["remove_rule"].needs_tap(found["amounts under $500 goes on its own"], "")
+
+
+def test_removing_a_goes_rule_in_the_turn_asks_for_the_tap_it_needs(roster: dict[str, Any]) -> None:
+    from openexecutive.orchestrator import take_the_lead
+
+    rule = take_the_lead.add_rule(take_the_lead.SCOPE_COMPANY, "amount", "500", created_by="test",
+                                  effect=take_the_lead.EFFECT_GO)
+    out = _run(app_control.handle_do_in_app, {"action": "remove_rule", "id": str(rule.id)},
+               _web(roster["owner"], "s-rm"))
+    # The route wants a signed request, which a chat turn never is: the tap is one.
+    assert out.get("status") == "waiting_for_approval", out
+    assert out["card"] == "Remove the rule “amounts under $500 goes on its own”"
+
+
+def test_in_training_on_is_now_and_off_waits() -> None:
+    action = app_control.CATALOG.actions["change_setting"]
+    for setting in ("as_you_training", "as_me_training"):
+        assert not action.needs_tap(setting, "on")
+        assert action.needs_tap(setting, "off")
+
+
+def test_turning_on_as_me_training_from_chat(roster: dict[str, Any]) -> None:
+    from openexecutive.orchestrator import take_the_lead
+
+    session = _web(roster["owner"], "s-t")
+    out = _run(app_control.handle_do_in_app,
+               {"action": "change_setting", "id": "as_me_training", "value": "on"}, session)
+    assert out == {"status": "done", "did": "Turned In training for As me on"}, out
+    assert take_the_lead.get(take_the_lead.SCOPE_EXECUTIVE).training
+    out = _run(app_control.handle_do_in_app,
+               {"action": "change_setting", "id": "as_me_training", "value": "off"}, session)
+    assert out["status"] == "waiting_for_approval"
+    assert take_the_lead.get(take_the_lead.SCOPE_EXECUTIVE).training
+
+
+def test_a_hands_off_turn_never_raises_the_level_on_its_own(
+    roster: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.orchestrator import outside_mode
+
+    # The turn began on Hands-off; the level was lowered since.
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.TRUST)
+    outside_mode.set_mode(outside_mode.ASK, updated_by="test")
+    out = _run(app_control.handle_do_in_app,
+               {"action": "set_approvals_level", "id": "approvals", "value": "hands-off"}, _web(roster["owner"], "s-h"))
+    assert out.get("status") == "waiting_for_approval", out
+    assert outside_mode.stored_mode() == outside_mode.ASK
+
+
+def test_only_the_signing_refusal_becomes_a_card() -> None:
+    from fastapi import HTTPException
+
+    from openexecutive.delegation import verified
+
+    def refuse(detail: str) -> None:
+        raise HTTPException(status_code=409, detail=detail)
+
+    async def go(detail: str) -> Any:
+        with verified.from_chat():
+            try:
+                await app_control_catalog._signed(refuse, detail)
+            except HTTPException as exc:
+                return exc.detail
+        return None
+
+    signed = asyncio.run(go("This needs signed sign-ins on this server, so that nobody else can change it for you."))
+    assert signed["code"] == "caller_signing_required"
+    assert asyncio.run(go("That rule is already there.")) == "That rule is already there."
