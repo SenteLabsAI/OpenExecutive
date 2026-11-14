@@ -944,3 +944,12 @@ def test_status_says_whether_their_own_browser_is_connected(client: TestClient, 
     assert client.get("/browser/status").json() == {
         "available": True, "connected": True, "stay_connected": None, "store_url": None, "protocol": 1,
     }
+
+
+def test_an_answer_body_has_room_for_a_full_screenshot_and_the_page_text() -> None:
+    from openexecutive.api.routes import browser as route
+    from openexecutive.orchestrator import tool_images
+
+    # A look carries a screenshot up to tool_images' cap plus the page text
+    # and elements: a full one must not be turned away as too large.
+    assert route.MAX_BODY >= tool_images.MAX_DATA_CHARS + 2 * 60_000

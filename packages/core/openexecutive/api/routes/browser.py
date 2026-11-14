@@ -38,6 +38,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from openexecutive.browser import relay as browser_relay
+from openexecutive.orchestrator import tool_images
 
 router = APIRouter(prefix="/browser")
 
@@ -47,7 +48,9 @@ router = APIRouter(prefix="/browser")
 # extension can't follow.
 PROTOCOL = 1
 
-MAX_BODY = 400_000
+# An answer can carry a screenshot as large as tool_images takes, plus the
+# page text, the numbered elements and the JSON around them.
+MAX_BODY = tool_images.MAX_DATA_CHARS + 200_000
 # {"outcome": "done"} and nothing more.
 MAX_HAND_OVER_BODY = 2_000
 # Done or Stop on a workflow's bar looks for its waiting run this many times.
