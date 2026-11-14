@@ -5,6 +5,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel
 
+from openexecutive.api import own_rows
 from openexecutive.memory.episodic import (
     Advice,
     Decision,
@@ -74,6 +75,8 @@ class AdviceUpdate(BaseModel):
 
 @router.get("/memories/decisions", response_model=list[Decision])
 def get_decisions() -> list[Decision]:
+    # Decisions are standing facts every conversation reads, and
+    # ``GET /memories/facts`` lists them for everyone on the team.
     return list_decisions()
 
 
@@ -128,12 +131,23 @@ def remove_initiative(initiative_id: int) -> Response:
 
 
 @router.get("/memories/advice", response_model=list[Advice])
-def get_advice_list() -> list[Advice]:
-    return list_advice()
+def get_advice_list(request: Request) -> list[Advice]:
+    # The team's and the caller's own (``api.own_rows``).
+    reader = own_rows.reader_for(request)
+    return [a for a in list_advice() if reader.sees_session_row(a)]
+
+
+def _own_advice(advice_id: int, request: Request) -> Advice:
+    """The advice row, or 404 when there is none or it is another person's."""
+    row = get_advice(advice_id)
+    if row is None or not own_rows.reader_for(request).sees_session_row(row):
+        raise HTTPException(status_code=404, detail="Advice not found")
+    return row
 
 
 @router.patch("/memories/advice/{advice_id}", response_model=Advice)
-def patch_advice(advice_id: int, body: AdviceUpdate) -> Advice:
+def patch_advice(advice_id: int, body: AdviceUpdate, request: Request) -> Advice:
+    _own_advice(advice_id, request)
     if not update_advice(advice_id, **body.model_dump(exclude_unset=True)):
         raise HTTPException(status_code=404, detail="Advice not found")
     updated = get_advice(advice_id)
@@ -143,7 +157,8 @@ def patch_advice(advice_id: int, body: AdviceUpdate) -> Advice:
 
 
 @router.delete("/memories/advice/{advice_id}", status_code=status.HTTP_204_NO_CONTENT)
-def remove_advice(advice_id: int) -> Response:
+def remove_advice(advice_id: int, request: Request) -> Response:
+    _own_advice(advice_id, request)
     if not delete_advice(advice_id):
         raise HTTPException(status_code=404, detail="Advice not found")
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -423,7 +423,15 @@ async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
         # Conditional on the row read above, so an activation (from any
         # process) landing after the approved-workflow check can't be
         # overwritten by this save.
-        saved = save_if_unchanged(defn, existing, owner_person_id=_session_caller_id())
+        from openexecutive.workflows.approved_targets import kept_on_edit_by
+
+        # Steps changed from chat by someone other than the approver go back
+        # to the approver on the next run (a new workflow has none to keep).
+        caller_id = _session_caller_id()
+        saved = save_if_unchanged(
+            defn, existing, owner_person_id=caller_id,
+            keep_approvals=existing is None or kept_on_edit_by(defn.name, caller_id),
+        )
     except Exception as exc:
         logger.exception("save_workflow: persist failed")
         return json.dumps({"error": f"failed to save: {exc}"})

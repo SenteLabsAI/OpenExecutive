@@ -14,12 +14,15 @@ creation, and a ``db_path`` override on every function for tests.
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from openexecutive.memory.episodic import DB_PATH, _get_conn
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve(db_path: Path | None) -> Path:
@@ -170,3 +173,17 @@ def approver_for(workflow_name: str) -> int | None:
             return owner_id
     principal = find_principal_person()
     return principal.id if principal is not None and principal.id is not None else None
+
+
+def kept_on_edit_by(workflow_name: str, editor_person_id: int | None) -> bool:
+    """Whether an edit by ``editor_person_id`` keeps the workflow's approved
+    targets: only when they are the person who approves them
+    (``approver_for``) or the principal. Anyone else's change to the steps
+    drops them, so the next run asks the approver again. Fails closed."""
+    from openexecutive.people.store import is_principal_or_self
+
+    try:
+        return is_principal_or_self(editor_person_id, approver_for(workflow_name))
+    except Exception:
+        logger.warning("approved_targets: editor check failed, approvals not kept", exc_info=True)
+        return False
