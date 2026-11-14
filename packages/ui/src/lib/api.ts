@@ -3178,6 +3178,9 @@ export interface DynamicWorkflowDef {
   // Who created it (server-managed; echoing it back in a body has no effect).
   // Asked to approve the workflow's first write to a new target.
   owner_person_id?: number | null;
+  // Whether the signed-in person may delete it: its creator or the principal
+  // (GET /workflows/custom only; the server decides again on DELETE).
+  can_delete?: boolean;
 }
 
 // The specialists a dynamic step may consult (matches SPECIALIST_REGISTRY,

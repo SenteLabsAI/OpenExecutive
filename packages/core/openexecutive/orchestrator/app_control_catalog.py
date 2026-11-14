@@ -420,7 +420,7 @@ async def _decline_watch(request: Any, slug: str, value: str) -> str:
 async def _find_workflows(request: Any) -> list[Item]:
     from openexecutive.api.routes import workflows
 
-    defs = (await workflows.list_custom_workflows())["definitions"]
+    defs = (await workflows.list_custom_workflows(request))["definitions"]
     return [
         Item(id=d["name"], title=d.get("title") or d["name"], detail="on" if d.get("is_active") else "off")
         for d in defs
@@ -448,11 +448,20 @@ async def _change_workflow(request: Any, name: str, value: str) -> str:
     return await workflow_change.run(request, name, value)
 
 
+async def _prepare_delete_workflow(request: Any, name: str, value: str) -> str:
+    """Refuse before a card is made: only its creator or the principal deletes it."""
+    from openexecutive.api.routes import workflows
+
+    if not workflows._may_delete(name, request):
+        raise Refused("Only the person who created this workflow or the principal can delete it.")
+    return value
+
+
 async def _delete_workflow(request: Any, name: str, value: str) -> str:
     from openexecutive.api.routes import workflows
 
     title = await _workflow_title(name)
-    await workflows.delete_custom_workflow(name)
+    await workflows.delete_custom_workflow(name, request)
     return f"Deleted the workflow {_q(title)}"
 
 
@@ -1041,7 +1050,7 @@ _ACTIONS = (
            _fixed(_turn_workflow, True), confirm=True, card="Turn on the workflow {title}"),
     Action("turn_off_workflow", "workflow", "Turn a workflow off", _fixed(_turn_workflow, False)),
     Action("delete_workflow", "workflow", "Delete a workflow for good", _delete_workflow, confirm=True,
-           card="Delete the workflow {title}"),
+           card="Delete the workflow {title}", prepare=_prepare_delete_workflow),
     # Only a card save_workflow stages runs it (orchestrator.workflow_change).
     Action("change_workflow", "workflow", "Save a change to a workflow", _change_workflow, confirm=True,
            card="Change the workflow {title}", hidden=True),

@@ -7777,6 +7777,13 @@ workflows:
       caller on POST /workflows/custom or the chat session caller on
       save_workflow; never from a body/definition; kept by PUT, overwrite,
       activate), else the principal if the owner is unknown/archived.
+    - Deleting a custom workflow (DELETE /workflows/custom/{name},
+      routes.workflows._may_delete): its owner or the principal; 403 for
+      anyone else, and one with no recorded owner is the principal's.
+      Editing and running stay shared. GET /workflows/custom adds
+      can_delete per definition for the caller; the Workflows page hides
+      Delete when it is false. Chat's delete action goes through the same
+      route as the person chatting.
       on_timeout=auto_proceed, 48 h. WorkflowResumeState gains
       kind="held_writes", held=[HeldCall(tool, arguments, targets)] and
       deliver_to_person_id; old payloads parse as kind="gate".
