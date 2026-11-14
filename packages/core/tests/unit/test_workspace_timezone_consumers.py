@@ -287,3 +287,34 @@ def test_a_scheduled_workflow_run_moves_with_the_zone(monkeypatch: pytest.Monkey
     times = {r[0]: r[1] for r in rows}
     assert times["off"] == "2026-11-16T09:00:00+00:00"  # off: left alone
     assert times["on"].endswith(("14:00:00+00:00", "13:00:00+00:00"))  # 9 AM New York
+
+
+def test_check_ins_survive_a_failed_retime(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.departments import cadence
+    from openexecutive.departments import store as dept_store
+
+    cancelled: list[str] = []
+    monkeypatch.setattr(cadence, "cancel_pending_cadences", lambda *a, **k: cancelled.append("x") or 0)
+
+    # The departments can't be read: nothing is cancelled.
+    def unreadable(**_: object) -> list[object]:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(dept_store, "list_departments", unreadable)
+    with pytest.raises(RuntimeError):
+        cadence.retime_pending()
+    assert cancelled == []
+
+    # Scheduling fails once after the cancel: it is tried again.
+    monkeypatch.setattr(dept_store, "list_departments", lambda **_: [])
+    tries: list[int] = []
+
+    def flaky(*_: object, **__: object) -> int:
+        tries.append(1)
+        if len(tries) == 1:
+            raise RuntimeError("database is locked")
+        return 2
+
+    monkeypatch.setattr(cadence, "bootstrap_cadences", flaky)
+    assert cadence.retime_pending() == 2
+    assert cancelled == ["x"] and len(tries) == 2

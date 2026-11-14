@@ -453,6 +453,18 @@ def next_check_in_at(slug: str, db_path: Path | None = None) -> str | None:
 def retime_pending(db_path: Path | None = None) -> int:
     """After the company's time zone changes: the pending check-ins move to
     the new zone's clock (cancelled and scheduled again from now). Returns
-    the count scheduled. Best effort; a no-op in solo."""
+    the count scheduled. Best effort; a no-op in solo.
+
+    The departments are read before anything is cancelled, so a store
+    failure leaves the old rows in place; once cancelled, scheduling again
+    gets one more try, so a passing lock can't leave every check-in off
+    until the next start."""
+    from openexecutive.departments import store as dept_store
+
+    dept_store.list_departments(db_path=db_path)
     cancel_pending_cadences(db_path)
-    return bootstrap_cadences(db_path)
+    try:
+        return bootstrap_cadences(db_path)
+    except Exception:
+        logger.warning("cadence.retime: scheduling failed once, trying again", exc_info=True)
+        return bootstrap_cadences(db_path)
