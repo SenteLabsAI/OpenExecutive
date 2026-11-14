@@ -575,7 +575,13 @@ async def apply_chat_change(
         refused = save_refusal(checked, who, owner, check_tools=not stored)
         if refused is not None:
             raise HTTPException(status_code=403, detail=refused)
-    saved = save_if_unchanged(defn, current)
+    from openexecutive.workflows.approved_targets import kept_on_edit_by
+
+    # A creator who no longer approves its targets may still tap the card:
+    # the steps they change go back to the approver on the next run.
+    saved = save_if_unchanged(
+        defn, current, keep_approvals=kept_on_edit_by(name, _tapper_person_id(who)),
+    )
     if saved is None:
         raise HTTPException(
             status_code=409,

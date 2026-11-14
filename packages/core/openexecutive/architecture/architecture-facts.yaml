@@ -7725,7 +7725,7 @@ workflows:
       the workflow's action-tool set changes (dynamic_store upsert /
       save_if_unchanged), so a newly added tool never inherits them, and
       when someone other than the approver or the principal changes the steps
-      from the builder or the designer (approved_targets.kept_on_edit_by →
+      from the builder, the designer, chat or a change card (approved_targets.kept_on_edit_by →
       keep_approvals=False), so the next run asks the approver again. Carried across pauses in
       WorkflowResumeState.run_created (both gate and held-writes pauses).
       Values in the workflow's own text are NOT trusted (anyone who can PUT
