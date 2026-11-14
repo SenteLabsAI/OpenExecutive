@@ -681,7 +681,7 @@ async def steer_watch_from_alert(
     if slug is None:
         raise HTTPException(status_code=409, detail="This card isn't from your watch list.")
     if not _caller_may_clear(existing, request):
-        raise HTTPException(status_code=403, detail=_NOT_YOURS)
+        raise HTTPException(status_code=403, detail=_NOT_YOURS)  # input-safety
     item = monitoring_store.get_watchlist_item_by_slug(slug)
     if item is None or item.id is None:
         raise HTTPException(status_code=409, detail="The watch behind this card is gone.")
