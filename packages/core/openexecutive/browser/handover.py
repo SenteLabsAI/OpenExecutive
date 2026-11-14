@@ -83,6 +83,8 @@ class Handover:
     loop: asyncio.AbstractEventLoop | None = None
 
 
+# Read from worker threads too (card_closed): iterate over a copy, never the
+# dict itself, so an insert on the loop thread can't break the loop.
 _open: dict[str, Handover] = {}
 
 
@@ -115,14 +117,14 @@ def _drop(handover: Handover) -> None:
 
 def _prune(now: float | None = None) -> None:
     now = time.monotonic() if now is None else now
-    for h in [h for h in _open.values() if now - h.created >= TTL_S]:
+    for h in [h for h in list(_open.values()) if now - h.created >= TTL_S]:
         _drop(h)
 
 
 def start(person_id: int, need: str, *, card_id: int | None = None, workflow_key: str = "") -> Handover:
     """A new open hand-over for ``person_id``."""
     _prune()
-    mine = sorted((h for h in _open.values() if h.person_id == person_id), key=lambda h: h.created)
+    mine = sorted((h for h in list(_open.values()) if h.person_id == person_id), key=lambda h: h.created)
     for old in mine[: max(0, len(mine) - MAX_PER_PERSON + 1)]:
         _drop(old)
     try:
@@ -144,7 +146,7 @@ def get(handover_id: str) -> Handover | None:
 
 def by_card(card_id: int) -> Handover | None:
     _prune()
-    return next((h for h in _open.values() if h.card_id == card_id), None)
+    return next((h for h in list(_open.values()) if h.card_id == card_id), None)
 
 
 def waited_on(handover: Handover) -> bool:
