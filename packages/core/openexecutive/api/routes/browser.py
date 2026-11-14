@@ -185,6 +185,11 @@ async def hand_over(handover_id: str, request: Request) -> dict[str, bool]:
                 picked = await resumer.stop_waiting(handover.workflow_key)
             if picked:
                 break
+        if outcome == "done" and not picked:
+            # Nothing to carry on yet: keep it open so Done can be pressed
+            # again, rather than leave the run paused with no way back.
+            browser_handover.reopen(handover)
+            return {"ok": True, "carried_on": False, "kept": True}
         return {"ok": True, "carried_on": outcome == "done" and picked > 0}
     if handover.card_id is not None and outcome == "stop":
         from openexecutive.alerts import store

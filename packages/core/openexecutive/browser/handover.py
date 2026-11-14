@@ -164,6 +164,13 @@ def finish(handover_id: str, person_id: int, outcome: str) -> tuple[Handover | N
     return handover, False
 
 
+def reopen(handover: Handover) -> None:
+    """Put back a hand-over ``finish`` closed when Done found nothing to carry
+    on yet (a workflow run not saved as waiting): the bar stays, and a later
+    Done tries again."""
+    _open[handover.id] = handover
+
+
 def end_bar(handover: Handover) -> None:
     """Take the bar down in their browser: they said Done or Stop somewhere
     else (the card). Best effort, in the background; never raises."""

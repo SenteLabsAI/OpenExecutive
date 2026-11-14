@@ -329,3 +329,25 @@ def test_done_on_the_bar_looks_again_for_a_run_not_saved_yet(
     monkeypatch.setattr(route, "WORKFLOW_RETRY_S", 0.0)
     handover = browser_handover.start(client.pid, "sign in", workflow_key="handover:1:c")  # type: ignore[attr-defined]
     assert client.post(f"/browser/hand-over/{handover.id}", json={"outcome": "done"}).json()["carried_on"] is True
+
+
+def test_done_with_no_run_to_carry_on_keeps_the_bar_so_it_can_be_pressed_again(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.api.routes import browser as route
+    from openexecutive.workflows import resumer
+
+    found = iter([0] * route.WORKFLOW_TRIES + [1])
+
+    async def resume(key: str, db_path: Any = None) -> int:
+        return next(found)
+
+    monkeypatch.setattr(resumer, "resume_waiting", resume)
+    monkeypatch.setattr(route, "WORKFLOW_RETRY_S", 0.0)
+    handover = browser_handover.start(client.pid, "pick a size", workflow_key="handover:1:d")  # type: ignore[attr-defined]
+    first = client.post(f"/browser/hand-over/{handover.id}", json={"outcome": "done"}).json()
+    assert first == {"ok": True, "carried_on": False, "kept": True}
+    assert browser_handover.get(handover.id) is not None
+    again = client.post(f"/browser/hand-over/{handover.id}", json={"outcome": "done"}).json()
+    assert again == {"ok": True, "carried_on": True}
+    assert browser_handover.get(handover.id) is None
