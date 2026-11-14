@@ -414,7 +414,7 @@ async def handle_create_alert(tool_input: dict[str, Any], *, as_written: bool = 
     from openexecutive.orchestrator.outside_content import answers_off_team_mail
 
     separate_turn: Any = None
-    if _step_already_on_card(current_session.get()):
+    if not as_written and _step_already_on_card(current_session.get()):
         turn = current_session.get()
         if tool_input.get("separate") is not True:
             logger.info("create_alert: not raised, this email's step already waits on a card: %.120s",
@@ -451,7 +451,7 @@ async def handle_create_alert(tool_input: dict[str, Any], *, as_written: bool = 
         str(tool_input.get("external_id") or ""),
         str(tool_input.get("from_address") or ""),
     )
-    if _asks_the_speaker(current_session.get(), tool_input):
+    if not as_written and _asks_the_speaker(current_session.get(), tool_input):
         logger.info("create_alert: question for the person in the chat; asked in the reply")
         return json.dumps({"status": "ask_in_reply", "message": ASK_IN_REPLY})
     try:
@@ -481,12 +481,16 @@ async def handle_create_alert(tool_input: dict[str, Any], *, as_written: bool = 
                     event.user = f"person:{routed_id}"
         if private:
             event.private = True
-        event.as_written = as_written
         event.needs, event.question, event.choices = _card_ask(tool_input)
-        _one_card_per_sender(event, current_session.get())
-        ask_first = _sender_card_choice(event, tool_input.get("joins_card"))
-        if ask_first is not None:
-            return ask_first
+        if as_written:
+            # A message for one person is its own card, never folded into
+            # a sender's card or another message.
+            event.as_written = True
+        else:
+            _one_card_per_sender(event, current_session.get())
+            ask_first = _sender_card_choice(event, tool_input.get("joins_card"))
+            if ask_first is not None:
+                return ask_first
         event.external_id = _fresh_external_id(event.source, event.external_id, folds=event.follow_up)
         schedule_evaluation(event)
         if separate_turn is not None:
