@@ -3092,10 +3092,51 @@ def test_done_for_you_leaves_out_what_is_not_done_for_them(
     assert sorted(r["title"] for r in rows) == ["Reminded Sam about the invoice", "Wrote the weekly sales report"]
     # Memory's What it does reads the same rows on their own.
     assert client.get("/today/done", headers={"x-caller-email": "jordan@example.com"}).json() == rows
-    # What it did for the company isn't done for a teammate.
+    # A teammate gets what it did for the team too, less what it sent them
+    # (whose items reach whom is _build_activity's, stubbed here).
     theirs = client.get("/today", headers={"x-caller-email": "sam@example.com"}).json()["done_for_you"]
-    assert theirs == []
-    assert client.get("/today/done", headers={"x-caller-email": "sam@example.com"}).json() == []
+    assert "Wrote the weekly sales report" in {r["title"] for r in theirs}
+    assert "Reminded Sam about the invoice" not in {r["title"] for r in theirs}
+    assert client.get("/today/done", headers={"x-caller-email": "sam@example.com"}).json() == theirs
+
+
+def test_a_teammate_sees_the_teams_work_in_done_for_you_as_activity_shows_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A teammate's Done for you has what it did for the team, read as their
+    Activity reads it: no contact's name or subject, and never an item that
+    is the owner's own."""
+    from openexecutive.memory import session_store
+    from openexecutive.orchestrator import take_the_lead
+
+    db = tmp_path / "done_teammate.db"
+    _setup_isolated_db(db, monkeypatch)
+    owner_id = people_store.upsert_person(
+        full_name="Jordan", is_principal=True, email="jordan@example.com", db_path=db,
+    )
+    people_store.upsert_person(full_name="Sam Reyes", email="sam@example.com", db_path=db)
+    people_store.upsert_person(full_name="Riley Park", email="riley@example.com", kind="contact", db_path=db)
+    people_registry.invalidate()
+    send = "google_workspace__send_gmail_message"
+    take_the_lead.record(
+        scope=take_the_lead.SCOPE_EXECUTIVE, source="scheduled", tool=send, summary="Send gmail message",
+        status="done", mail=take_the_lead.mail_sent(send, {"to": "riley@example.com", "subject": "Pricing for Q3"}),
+    )
+    now = datetime.now(UTC).isoformat()
+    session_store.create_session("s-jordan", "pharmacy", now, caller_person_id=owner_id, db_path=db)
+    episodic.insert_scheduled_action(
+        run_at=now, channel="email", channel_ref="ops@example.com", intent_text="Check the prescription shipped",
+        originating_session_id="s-jordan", status="done", db_path=db,
+    )
+
+    client = _make_client()
+    sam = client.get("/today", headers={"x-caller-email": "sam@example.com"}).json()["done_for_you"]
+    assert [r["title"] for r in sam] == ["Sent an email"]
+    assert "Pricing" not in sam[0]["detail"]
+    jordan = client.get("/today", headers={"x-caller-email": "jordan@example.com"}).json()["done_for_you"]
+    titles = {r["title"] for r in jordan}
+    assert "Emailed Riley Park: Pricing for Q3" in titles
+    assert any("prescription" in t for t in titles)
 
 
 def test_an_email_it_sent_on_its_own_names_who_and_what_in_done_for_you(

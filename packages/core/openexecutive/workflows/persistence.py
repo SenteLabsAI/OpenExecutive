@@ -276,7 +276,7 @@ def list_runs(
     params.append(limit)
     with _get_conn(_resolve(db_path)) as conn:
         rows = conn.execute(
-            "SELECT run_id, workflow_name, title, status, created_at, updated_at, "
+            "SELECT run_id, workflow_name, title, status, created_at, updated_at, owner_person_id, "
             "CASE WHEN status = 'awaiting_human' AND json_valid(state_json) "
             "THEN json_extract(state_json, '$.waiting_for') END AS waiting_for, "
             "CASE WHEN status = 'awaiting_human' AND json_valid(resume_state_json) "

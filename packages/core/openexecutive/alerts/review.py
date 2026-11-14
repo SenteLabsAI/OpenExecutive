@@ -394,7 +394,7 @@ def gather_evidence(
     try:
         from openexecutive.api.routes import today as today_route
 
-        items = today_route._build_activity(30, since=created).items
+        items = today_route._build_activity(30, since=created, everyone=True).items
         # Activity is company-wide; only items that plainly mention this
         # alert's subject are citable evidence for closing it.
         subject_terms = _subject_terms(f"{alert.headline} {alert.suggested_action}")
