@@ -701,7 +701,7 @@ class ExecutiveReflectionWorkflow(Workflow):
         try:
             activity = [
                 item.model_dump()
-                for item in today_route._build_activity(limit=20, viewer=today_route.principal_id()).items
+                for item in today_route._build_activity(limit=20).items  # the team's alone: its run is everyone's
             ]
         except Exception:
             logger.exception("reflection: /today/activity aggregation failed")
