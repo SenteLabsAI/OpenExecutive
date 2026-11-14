@@ -535,6 +535,8 @@ def set_timezone(tz: str | None) -> WorkspaceSettings:
     inserted, never two runs of a kind within 12h — 3.5 days for the weekly
     review — never a skipped run); a brief that is running right now
     finishes and chains its successor in the new zone.
+    Scheduled workflow runs and department check-ins move to the new zone's
+    clock too (``dynamic_cadence.retime_pending``, ``cadence.retime_pending``).
     The re-time is best-effort: if it fails, it is logged and each brief
     moves to the new zone after it next fires (every link reads the zone
     fresh), so the stored setting is never rolled back.
@@ -551,6 +553,15 @@ def set_timezone(tz: str | None) -> WorkspaceSettings:
             reschedule_principal_rhythm()
         except Exception:
             logger.exception("workspace: re-timing the principal's briefs failed")
+        # Workflow and department check-in times are the company's clock too.
+        from openexecutive.departments.cadence import retime_pending as retime_check_ins
+        from openexecutive.workflows.dynamic_cadence import retime_pending as retime_workflows
+
+        for retime in (retime_workflows, retime_check_ins):
+            try:
+                retime()
+            except Exception:
+                logger.exception("workspace: re-timing %s failed", retime.__module__)
     return get_workspace()
 
 

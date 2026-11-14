@@ -1,9 +1,10 @@
 """A change to a saved workflow that waits for its person's tap.
 
-Chat can't change a workflow a person already approved the tools of (one
-switched on with action steps), nor one that reads or sends email as its
-creator, by saving over it: the save would put tools nobody looked at under a
-familiar name. So ``save_workflow`` stages such a change as a card instead
+Chat can't change a workflow that reads or sends email as its creator by
+saving over it, nor, below Hands-off, one switched on with action steps when
+nobody on the team asked for the change this turn (say, it came from mail it
+read): the save would put tools nobody looked at under a familiar name. A
+person's own ask in chat saves it, as it saves a new workflow. So ``save_workflow`` stages such a change as a card instead
 (decision class ``app_action``, hidden action ``change_workflow``) that spells
 out every step it adds, removes or changes, tools included. Tapping Approve is
 the person seeing the change, as turning it on from its review card is: the
@@ -36,11 +37,14 @@ ACTION = "change_workflow"
 MAX_CARD_CHARS = 1800
 
 
-def needs_card(existing: Any, defn: Any) -> bool:
+def needs_card(existing: Any, defn: Any, *, asked: bool = False) -> bool:
     """Whether replacing ``existing`` with ``defn`` from chat waits for a tap:
     one that reads or sends as its creator (before or after), whom chat
     can't verify, at every level; below Hands-off also a switched-on
-    workflow with action steps."""
+    workflow with action steps that nobody on the team asked to change this
+    turn. A person's own ask in chat is their yes, as it is for a new
+    workflow (``workflow_authoring_tools._person_asked``); each step still
+    goes through the three checks when it runs."""
     from openexecutive.delegation.workflow_email import as_creator
     from openexecutive.workflows.dynamic_models import ActionStepSpec
 
@@ -49,7 +53,7 @@ def needs_card(existing: Any, defn: Any) -> bool:
     approved = existing.is_active and any(isinstance(s, ActionStepSpec) for s in existing.steps)
     if as_creator(existing) or as_creator(defn):
         return True
-    return bool(approved) and not hands_off()
+    return bool(approved) and not asked and not hands_off()
 
 
 def hands_off() -> bool:

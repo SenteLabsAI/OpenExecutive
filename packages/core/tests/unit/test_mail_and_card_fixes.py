@@ -100,9 +100,11 @@ def test_phishing_from_a_stranger_is_one_alert_and_nothing_else(tmp_path, monkey
         why = asyncio.run(email_poller._drop_phishing(mail, raw, "Ops Alerts", private=False, done=None))
     assert "phishing" in why
     with alert_store._get_conn(db) as conn:
-        rows = conn.execute("SELECT source, headline, routed_to_person_id FROM alerts").fetchall()
+        rows = conn.execute("SELECT source, headline, routed_to_person_id, needs FROM alerts").fetchall()
     assert [(r["source"], r["routed_to_person_id"]) for r in rows] == [("phishing", 1)]
     assert rows[0]["headline"] == "Looks like phishing: Action required: account verification"
+    # Nothing to approve: it's for them to know.
+    assert rows[0]["needs"] == "fyi"
 
 
 def test_a_contacts_mail_that_gives_orders_starts_the_turn_flagged(monkeypatch) -> None:
