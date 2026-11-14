@@ -123,6 +123,8 @@ def test_message_person_no_reachable_channel_falls_back_to_alert() -> None:
     fake_alert.assert_awaited_once()
     # The alert is routed to the intended person.
     assert fake_alert.await_args.args[0]["assigned_to_person_id"] == pid
+    # The card carries the message as written, not a triage rewrite.
+    assert fake_alert.await_args.kwargs == {"as_written": True}
 
 
 def test_message_person_unknown_person_refused() -> None:

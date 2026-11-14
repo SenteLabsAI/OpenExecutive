@@ -152,3 +152,31 @@ def test_no_open_card_raises_straight_away() -> None:
     with patch("openexecutive.alerts.store.open_alerts_keyed", return_value=[]):
         assert _sender_card_choice(event, None) is None
     assert event.dedup_hint == "email-from:casey@example.com"
+
+
+def test_a_passed_on_message_in_a_mail_turn_is_its_own_card() -> None:
+    """``as_written`` (a message passed on to someone) never folds into the
+    open card of the sender whose mail the turn is reading."""
+    from types import SimpleNamespace
+
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    mail = SimpleNamespace(origin_channel="email", email_from="casey@example.com")
+    token = current_session.set(mail)
+    scheduled: list[Any] = []
+    try:
+        with (
+            patch("openexecutive.alerts.pipeline.schedule_evaluation", scheduled.append),
+            patch("openexecutive.audit.log_event"),
+        ):
+            out = json.loads(asyncio.run(handle_create_alert(
+                {"subject": "From Sam", "body": "Standup moved to 10am"}, as_written=True,
+            )))
+    finally:
+        current_session.reset(token)
+
+    assert out["status"] == "alert_scheduled"
+    (event,) = scheduled
+    assert event.as_written is True
+    assert event.dedup_hint == ""
+    assert event.follow_up is False
