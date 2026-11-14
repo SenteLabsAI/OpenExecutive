@@ -570,3 +570,24 @@ def test_as_written_same_message_folds_into_open_card(monkeypatch, db: Path) -> 
     assert first is not None
     assert second is None
     assert len(list_alerts(db_path=db)) == 1
+
+
+def test_as_written_same_text_to_two_people_is_two_cards(monkeypatch, db: Path) -> None:
+    from openexecutive.alerts import dispatcher, pipeline
+
+    async def fake_dispatch(alert, channels, **kw):  # noqa: ARG001
+        return None
+
+    monkeypatch.setattr(dispatcher, "dispatch_all", fake_dispatch)
+
+    def ev(ext: str, person: int) -> AlertEvent:
+        return AlertEvent(
+            source="executive", external_id=ext, subject="Standup moved", body="Standup moved to 10am",
+            routed_to_person_id=person, user=f"person:{person}", as_written=True,
+        )
+
+    _, first = asyncio.run(pipeline.evaluate_and_dispatch(ev("a", 1), db_path=db))
+    _, second = asyncio.run(pipeline.evaluate_and_dispatch(ev("b", 2), db_path=db))
+    assert first is not None and second is not None
+    assert {a.routed_to_person_id for a in list_alerts(db_path=db)} == {1, 2}
+

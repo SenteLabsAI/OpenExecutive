@@ -206,11 +206,13 @@ def _as_written_decision(event: AlertEvent) -> TriageDecision:
     """A card for a message passed on to one person: its subject and body
     as written, with no model call. Triage would rewrite them with the
     recent cards and initiatives in view, adding to the message things its
-    sender never asked to pass on. The same text again folds into the same
-    open card."""
+    sender never asked to pass on. The same text to the same person again
+    folds into their open card; to someone else it is a card of its own.
+    Mute patterns don't apply: they silence topics triage tags, and this
+    is a message for one person, not a topic."""
     import hashlib
 
-    text = f"{event.subject}\n{event.body}"
+    text = f"{_person_id_from_event(event)}\n{event.subject}\n{event.body}"
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
     return TriageDecision(
         alert=True,
