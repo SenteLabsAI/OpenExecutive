@@ -481,7 +481,8 @@ async function handOver(args, relayTab, own, side, origins) {
   };
   await saveHandovers(all);
   await sendToPage(tab.id, { type: "handover_show", id, need }).catch(() => undefined);
-  return { ok: true, done: true, url: tab.url, title: tab.title };
+  // The server takes the page's own Done only for a sign-in hand-over.
+  return { ok: true, done: true, url: tab.url, title: tab.title, sign_in: all[tab.id].signIn };
 }
 
 // Done or Stop: the bar comes down and the Open Executive site hears it,

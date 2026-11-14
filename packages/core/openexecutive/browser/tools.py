@@ -716,6 +716,7 @@ async def _hand_over(person_id: int, given: dict[str, Any], window: str | None) 
     if not result.get("ok"):
         browser_handover.finish(handover.id, person_id, "stop")
         return json.dumps({"error": str(result.get("error") or "That didn't work in the browser.")})
+    handover.sign_in = result.get("sign_in") is True
     try:
         handover.card_id = await asyncio.to_thread(
             _handover_card, person_id, need, task, _site(result.get("url")), handover.id
@@ -753,6 +754,7 @@ async def _hand_over_in_workflow(person_id: int, given: dict[str, Any]) -> str:
     if not result.get("ok"):
         browser_handover.finish(handover.id, person_id, "stop")
         return json.dumps({"error": str(result.get("error") or "That didn't work in the browser.")})
+    handover.sign_in = result.get("sign_in") is True
     return extensions.workflow_wait(handover.workflow_key, f"you to {need}")
 
 

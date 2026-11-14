@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Open Executive",
   "short_name": "Open Executive",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "description": "Lets your Open Executive get things done on websites for you: open pages, click, type and fill in forms.",
   "minimum_chrome_version": "116",
   "icons": {

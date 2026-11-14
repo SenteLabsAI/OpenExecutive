@@ -24,7 +24,8 @@ carries the work on in a new chat (the card's approve path), where the person
 sees what it will do; a paused workflow run is picked up by either. Stop ends
 it: the turn is told to stop, a waiting run stops (``resumer.stop_waiting``).
 The extension's own Done (a sign-in page left) is a hint from the page, so it
-only answers a turn or run that is waiting.
+only answers a turn or run that is waiting, on a hand-over whose page had a
+sign-in form when it was handed over (``Handover.sign_in``).
 
 This is not a check: Approvals, Your rules and In training apply to what the
 Executive does next exactly as before. Hand-overs are held in this process,
@@ -55,6 +56,9 @@ MAX_NEED = 140
 MAX_TASK = 600
 # Open hand-overs per person: more are left over (oldest go first).
 MAX_PER_PERSON = 4
+# How long after a workflow's hand-over Done may find its run not yet saved
+# as waiting (``reopen``).
+FRESH_S = 120.0
 # A hand-over nobody finished is forgotten after this (a run waits 24 h).
 TTL_S = 25 * 3600.0
 
@@ -67,6 +71,10 @@ class Handover:
     card_id: int | None = None
     # The paused workflow run's wait key; "" on a chat turn.
     workflow_key: str = ""
+    # The page had a sign-in form when it was handed over (the extension's
+    # answer to the hand_over step). Only then is its own Done ("auto")
+    # taken: a page left later can't say Done for any other kind of step.
+    sign_in: bool = False
     created: float = field(default_factory=time.monotonic)
     # Set while a turn waits for the answer.
     future: asyncio.Future[str] | None = None
@@ -164,11 +172,16 @@ def finish(handover_id: str, person_id: int, outcome: str) -> tuple[Handover | N
     return handover, False
 
 
-def reopen(handover: Handover) -> None:
+def reopen(handover: Handover) -> bool:
     """Put back a hand-over ``finish`` closed when Done found nothing to carry
     on yet (a workflow run not saved as waiting): the bar stays, and a later
-    Done tries again."""
+    Done tries again. Only while it is new (``FRESH_S``): past that the run
+    has ended (stopped from its card, or timed out), so it stays closed.
+    Whether it was put back."""
+    if time.monotonic() - handover.created >= FRESH_S:
+        return False
     _open[handover.id] = handover
+    return True
 
 
 def end_bar(handover: Handover) -> None:

@@ -62,12 +62,16 @@ async def _take(person_id: int, answer: dict[str, Any]) -> dict[str, Any]:
     return step
 
 
-async def _handed(tool_input: dict[str, Any]) -> tuple[asyncio.Task[str], dict[str, Any]]:
+async def _handed(
+    tool_input: dict[str, Any], *, sign_in: bool = True
+) -> tuple[asyncio.Task[str], dict[str, Any]]:
     """Start the tool, let the extension show the bar, and wait until its
     card is up."""
     await browser_relay.next_step(7, wait=0)
     run = asyncio.create_task(browser_tools._handler("browser_hand_over")(tool_input))
-    step = await _take(7, {"ok": True, "done": True, "url": "https://shop.example.com/login", "title": "Sign in"})
+    step = await _take(7, {
+        "ok": True, "done": True, "url": "https://shop.example.com/login", "title": "Sign in", "sign_in": sign_in,
+    })
     for _ in range(200):
         handover = browser_handover.get(step["args"]["id"])
         if handover is not None and handover.card_id is not None:
@@ -273,6 +277,7 @@ def test_after_the_turn_ended_the_bar_never_carries_on_by_itself(
     pid = client.pid  # type: ignore[attr-defined]
     # The page's own "Done" (a sign-in left) with nobody waiting: kept open.
     auto = browser_handover.start(pid, "sign in", card_id=12)
+    auto.sign_in = True
     assert client.post(f"/browser/hand-over/{auto.id}", json={"outcome": "auto"}).json()["kept"] is True
     assert browser_handover.get(auto.id) is auto
     # Their Done on the bar: the bar goes, the card carries it on.
@@ -350,4 +355,61 @@ def test_done_with_no_run_to_carry_on_keeps_the_bar_so_it_can_be_pressed_again(
     assert browser_handover.get(handover.id) is not None
     again = client.post(f"/browser/hand-over/{handover.id}", json={"outcome": "done"}).json()
     assert again == {"ok": True, "carried_on": True}
+    assert browser_handover.get(handover.id) is None
+
+
+async def test_the_extension_says_whether_the_page_was_a_sign_in(alerts_db: Path, chat_turn: None) -> None:
+    run, step = await _handed({"need": "sign in to Shop"})
+    assert browser_handover.get(step["args"]["id"]).sign_in is True  # type: ignore[union-attr]
+    browser_handover.finish(step["args"]["id"], 7, "stop")
+    await run
+    run, step = await _handed({"need": "pick a size"}, sign_in=False)
+    assert browser_handover.get(step["args"]["id"]).sign_in is False  # type: ignore[union-attr]
+    browser_handover.finish(step["args"]["id"], 7, "stop")
+    await run
+
+
+def test_the_pages_own_done_is_taken_only_on_a_sign_in_hand_over(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.workflows import resumer
+
+    resumed: list[str] = []
+
+    async def resume(key: str, db_path: Any = None) -> int:
+        resumed.append(key)
+        return 1
+
+    monkeypatch.setattr(resumer, "resume_waiting", resume)
+    pid = client.pid  # type: ignore[attr-defined]
+    # Not a sign-in when handed over (a choice of theirs): a page left later
+    # can't say Done for them.
+    choice = browser_handover.start(pid, "pick a size", workflow_key="handover:1:e")
+    out = client.post(f"/browser/hand-over/{choice.id}", json={"outcome": "auto"}).json()
+    assert out == {"ok": True, "carried_on": False, "kept": True}
+    assert browser_handover.get(choice.id) is choice and resumed == []
+    # A sign-in: the run carries on.
+    signin = browser_handover.start(pid, "sign in", workflow_key="handover:1:f")
+    signin.sign_in = True
+    out = client.post(f"/browser/hand-over/{signin.id}", json={"outcome": "auto"}).json()
+    assert out == {"ok": True, "carried_on": True}
+    assert resumed == ["handover:1:f"]
+
+
+def test_done_on_an_old_hand_over_with_no_run_takes_the_bar_down(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.api.routes import browser as route
+    from openexecutive.workflows import resumer
+
+    async def resume(key: str, db_path: Any = None) -> int:
+        return 0
+
+    monkeypatch.setattr(resumer, "resume_waiting", resume)
+    monkeypatch.setattr(route, "WORKFLOW_RETRY_S", 0.0)
+    handover = browser_handover.start(client.pid, "pick a size", workflow_key="handover:1:g")  # type: ignore[attr-defined]
+    # Its run was stopped from its card long ago: nothing will wait again.
+    handover.created -= browser_handover.FRESH_S
+    out = client.post(f"/browser/hand-over/{handover.id}", json={"outcome": "done"}).json()
+    assert out == {"ok": True, "carried_on": False}
     assert browser_handover.get(handover.id) is None

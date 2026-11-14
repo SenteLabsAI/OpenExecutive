@@ -12335,7 +12335,12 @@ browser:
     (source browser_handover, Done instead of Approve; only the routed
     person may press it). The turn carries on after Done; past its wait, Done
     on the card carries the work on in a new chat. In a workflow the run
-    pauses on it.
+    pauses on it. The extension's own Done (auto, a sign-in page left) is
+    taken only when its hand_over answer said the page was a sign-in
+    (Handover.sign_in), so a page left later can't say Done for a choice or
+    a code; and only while a turn or run waits. Done with no waiting run
+    keeps a workflow's bar only within FRESH_S (2 min), while the run may
+    not be saved as waiting yet.
   workflows: |
     Every browser tool but browser_show_page is workflow=True (oe__browser_*):
     only the creator's browser, on a run that is theirs (2026-11-14 review:

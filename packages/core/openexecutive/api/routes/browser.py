@@ -176,7 +176,7 @@ async def hand_over(handover_id: str, request: Request) -> dict[str, bool]:
     if open_one is None or open_one.person_id != person.id:
         raise HTTPException(status_code=404, detail="That's already finished.")
     if outcome == browser_handover.AUTO:
-        if not (browser_handover.waited_on(open_one) or open_one.workflow_key):
+        if not open_one.sign_in or not (browser_handover.waited_on(open_one) or open_one.workflow_key):
             return {"ok": True, "carried_on": False, "kept": True}
         outcome = "done"
     handover, waited = browser_handover.finish(handover_id, person.id, str(outcome))
@@ -199,10 +199,10 @@ async def hand_over(handover_id: str, request: Request) -> dict[str, bool]:
                 picked = await resumer.stop_waiting(handover.workflow_key)
             if picked:
                 break
-        if outcome == "done" and not picked:
+        if outcome == "done" and not picked and browser_handover.reopen(handover):
             # Nothing to carry on yet: keep it open so Done can be pressed
-            # again, rather than leave the run paused with no way back.
-            browser_handover.reopen(handover)
+            # again, rather than leave the run paused with no way back. An
+            # older one's run has ended, so the bar comes down.
             return {"ok": True, "carried_on": False, "kept": True}
         return {"ok": True, "carried_on": outcome == "done" and picked > 0}
     if handover.card_id is not None and outcome == "stop":
