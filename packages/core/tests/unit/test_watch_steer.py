@@ -231,6 +231,40 @@ def test_notes_changed_during_the_reply_are_kept(
     assert alert_store.get_alert(aid, db_path=db).status == "unread"  # type: ignore[union-attr]
 
 
+def test_a_teammate_steers_only_with_cards_routed_to_them(
+    client: TestClient, db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.api.routes import chat as chat_route
+    from openexecutive.orchestrator.artifact_records import Viewer
+
+    monkeypatch.setattr(alerts_route, "_caller_clears_anything", lambda request: False)
+    monkeypatch.setattr(alerts_route, "_caller_is_principal", lambda request: False)
+    monkeypatch.setattr(alerts_route, "_caller_viewer", lambda request: Viewer(person_id=7))
+    monkeypatch.setattr(chat_route, "_resolve_caller_person_id", lambda request: 7)
+    _watch(db)
+
+    def routed(headline: str, person: int) -> int:
+        aid = alert_store.insert_alert(
+            source="query", external_id=f"ext-{headline}", severity="medium",
+            headline=headline, body="b", topic_tags=TAGS, dedup_key=f"watch:{SLUG}",
+            routed_to_person_id=person, db_path=db,
+        )
+        assert aid is not None
+        return aid
+
+    mine = routed("Acme repo moved", 7)
+    also_mine = routed("Acme repo renamed", 7)
+    theirs = routed("Acme repo forked", 8)
+    seen = _plan(monkeypatch, {"notes": "- n", "reply": "Got it.", "close_card_ids": [also_mine, theirs]})
+
+    assert client.post(f"/alerts/{theirs}/steer", json={"text": "ours"}).status_code == 403
+    res = client.post(f"/alerts/{mine}/steer", json={"text": "ours"})
+    assert res.status_code == 200, res.text
+    assert res.json()["closed_alert_ids"] == [mine, also_mine]
+    assert f"[{theirs}]" not in seen["turn"]
+    assert alert_store.get_alert(theirs, db_path=db).status == "unread"  # type: ignore[union-attr]
+
+
 def test_only_cards_shown_to_the_model_can_be_closed(
     client: TestClient, db: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
