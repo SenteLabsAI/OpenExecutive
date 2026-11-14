@@ -289,6 +289,10 @@ def test_an_email_card_can_be_changed_before_approving(
                            json={"edits": {"input": {"body": "Better text"}}}, headers=owner)
     assert response.status_code == 200, response.text
     assert [p["input"] for p in done] == [{**mail, "body": "Better text"}]
+    # Recorded as changed, and what it says is what went out.
+    after = ledger.get_decision_instance(decision_id)
+    assert after is not None and after.status == "approved_with_edit"
+    assert "Better text" in done[0]["summary"] and "Draft text" not in done[0]["summary"]
 
 
 def _rename(n: int) -> dict[str, Any]:
@@ -318,6 +322,24 @@ def test_calls_held_together_are_one_card(team: dict[str, Person]) -> None:
         mcp=True, held=True, more=steps[1:],
     ) == decision_id
 
+
+
+def test_a_cards_title_says_what_it_does_and_who_asked_only_for_the_team(team: dict[str, Person]) -> None:
+    """A reply to a contact's mail is titled by what it does, never as the
+    contact's own ask; a teammate's held ask names them."""
+    from openexecutive.orchestrator.department_gate import Verdict
+
+    dana_id = people_store.upsert_person(full_name="Dana Price", email="dana@vendor.example", kind="contact")
+    people_registry.invalidate()
+    dana = people_store.get_person(dana_id)
+    assert dana is not None
+    verdict = Verdict(run=False, approver_person_id=team["owner"].id, reason="Logistics is on Careful")
+    mail = {"to": "dana@vendor.example", "subject": "Re: Dock", "body": "Hi Dana, thanks for the heads-up."}
+    gate.hold(dana, "google_workspace__send_gmail_message", mail, verdict, mcp=True)
+    gate.hold(team["sam"], "google_workspace__send_gmail_message", {**mail, "subject": "Re: Dock 2"}, verdict, mcp=True)
+    titles = sorted(a.headline for a in alerts_store.list_alerts(limit=10))
+    assert titles == ["Email Dana Price", "Sam Seller asked: Email Dana Price"]
+    assert not any("asked the Executive to" in t or "Hi Dana" in t for t in titles)
 
 
 def test_a_card_for_several_calls_shows_every_one(team: dict[str, Person]) -> None:

@@ -7150,6 +7150,21 @@ export interface LeadCardPayload {
   allow?: { key: string; label: string };
 }
 
+// The page reads a card's details in plain words (``card_details.served``):
+// each is {field: "To", value}, the field being its label. Older cards kept
+// {field, label, long}. Either way the card shows the label, and a message
+// (or anything long) as a block.
+function leadDetail(d: { field?: unknown; label?: unknown; long?: unknown; value?: unknown }): LeadCardField {
+  const value = String(d.value ?? "");
+  const label = String(d.label ?? d.field ?? "");
+  return {
+    field: String(d.field ?? label),
+    label,
+    long: typeof d.long === "boolean" ? d.long : /^message$/i.test(label) || value.includes("\n") || value.length > 120,
+    value,
+  };
+}
+
 export async function getLeadCard(id: number, signal?: AbortSignal): Promise<LeadCardPayload> {
   const res = await fetch(`${API_BASE}/decisions/${id}`, { signal });
   if (!res.ok) throw await leadError(res, "Couldn't load this card.");
@@ -7159,7 +7174,7 @@ export async function getLeadCard(id: number, signal?: AbortSignal): Promise<Lea
     summary: String(payload.summary ?? ""),
     headline: String(payload.headline ?? ""),
     where: String(payload.where ?? ""),
-    details: Array.isArray(payload.details) ? payload.details : [],
+    details: Array.isArray(payload.details) ? payload.details.map(leadDetail) : [],
     reason: String(payload.reason ?? ""),
     kind: String(payload.kind ?? ""),
     fields: Array.isArray(payload.fields) ? payload.fields : [],

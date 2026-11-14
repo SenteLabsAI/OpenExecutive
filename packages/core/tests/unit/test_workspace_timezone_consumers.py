@@ -206,3 +206,125 @@ def test_a_cadence_saved_in_utc_moves_to_the_companys_clock_once(tmp_path) -> No
     dynamic_store.initialize_dynamic_workflows_db(db)
     again = dynamic_store.get_definition("w", db_path=db)
     assert again is not None and again.cadence == moved.cadence
+
+
+def test_a_department_check_in_runs_on_the_companys_clock(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A check-in set for Monday 9:00 is 9 AM in the company's zone; one
+    saved while check-ins were UTC keeps its moment, moved once."""
+    import json
+
+    from openexecutive.departments import cadence
+    from openexecutive.departments import store as dept_store
+    from openexecutive.memory.episodic import _get_conn
+
+    _set_zone("America/New_York")
+    db = tmp_path / "depts.db"
+    monkeypatch.setattr(dept_store, "DB_PATH", db)
+    dept_store.initialize_db(db)  # a new database: nothing to move, marked
+    sales = dept_store.create_department("Sales", db_path=db)
+    dept_store.update_department(sales.config.slug, cadences={"check_in": "weekly@mon@09:00"}, db_path=db)
+    queued: list[str] = []
+    monkeypatch.setattr(
+        "openexecutive.memory.episodic.insert_scheduled_action",
+        lambda **kw: queued.append(kw["run_at"]) or 1,
+    )
+    cadence.enqueue_next(sales.config.slug, after=datetime(2026, 11, 13, 12, tzinfo=UTC), db_path=db)
+    assert queued == ["2026-11-16T14:00:00+00:00"]
+
+    old = tmp_path / "old.db"
+    with _get_conn(old) as conn:
+        conn.execute(
+            "CREATE TABLE departments (slug TEXT PRIMARY KEY, title TEXT NOT NULL, specialist_key TEXT, "
+            "charter_mission TEXT NOT NULL DEFAULT '', charter_scope_json TEXT NOT NULL DEFAULT '[]', "
+            "charter_out_of_scope_json TEXT NOT NULL DEFAULT '[]', authority_level TEXT NOT NULL "
+            "DEFAULT 'propose_only', head_person_id INTEGER, head_persona_slug TEXT, cadences_json TEXT "
+            "NOT NULL DEFAULT '{}', headcount INTEGER, budget_usd REAL, updated_at TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO departments (slug, title, cadences_json, updated_at) VALUES ('ops', 'Ops', ?, 'then')",
+            (json.dumps({"check_in": "weekly@mon@14:00"}),),
+        )
+    dept_store.initialize_db(old)
+    moved = dept_store.get_department("ops", db_path=old)
+    assert moved is not None and moved.config.cadences["check_in"] in ("weekly@mon@09:00", "weekly@mon@10:00")
+    dept_store.initialize_db(old)
+    again = dept_store.get_department("ops", db_path=old)
+    assert again is not None and again.config.cadences == moved.config.cadences
+
+
+def test_changing_the_zone_moves_scheduled_workflow_runs_and_check_ins(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.departments import cadence
+    from openexecutive.workflows import dynamic_cadence
+
+    calls: list[str] = []
+    monkeypatch.setattr(dynamic_cadence, "retime_pending", lambda *a, **k: calls.append("workflows") or 0)
+    monkeypatch.setattr(cadence, "retime_pending", lambda *a, **k: calls.append("check-ins") or 0)
+    monkeypatch.setattr("openexecutive.scheduler.runner.reschedule_principal_rhythm", lambda: None)
+    _set_zone(None)
+    ws.set_timezone("America/New_York")
+    assert calls == ["workflows", "check-ins"]
+    ws.set_timezone("America/New_York")  # same zone: nothing moves
+    assert calls == ["workflows", "check-ins"]
+
+
+def test_a_scheduled_workflow_run_moves_with_the_zone(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.workflows import dynamic_cadence, dynamic_store
+    from openexecutive.workflows.dynamic_models import DynamicWorkflowDef
+
+    on = DynamicWorkflowDef.model_construct(name="on", title="On", cadence="daily@09:00", cadence_person_id=1, is_active=True)
+    off = DynamicWorkflowDef.model_construct(name="off", title="Off", cadence="daily@09:00", cadence_person_id=1, is_active=False)
+    monkeypatch.setattr(dynamic_store, "get_definition", lambda name, **_: {"on": on, "off": off}.get(name))
+    episodic.insert_scheduled_action(run_at="2026-11-16T09:00:00+00:00", channel="__internal__", channel_ref="on",
+                                     intent_text="x", kind="dynamic_workflow")
+    episodic.insert_scheduled_action(run_at="2026-11-16T09:00:00+00:00", channel="__internal__", channel_ref="off",
+                                     intent_text="x", kind="dynamic_workflow")
+    _set_zone("America/New_York")
+    assert dynamic_cadence.retime_pending() == 1
+    with episodic._get_conn(episodic.DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT channel_ref, run_at FROM scheduled_actions WHERE kind = 'dynamic_workflow' AND status = 'pending'"
+        ).fetchall()
+    times = {r[0]: r[1] for r in rows}
+    assert times["off"] == "2026-11-16T09:00:00+00:00"  # off: left alone
+    assert times["on"].endswith(("14:00:00+00:00", "13:00:00+00:00"))  # 9 AM New York
+
+
+def test_check_ins_move_with_the_zone_all_or_nothing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from openexecutive.departments import cadence
+    from openexecutive.departments import store as dept_store
+
+    db = tmp_path / "episodic.db"
+    dept_store.initialize_db(db)
+    sales = dept_store.create_department("Sales", db_path=db)
+    dept_store.update_department(sales.config.slug, cadences={"check_in": "weekly@mon@09:00"}, db_path=db)
+    ops = dept_store.create_department("Ops", db_path=db)
+    dept_store.update_department(ops.config.slug, cadences={"check_in": ""}, db_path=db)
+    for slug in (sales.config.slug, ops.config.slug):  # Ops has no check-in any more
+        episodic.insert_scheduled_action(run_at="2026-11-16T09:00:00+00:00", channel="__internal__",
+                                         channel_ref=slug, intent_text="x", department=slug,
+                                         kind="dept_cadence", db_path=db)
+
+    def pending() -> dict[str, str]:
+        with episodic._get_conn(db) as conn:
+            rows = conn.execute(
+                "SELECT department, run_at FROM scheduled_actions WHERE kind = 'dept_cadence' AND status = 'pending'"
+            ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    _set_zone("America/New_York")
+    # A failure part way leaves every row as it was.
+    real = cadence._parse_cadence_spec
+
+    def broken(*_: object, **__: object) -> None:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(cadence, "_parse_cadence_spec", broken)
+    with pytest.raises(RuntimeError):
+        cadence.retime_pending(db)
+    assert pending() == {s: "2026-11-16T09:00:00+00:00" for s in (sales.config.slug, ops.config.slug)}
+
+    monkeypatch.setattr(cadence, "_parse_cadence_spec", real)
+    assert cadence.retime_pending(db) == 1
+    after = pending()
+    assert list(after) == [sales.config.slug]  # Ops: cancelled
+    assert after[sales.config.slug].endswith(("14:00:00+00:00", "13:00:00+00:00"))  # 9 AM New York

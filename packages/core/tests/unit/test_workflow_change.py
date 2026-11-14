@@ -56,6 +56,10 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     # The gateway isn't running here; its tool names are checked elsewhere.
     monkeypatch.setattr(wat, "_build_def", _build_without_gateway)
     monkeypatch.setattr(workflows_route, "validate_definition_and_tools", no_errors)
+    # The card is for a change nobody on the team asked for this turn (say,
+    # one that came from mail it read). A person's own ask saves it
+    # (test_a_persons_own_ask_changes_a_switched_on_workflow).
+    monkeypatch.setattr(wat, "_person_asked", lambda: False)
     people_registry.invalidate()
     yield path
     people_registry.invalidate()
@@ -176,6 +180,28 @@ def test_a_switched_on_tool_workflow_changes_only_on_a_card() -> None:
     assert workflow_change.needs_card(approved, approved)
     assert not workflow_change.needs_card(pending, pending)
     assert not workflow_change.needs_card(None, approved)
+    # A person's own ask in chat is their yes, as for a new workflow.
+    assert not workflow_change.needs_card(approved, approved, asked=True)
+
+
+def test_a_persons_own_ask_changes_a_switched_on_workflow(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    _stored()
+    monkeypatch.setattr(wat, "_person_asked", lambda: True)
+    out = _save_fix(_web(owner))
+    assert "decision_id" not in out and out.get("status") != "waiting_for_approval"
+    stored = dynamic_store.get_definition("meeting_prep")
+    assert stored is not None and stored.is_active
+    assert "olivia@co.example" in stored.steps[0].goal  # type: ignore[union-attr]
+    assert decision_ledger.list_instances("app_action") == []
+
+
+def test_an_ask_about_someone_elses_workflow_keeps_its_check(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    _stored()
+    monkeypatch.setattr(wat, "_person_asked", lambda: True)
+    monkeypatch.setattr(workflow_change, "may_read", lambda name: "It's someone else's workflow.")
+    _save_fix(_web(owner))
+    stored = dynamic_store.get_definition("meeting_prep")
+    assert stored is not None and "John's calendar" in stored.steps[0].goal  # type: ignore[union-attr]
 
 
 # --------------------------------------------------------------------------- #

@@ -2,11 +2,13 @@
 
 A *cadence* is a recurring proactive action tied to a department — e.g.
 ``"weekly@mon@09:00"`` (what a new department starts with) fires a check-in
-workflow every Monday at 09:00 UTC.
+workflow every Monday at 09:00 in the company's time zone (Settings).
 
-Department cadences are always read in UTC. ``_parse_cadence_spec`` also
-takes a zone, which the principal's own rhythm (the briefs and the
-reflection in ``scheduler.runner``) uses to fire at a local wall-clock time.
+Department cadences are read in the company's time zone, as workflow
+cadences and the principal's own rhythm (the briefs and the reflection in
+``scheduler.runner``) are: 09:00 stays 09:00 there across summer time.
+Specs saved while they were read in UTC were moved once
+(``store._cadences_to_company_time``).
 
 In solo mode (``memory.workspace_settings``) there are no department
 check-ins: ``bootstrap_cadences`` does nothing.
@@ -21,12 +23,14 @@ Phase 5 surfaces two public entry points:
 Cadence specs are stored on the ``DepartmentConfig.cadences`` dict under
 the key ``"check_in"``.  Three formats are supported:
 
-* ``"daily@HH:MM"``            — fires every day at HH:MM UTC
+* ``"daily@HH:MM"``            — fires every day at HH:MM
 * ``"weekly@DOW@HH:MM"``       — fires every week on DOW (3-letter,
-  or ``"weekly@DOW-HH:MM"``      e.g. ``thu``) at HH:MM UTC;
+  or ``"weekly@DOW-HH:MM"``      e.g. ``thu``) at HH:MM;
                                   either ``@`` or ``-`` may separate DOW from time
 * ``"quarterly@DD-HH:MM"``     — fires on day DD of each quarter-start
-                                  month (Jan/Apr/Jul/Oct) at HH:MM UTC
+                                  month (Jan/Apr/Jul/Oct) at HH:MM
+
+(times of day in the company's time zone).
 
 Anything else is treated as unknown and silently skipped with a warning.
 """
@@ -70,8 +74,8 @@ def _parse_cadence_spec(
 ) -> datetime | None:
     """Return the next occurrence of ``spec`` that is strictly *after* ``after``.
 
-    The spec's times of day are wall-clock times in ``tz`` (UTC by default,
-    which is what department and workflow cadences use). The result is
+    The spec's times of day are wall-clock times in ``tz`` (UTC by default;
+    department and workflow cadences pass the company's zone). The result is
     always UTC-aware. A naive ``after`` is treated as UTC. Returns ``None``
     for unrecognised specs.
     """
@@ -133,8 +137,19 @@ def _parse_cadence_spec(
 
 CADENCE_FORMATS_HINT = (
     "daily@HH:MM, weekly@DOW@HH:MM (e.g. weekly@mon@09:00) "
-    "or quarterly@DD-HH:MM, times in UTC"
+    "or quarterly@DD-HH:MM, times in the company's time zone"
 )
+
+
+def company_zone() -> tzinfo:
+    """The company's time zone (Settings), else UTC. Never raises."""
+    try:
+        from openexecutive.memory.workspace_settings import get_user_timezone
+
+        return get_user_timezone()
+    except Exception:
+        logger.warning("cadence: couldn't read the company's time zone; using UTC", exc_info=True)
+        return UTC
 
 
 def is_valid_cadence_spec(spec: str) -> bool:
@@ -183,6 +198,7 @@ def bootstrap_cadences(db_path: Path | None = None) -> int:
         return 0
 
     now = datetime.now(UTC)
+    zone = company_zone()
     inserted = 0
 
     states = dept_store.list_departments(db_path=db_path)
@@ -191,7 +207,7 @@ def bootstrap_cadences(db_path: Path | None = None) -> int:
         if not spec:
             continue
         slug = state.config.slug
-        run_at = _parse_cadence_spec(spec, now)
+        run_at = _parse_cadence_spec(spec, now, zone)
         if run_at is None:
             logger.warning("cadence.bootstrap: invalid spec %r for dept %r — skipping", spec, slug)
             continue
@@ -325,7 +341,7 @@ def enqueue_next(
         return None
 
     base = (after or datetime.now(UTC)).astimezone(UTC)
-    run_at = _parse_cadence_spec(spec, base)
+    run_at = _parse_cadence_spec(spec, base, company_zone())
     if run_at is None:
         logger.warning("cadence.enqueue_next: invalid spec %r for dept %r", spec, slug)
         return None
@@ -432,3 +448,50 @@ def next_check_in_at(slug: str, db_path: Path | None = None) -> str | None:
             (slug,),
         ).fetchone()
     return str(row["run_at"]) if row is not None else None
+
+
+def retime_pending(db_path: Path | None = None) -> int:
+    """After the company's time zone changes: the pending check-ins move to
+    the new zone's clock. Each pending row gets its next time from its
+    department's spec in one transaction, so a failure part way leaves
+    every row as it was; a row whose department has no spec any more is
+    cancelled. Then any department still without one is queued. Returns
+    the count moved. A no-op in solo."""
+    from openexecutive.departments import store as dept_store
+    from openexecutive.memory.episodic import _get_conn, _resolve_db_path
+    from openexecutive.memory.workspace_settings import get_workspace
+
+    if get_workspace(db_path).mode == "solo":
+        return 0
+    resolved = _resolve_db_path(db_path)
+    if not resolved.exists():
+        return 0
+    specs = {
+        s.config.slug: s.config.cadences.get("check_in", "")
+        for s in dept_store.list_departments(db_path=db_path)
+    }
+    now = datetime.now(UTC)
+    zone = company_zone()
+    moved = 0
+    with _get_conn(resolved) as conn:
+        table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scheduled_actions'"
+        ).fetchone()
+        if table is None:
+            return 0
+        rows = conn.execute(
+            "SELECT id, department FROM scheduled_actions "
+            "WHERE kind = 'dept_cadence' AND status = 'pending'"
+        ).fetchall()
+        for row in rows:
+            spec = specs.get(row["department"] or "", "")
+            run_at = _parse_cadence_spec(spec, now, zone) if spec else None
+            if run_at is None:
+                conn.execute("UPDATE scheduled_actions SET status = 'cancelled' WHERE id = ?", (row["id"],))
+                continue
+            conn.execute(
+                "UPDATE scheduled_actions SET run_at = ? WHERE id = ?", (run_at.isoformat(), row["id"]),
+            )
+            moved += 1
+    bootstrap_cadences(db_path)
+    return moved

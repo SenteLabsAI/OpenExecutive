@@ -78,6 +78,19 @@ def speaker(session: Any) -> Person | None:
     return person
 
 
+
+def _headline(person: Any, who: str, plain: str, *, held: bool) -> str:
+    """A held step's card title: what it does ("Email Dana Price"), with
+    who asked when it was a teammate's own ask. A reply to a contact's mail
+    is no ask of theirs, so it isn't put in their name; why it waited is on
+    the card's next line."""
+    if held and getattr(person, "is_principal", False):
+        return f"Waiting for your OK: {plain}"
+    if getattr(person, "id", None) is not None and getattr(person, "kind", "team") == "team" \
+            and not getattr(person, "is_principal", False):
+        return f"{who} asked: {plain}"
+    return plain[:1].upper() + plain[1:]
+
 def hold(
     person: Person,
     tool: str,
@@ -134,10 +147,14 @@ def hold(
         take_the_lead.summarize(tool, step, mcp=mcp, quote=False) for step in steps
     ]
     summary, shown = each[0], each_shown[0]
+    # The title says what it does in a few words ("Email Dana Price"); the
+    # message itself shows in full under it.
+    plain = take_the_lead.title(tool, tool_input, mcp=mcp, private=private)
     listed = ""
     if more:
         summary = f"{each[0]} and {len(more)} more like it"
         shown = f"{each_shown[0]} and {len(more)} more like it"
+        plain = f"{plain} and {len(more)} more like it"
         listed = "\n".join(f"- {line}" for line in each_shown)
     who = person.full_name or (
         "Someone on the team" if person.id is not None else "Someone who isn't on People"
@@ -172,10 +189,7 @@ def hold(
             source=DECISION_ALERT_SOURCE,
             external_id=external_id,
             severity=AlertSeverity.HIGH.value if escalated else AlertSeverity.MEDIUM.value,
-            headline=(
-                f"Waiting for your OK: {shown}" if held and person.is_principal
-                else f"{who} asked the Executive to: {shown}"
-            )[:160],
+            headline=_headline(person, who, plain, held=held)[:160],
             body=f"{listed or shown}\n\nIt waited because {verdict.reason}.",
             suggested_action=shown,
             topic_tags=[

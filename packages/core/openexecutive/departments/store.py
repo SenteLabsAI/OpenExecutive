@@ -139,6 +139,48 @@ def initialize_db(db_path: Path | None = None) -> None:
         _migrate_add_last_reviewed_at_column(conn)
         _migrate_add_watched_entities_column(conn)
         _migrate_goals_stand_alone(conn)
+        _cadences_to_company_time(conn)
+
+
+# Marks a database whose department check-in times were moved from UTC to
+# the company's time zone (``_cadences_to_company_time``).
+_LOCAL_CADENCES = "cadences_in_company_time"
+
+
+def _cadences_to_company_time(conn: sqlite3.Connection) -> None:
+    """Once per database: rewrite the check-in times saved while they were
+    read in UTC as the same times in the company's time zone, which is how
+    they are read now (``cadence.company_zone``). The first process to mark
+    the database does it, in the same transaction. Best effort: a row it
+    can't read stays as it is."""
+    from openexecutive.workflows.dynamic_cadence import from_utc
+
+    try:
+        from openexecutive.memory.workspace_settings import get_user_timezone
+
+        # Read before marking: a zone that can't be read now leaves the
+        # move for the next start, never marked done as a no-op.
+        zone = get_user_timezone()
+    except Exception:
+        logger.warning("departments: couldn't read the company's time zone; check-ins stay for now", exc_info=True)
+        return
+    marked = conn.execute(
+        "INSERT OR IGNORE INTO departments_meta (key, value) VALUES (?, ?)", (_LOCAL_CADENCES, _now())
+    )
+    if marked.rowcount != 1:
+        return
+    for slug, body in conn.execute("SELECT slug, cadences_json FROM departments").fetchall():
+        try:
+            cadences = json.loads(body or "{}")
+            if not isinstance(cadences, dict) or not cadences:
+                continue
+            moved = {k: from_utc(v, zone) if isinstance(v, str) and v else v for k, v in cadences.items()}
+            if moved != cadences:
+                conn.execute(
+                    "UPDATE departments SET cadences_json = ? WHERE slug = ?", (json.dumps(moved), slug)
+                )
+        except Exception:
+            logger.warning("departments: couldn't move %r's check-in to company time", slug, exc_info=True)
 
 
 def _migrate_add_last_reviewed_at_column(conn: sqlite3.Connection) -> None:

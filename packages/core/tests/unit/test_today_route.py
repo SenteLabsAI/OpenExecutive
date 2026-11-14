@@ -3251,7 +3251,7 @@ def test_done_for_you_says_how_why_and_what_came_of_what_it_did_as_me(
 
     db = tmp_path / "done_line.db"
     _setup_isolated_db(db, monkeypatch)
-    people_store.upsert_person(full_name="Jordan", is_principal=True, email="jordan@example.com", db_path=db)
+    jordan = people_store.upsert_person(full_name="Jordan", is_principal=True, email="jordan@example.com", db_path=db)
     riley = people_store.upsert_person(full_name="Riley Park", email="riley@example.com", db_path=db)
     people_registry.invalidate()
     send = "google_workspace__send_gmail_message"
@@ -3262,7 +3262,7 @@ def test_done_for_you_says_how_why_and_what_came_of_what_it_did_as_me(
             summary=take_the_lead.summarize(send, mail, mcp=True, quote=False), status="done",
             mail=take_the_lead.mail_sent(send, mail), outcome=take_the_lead.outcome_of(send, mail, "{}", mcp=True),
         )
-    job = take_the_lead.add_job("Keep the dealer onboarding moving", created_by="t")
+    job = take_the_lead.add_job("Keep the dealer onboarding moving", created_by=f"person:{jordan}")
     with take_the_lead.looking(take_the_lead.DAILY_LOOK):
         take_the_lead.focus_job(job.id)
         take_the_lead.record(
@@ -3287,6 +3287,21 @@ def test_done_for_you_says_how_why_and_what_came_of_what_it_did_as_me(
     line = rows["Messaged Riley Park"]
     assert "For your standing job: Keep the dealer onboarding moving" in line
     assert "Riley answered at" in line
+    # A teammate's job never names itself to the owner.
+    take_the_lead.add_job("Chase my expense report", created_by="person:99")
+    other = take_the_lead.list_jobs(created_by="person:99")[0]
+    with take_the_lead.looking(take_the_lead.DAILY_LOOK):
+        take_the_lead.focus_job(other.id)
+        take_the_lead.record(
+            scope=take_the_lead.SCOPE_EXECUTIVE, source="reflection", tool="message_person",
+            summary="Messaged Sam", status="done", outcome="Sent",
+        )
+    again = {
+        r["title"]: r["detail"]
+        for r in client.get("/today", headers={"x-caller-email": "jordan@example.com"}).json()["done_for_you"]
+        if r["kind"] == "took_the_lead"
+    }
+    assert "expense report" not in (again.get("Messaged Sam") or "")
     # The team's feed never carries the line.
     feed = client.get("/today/activity", headers={"x-caller-email": "jordan@example.com"}).json()["items"]
     assert all("lead_line" not in i for i in feed)
@@ -3448,3 +3463,21 @@ def test_a_card_that_only_names_a_held_decision_does_not_read_it(
     )
     proposals = _make_client().get("/today").json()["proposals"]
     assert [p["waiting_on"] for p in proposals] == [""]
+
+
+def test_an_approved_department_step_is_in_its_approvers_done_for_you_only() -> None:
+    import json as _json
+    from types import SimpleNamespace
+
+    payload = {"tool": "google_workspace__send_gmail_message", "mcp": True,
+               "input": {"to": "dana@vendor.example", "subject": "Re: Dock", "body": "Hi Dana, noted."}}
+    step = SimpleNamespace(
+        id=7, status="approved_with_edit", resolver_person_id=1, department="logistics",
+        final_payload_json=_json.dumps(payload), proposed_payload_json="{}",
+        resolved_at="2026-11-14T14:01:39+00:00", created_at="2026-11-14T13:00:00+00:00",
+    )
+    item = today_route._department_action_done(step, 1)
+    assert item is not None and item.summary.endswith("(after a yes)")
+    assert item.summary.startswith("Email ") and "Hi Dana" not in item.summary
+    assert today_route._department_action_done(step, 5) is None  # someone else's yes
+    assert today_route._department_action_done(SimpleNamespace(**{**vars(step), "status": "rejected"}), 1) is None

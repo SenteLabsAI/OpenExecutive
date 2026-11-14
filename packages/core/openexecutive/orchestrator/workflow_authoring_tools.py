@@ -293,12 +293,22 @@ def _summarize(defn: Any) -> str:
     return "\n".join(lines)
 
 
+def _asked_by_its_owner(existing: Any, name: str) -> bool:
+    """Whether the person asked for this change themselves and may change
+    this workflow from chat (the account owner or its creator, in a chat
+    only they read). Someone else's workflow keeps its change card, which
+    then says why it can't be changed here."""
+    if not _person_asked():
+        return False
+    return existing is None or workflow_change.may_read(name) is None
+
+
 async def handle_draft_workflow(tool_input: dict[str, Any]) -> str:
     from openexecutive.workflows.dynamic_store import get_definition
 
     defn, error = await _build_def(tool_input.get("definition"))
     existing = get_definition(defn.name) if error is None else None
-    on_card = error is None and workflow_change.needs_card(existing, defn)
+    on_card = error is None and workflow_change.needs_card(existing, defn, asked=_asked_by_its_owner(existing, defn.name))
     if on_card:
         error = workflow_change.may_stage(defn.name)
     if error is None:
@@ -383,7 +393,7 @@ async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
                 "overwrite=true to replace it."
             )
         })
-    if workflow_change.needs_card(existing, defn):
+    if workflow_change.needs_card(existing, defn, asked=_asked_by_its_owner(existing, defn.name)):
         # A person approved its tools, or it sends or reads email as its
         # creator, whom chat can't verify: the change waits on a card that
         # spells it out, saved on their own tap (workflow_change).

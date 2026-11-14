@@ -1576,6 +1576,33 @@ RHYTHM_WORKFLOWS: frozenset[str] = frozenset({
 _NEVER_IN_FEED: frozenset[str] = frozenset({"executive_reflection"})
 
 
+def _department_action_done(instance: Any, viewer: int | None) -> ActivityItem | None:
+    """A held step someone approved and it then did, for that person's
+    feed: "Email Dana Price (after a yes)". None for anyone else, or when it
+    wasn't approved. Never raises."""
+    if viewer is None or instance.resolver_person_id != viewer or instance.status not in _APPROVED_STATUSES:
+        return None
+    try:
+        from openexecutive.orchestrator import take_the_lead
+
+        payload = json.loads(instance.final_payload_json or instance.proposed_payload_json or "{}")
+        tool_input = payload.get("input") if isinstance(payload.get("input"), dict) else {}
+        what = take_the_lead.title(
+            str(payload.get("tool") or ""), tool_input, mcp=bool(payload.get("mcp")), private=True,
+        )
+    except Exception:
+        logger.warning("today: couldn't read approved step %s", instance.id, exc_info=True)
+        return None
+    return ActivityItem(
+        kind="decision_resolved",
+        summary=f"{what} (after a yes)"[:240],
+        actor="Executive",
+        target=None,
+        department=instance.department or None,
+        at=instance.resolved_at or instance.created_at,
+    )
+
+
 def _build_activity(
     limit: int,
     since: datetime | None = None,
@@ -1775,7 +1802,13 @@ def _build_activity(
         if instance.decision_class == TAKE_THE_LEAD_CLASS:
             continue  # its card quotes the message: the Take the lead rows below say what it did
         if instance.decision_class == DEPARTMENT_ACTION_CLASS:
-            continue  # it quotes a teammate's conversation; the audit log keeps who approved it
+            # It quotes a teammate's conversation, so only the one who
+            # approved it reads it here, by what it did ("Email Dana Price"),
+            # never what it said; the audit log keeps the rest.
+            done = _department_action_done(instance, viewer)
+            if done is not None:
+                items.append(done)
+            continue
         label = _DECISION_STATUS_LABEL.get(instance.status, "Resolved")
         app_action = _app_action_summary(instance)
         if app_action == "":
@@ -1814,7 +1847,11 @@ def _build_activity(
     except Exception:
         logger.warning("activity: couldn't read As me's rows", exc_info=True)
         led = []
-    jobs = take_the_lead.jobs_by_id() if led else {}
+    # Only the viewer's own jobs: a standing job's words are its asker's alone.
+    jobs = (
+        {i: j for i, j in take_the_lead.jobs_by_id().items() if j.created_by == f"person:{viewer}"}
+        if led and viewer is not None else {}
+    )
     answers = _answers([(r.to_person_id, r.at) for r in led if r.to_person_id is not None])
     for row in led:
         if row.status not in ("done", "approved"):
