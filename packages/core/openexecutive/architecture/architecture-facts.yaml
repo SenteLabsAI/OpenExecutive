@@ -4083,6 +4083,38 @@ departments:
     paste the proposal into a new chat turn. Nothing recorded who approved
     it, and if the tab closed before the turn ran the card was gone and
     nothing was done.
+  card_plan_replies: |
+    openexecutive.alerts.replan + POST /alerts/{id}/plan and /plan/undo. A
+    reply on a card that waits for an OK changes what Approve does: one
+    forced `rewrite_plan` call on the utility-fast model (constant system
+    prompt; the card, its current plan and the person's line each fenced in
+    the user turn, and only the line may change the plan) returns the new
+    plan (<=600 chars) and a one-line reply as I. `replan.apply_change`
+    writes it to `suggested_action` in one BEGIN IMMEDIATE transaction only
+    while the card is open and still shows the plan the model read, and
+    keeps the change in `alert_plan_changes` (previous_plan, plan,
+    person_id); Undo change puts back the last one's previous_plan the same
+    way. Approve re-reads the card after its claim (which closes it to more
+    changes), tells the turn the plan is the person's own
+    (APPROVED_CHANGED_PLAN_NOTE, outside the quoted proposal) and runs a
+    card that held a scheduled action as a turn once its plan changed, since
+    the held action is no longer what was asked. Approve carries the plan
+    the card showed (body `plan`); `approvals.claim` compares it inside its
+    transaction and raises PlanChanged (409), so nobody approves a plan they
+    didn't see. When someone other than the approver made the last change,
+    the turn is told who (APPROVED_PLAN_CHANGED_BY_NOTE) and /today's
+    `plan_changed_by` names them ("Updated by Sam"), so a teammate's plan
+    never runs as the owner's own words. A line in the card's text that
+    reads "Action to perform:" is relabelled so it can't pass for the plan.
+    A reply that leaves the plan as it was records nothing, and a card with
+    a running or done approval can't be changed or undone. Which cards
+    (`plan_refusal`, also /today's `plan_editable`): open cards whose Approve runs a turn, so not answer, choice,
+    fyi, decision-backed, watch (they steer the watch), document, roster,
+    or failed-run cards. Who: the approve
+    route's own check. Caps: 500-char line, 120 calls an hour, 30 per
+    caller. No new gate: Approve goes through Approvals as before. Why: the
+    owner wanted to steer a card in a line, without Discuss dropping the
+    card into a chat; Discuss left the web card.
   cadence: |
     openexecutive.departments.cadence — supports `daily@HH:MM`,
     `weekly@DOW@HH:MM` or `weekly@DOW-HH:MM` (DOW is a 3-letter day,
