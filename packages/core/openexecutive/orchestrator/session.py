@@ -222,6 +222,11 @@ class Session:
     # outside content (``orchestrator.outside_content.SENDER``). Set by the
     # email poller only.
     sender_off_team: bool = False
+    # That mail itself looks like it gives the Executive orders or fishes for
+    # passwords (``roster_intake.looks_like_phishing``): the turn starts
+    # flagged, as if the content check had flagged a read, so below
+    # Hands-off its replies wait on a card. Set by the email poller only.
+    sender_gave_orders: bool = False
     # How many steps this turn put on an Approve card (``note_step_held``).
     # An email turn whose step already waits on a card raises no second
     # card about the same mail (``alert_tools.handle_create_alert``).

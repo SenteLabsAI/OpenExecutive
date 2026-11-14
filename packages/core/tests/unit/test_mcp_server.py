@@ -154,10 +154,12 @@ async def test_today_activity_resource_serializes_model() -> None:
     with patch(
         "openexecutive.api.routes.today._build_activity",
         return_value=_Dumpable({"items": []}),
-    ) as build:
+    ) as build, patch("openexecutive.api.routes.today.principal_id", return_value=7):
         out = await mcp_server.today_activity()
     assert json.loads(out) == {"items": []}
-    build.assert_called_once_with(20)
+    # The reader's own items join the team's; a principal with no roster id
+    # of their own (this direct call) reads as the roster's principal.
+    build.assert_called_once_with(20, viewer=7)
 
 
 @pytest.mark.asyncio

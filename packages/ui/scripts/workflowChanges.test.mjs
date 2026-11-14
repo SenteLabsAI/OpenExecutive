@@ -45,7 +45,7 @@ test("sign-off person and schedule are named in plain words", () => {
   after.steps[1].person_id = 2;
   after.cadence = "weekly@fri@09:00";
   assert.deepEqual(describeChanges(base(), after, labels), [
-    "Schedule: Every Friday at 09:00 UTC, sent to Sarah (was: Every Monday at 09:00 UTC)",
+    "Schedule: Every Friday at 9:00 AM, sent to Sarah (was: Every Monday at 9:00 AM)",
     "“Sign-off”: sign-off from Mark instead of Sarah",
   ]);
 });
@@ -53,7 +53,7 @@ test("sign-off person and schedule are named in plain words", () => {
 test("turning the schedule off, and changing only the recipient", () => {
   const off = { ...base(), cadence: null, cadence_person_id: null };
   assert.deepEqual(describeChanges(base(), off, labels), [
-    "Schedule: only when you run it (was: Every Monday at 09:00 UTC)",
+    "Schedule: only when you run it (was: Every Monday at 9:00 AM)",
   ]);
   const recipient = { ...base(), cadence_person_id: 2 };
   assert.deepEqual(describeChanges(base(), recipient, labels), [
@@ -132,8 +132,9 @@ test("addedTools lists only tools the saved version lacked", () => {
 
 test("describeCadence", () => {
   assert.equal(describeCadence(null), "Only when you run it");
-  assert.equal(describeCadence("daily@07:30"), "Every day at 07:30 UTC");
-  assert.equal(describeCadence("quarterly@05-10:00"), "Quarterly on day 5 at 10:00 UTC");
+  assert.equal(describeCadence("daily@07:30"), "Every day at 7:30 AM");
+  assert.equal(describeCadence("quarterly@05-10:00"), "Quarterly on day 5 at 10:00 AM");
+  assert.equal(describeCadence("weekly@mon@14:00"), "Every Monday at 2:00 PM");
 });
 
 test("a sign-off that stops failing closed is called out", () => {

@@ -286,7 +286,7 @@ function BuilderInner() {
         label: "When it runs",
         type: "text",
         value: cadence,
-        description: "daily@HH:MM / weekly@DOW@HH:MM / quarterly@DD-HH:MM, in UTC.",
+        description: "daily@HH:MM / weekly@DOW@HH:MM / quarterly@DD-HH:MM, in your company's time zone.",
       },
       {
         name: "cadence_person_id",
@@ -696,7 +696,7 @@ function BuilderInner() {
               />
               <p className="mt-1.5 text-sm text-fg-subtle">
                 {describeCadenceLocal(cadence)}. Write it as daily@09:00,
-                weekly@mon@09:00 or quarterly@01-09:00, in UTC.
+                weekly@mon@09:00 or quarterly@01-09:00, in your company&apos;s time zone.
               </p>
             </div>
             <div>

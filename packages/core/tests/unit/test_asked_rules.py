@@ -190,3 +190,25 @@ def test_the_one_who_asked_never_approves_their_own_held_step(
     chat_row, other_row = get_decision_instance(chat), get_decision_instance(unattended)
     assert chat_row is not None and chat_row.approver_person_id == owner.id
     assert other_row is not None and other_row.approver_person_id == mate
+
+
+def test_an_asked_send_that_went_on_its_own_is_logged_with_why(owner: Any) -> None:
+    """Done for you and the counts read the log: a reply that went without
+    a yes is there, with why it went; one that waited is not "done"."""
+    from openexecutive.orchestrator import outside_mode
+
+    seen, call_tool = _calls()
+    asked = ttl.asked_call_tool(call_tool)
+    token = current_session.set(SimpleNamespace(email_from=DANA, unattended=False))
+    try:
+        sent = asyncio.run(asked({"name": SEND, "arguments": {"to": DANA, "subject": "Hours", "body": "Open 9 to 5."}}))
+    finally:
+        current_session.reset(token)
+    assert sent == "Email sent!"
+    [row] = [d for d in ttl.done([ttl.SCOPE_EXECUTIVE], days=1) if d.status == "done"]
+    assert row.mail_to == DANA and row.mail_subject == "Hours"
+    assert "Went on its own" in row.why and "no rule of yours said to wait" in row.why
+    assert ttl.went_on_its_own_why(outside_mode.OUTSIDERS).startswith("Approvals is Balanced")
+    # Mail only to the owner isn't something it did on its own.
+    asyncio.run(asked({"name": SEND, "arguments": {"to": OWNER, "body": "Hi"}}))
+    assert len([d for d in ttl.done([ttl.SCOPE_EXECUTIVE], days=1) if d.status == "done"]) == 1

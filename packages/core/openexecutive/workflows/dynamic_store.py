@@ -12,12 +12,15 @@ deserialising every row's body.
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
 from openexecutive.memory.episodic import DB_PATH, _get_conn
 from openexecutive.workflows.dynamic_models import DynamicWorkflowDef
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve(db_path: Path | None) -> Path:
@@ -51,6 +54,49 @@ def initialize_dynamic_workflows_db(db_path: Path | None = None) -> None:
                 # Another process (API, scheduler, a bot) added it first.
                 if "duplicate column" not in str(exc).lower():
                     raise
+        _cadences_to_company_time(conn)
+
+
+# Marks a database whose saved cadences were moved from UTC to the company's
+# time zone (``_cadences_to_company_time``).
+_LOCAL_CADENCES = "cadences_in_company_time"
+
+
+def _cadences_to_company_time(conn: sqlite3.Connection) -> None:
+    """Once per database: rewrite the cadences saved while they were UTC as
+    the same times in the company's time zone, which is how they are read
+    now (``dynamic_cadence``). The first process to mark the database does
+    it, in the same transaction. Best effort: a row it can't read stays."""
+    from openexecutive.workflows.dynamic_cadence import from_utc
+
+    try:
+        from openexecutive.memory.workspace_settings import get_user_timezone
+
+        # Read before marking: a zone that can't be read now leaves the
+        # move for the next start, never marked done as a no-op.
+        zone = get_user_timezone()
+    except Exception:
+        logger.warning("dynamic_store: couldn't read the company's time zone; cadences stay for now", exc_info=True)
+        return
+    conn.execute("CREATE TABLE IF NOT EXISTS dynamic_workflows_meta (key TEXT PRIMARY KEY)")
+    marked = conn.execute(
+        "INSERT OR IGNORE INTO dynamic_workflows_meta (key) VALUES (?)", (_LOCAL_CADENCES,)
+    )
+    if marked.rowcount != 1:
+        return
+    for name, body in conn.execute("SELECT name, definition FROM dynamic_workflows").fetchall():
+        try:
+            defn = DynamicWorkflowDef.model_validate_json(body)
+            if not defn.cadence:
+                continue
+            spec = from_utc(defn.cadence, zone)
+            if spec != defn.cadence:
+                conn.execute(
+                    "UPDATE dynamic_workflows SET definition = ? WHERE name = ?",
+                    (defn.model_copy(update={"cadence": spec}).model_dump_json(), name),
+                )
+        except Exception:
+            logger.warning("dynamic_store: couldn't move %r's cadence to company time", name, exc_info=True)
 
 
 def upsert_definition(

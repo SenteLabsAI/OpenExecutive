@@ -105,7 +105,8 @@ DEFINITION_SCHEMA: dict[str, Any] = {
             "type": "string",
             "description": (
                 "Optional recurrence: 'daily@HH:MM' / 'weekly@DOW@HH:MM' / "
-                "'quarterly@DD-HH:MM' (UTC). Requires cadence_person_id and no "
+                "'quarterly@DD-HH:MM', in the company's time zone as the person said "
+                "it ('9am Mondays' is 'weekly@mon@09:00', never UTC). Requires cadence_person_id and no "
                 "required input fields."
             ),
         },
@@ -131,8 +132,9 @@ DRAFT_WORKFLOW_TOOL: dict[str, Any] = {
         "people, or metrics — only use the specialist roles and people the "
         "user has identified. If validation fails, the response lists exactly "
         "what to fix; re-draft and try again. A workflow with action (tool) "
-        "steps is saved switched OFF: after saving, give the user the link so "
-        "they can review its tools and turn it on. To fix or change a saved "
+        "steps saves switched on when the person asked for it in their own "
+        "words in this chat; otherwise it is saved switched OFF: after saving, "
+        "give the user the link so they can review its tools and turn it on. To fix or change a saved "
         "workflow, read it first (list_workflows with its name) and draft the "
         "whole corrected definition under the same name."
     ),
@@ -208,19 +210,47 @@ def _reads_refusal(defn: Any) -> str | None:
     return definition_refusal(defn, _session_caller_id())
 
 
-def _needs_review(defn: Any) -> bool:
-    """True when the workflow has tool-using steps, which a person must
-    approve below Hands-off.
+def _person_asked() -> bool:
+    """Whether a person on the team asked for this save in their own words
+    this turn, on a surface that verified it is them, with nothing read from
+    outside this turn (checked or not: an unflagged page can still be the
+    one asking): their ask is the yes, as it is for anything else they ask
+    for in chat (``history_chat.verified_speaker``). Fails closed. Never
+    raises."""
+    try:
+        from openexecutive.memory.history_chat import verified_speaker
+        from openexecutive.orchestrator import outside_content
+        from openexecutive.people.store import get_person
 
-    Their approval is turning the workflow on from its review card on the Workflows
-    page — a chat confirmation (a token this model holds itself) is not a
-    human seeing the tools.
-    """
+        session = current_session.get()
+        caller = _session_caller_id()
+        if session is None or caller is None:
+            return False
+        person = get_person(caller)
+        if person is None or getattr(person, "kind", "team") != "team":
+            return False
+        state = outside_content.current()
+        if state is not None and (state.flags or state.sources or state.pending):
+            return False
+        return verified_speaker(session, person)
+    except Exception:
+        logger.warning("save_workflow: couldn't tell who asked — saving it off", exc_info=True)
+        return False
+
+
+def _needs_review(defn: Any) -> bool:
+    """True when the workflow has tool-using steps that nobody on the team
+    asked for this turn, below Hands-off: then a person turns it on from its
+    review card on the Workflows page. A person's own ask in chat is their
+    yes (``_person_asked``); a step that writes somewhere new (an address
+    outside the team) still asks first (``action_step.TargetPolicy``)."""
     from openexecutive.workflows.dynamic_models import ActionStepSpec
 
     if workflow_change.hands_off():
         return False
-    return any(isinstance(step, ActionStepSpec) for step in defn.steps)
+    if not any(isinstance(step, ActionStepSpec) for step in defn.steps):
+        return False
+    return not _person_asked()
 
 
 async def _build_def(definition: Any) -> tuple[Any, str | None]:

@@ -80,6 +80,8 @@ HANDLED_EVENT_KINDS: dict[str, str] = {
     },
     "watchlist_research_added": "watching",
     "watchlist_auto_disabled": "stopped_watching",
+    # What a watch set to Watch quietly found: told here, never on a card.
+    "watch_found_quietly": "quiet_watch_found",
 }
 
 # The nudge audit summary opens with "[alert N] " so `alerts.review` can count
@@ -427,6 +429,21 @@ def carried_lines(
 
         lines.append(f"- (and {rest} more {on_home_note()})")
     return lines
+
+
+# Handled kinds whose summary carries a watched page's own words.
+_OUTSIDE_HANDLED_KINDS = frozenset({"quiet_watch_found"})
+
+
+def handled_line(h: dict[str, Any]) -> str:
+    """One handled row as a brief's prompt lists it. A quiet watch's find
+    is the page's own words, so it goes in as untrusted content."""
+    summary = str(h.get("summary", ""))[:140]
+    if h.get("kind") in _OUTSIDE_HANDLED_KINDS:
+        from openexecutive.orchestrator.content_trust import wrap_untrusted
+
+        summary = wrap_untrusted(summary, source="watched page")
+    return f"- [{str(h.get('at', ''))[:10]}] {h.get('kind', '')}: {summary}"
 
 
 def handled_since(

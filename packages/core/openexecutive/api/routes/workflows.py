@@ -77,12 +77,13 @@ async def list_workflow_runs(
     """Recent runs across all workflows (or filtered by workflow name) that
     the caller may see (``persistence.run_visible_to``): the team's, and
     their own."""
+    from openexecutive.workflows.run_outcome import shown_title
+
     initialize_runs_db()
-    return {
-        "runs": list_runs(
-            workflow_name=workflow, limit=limit, visible_to=_caller_person_id(request)
-        )
-    }
+    runs = list_runs(workflow_name=workflow, limit=limit, visible_to=_caller_person_id(request))
+    for run in runs:
+        run["title"] = shown_title(str(run.get("title") or ""))
+    return {"runs": runs}
 
 
 def _caller_person_id(request: Request) -> int | None:
@@ -110,7 +111,10 @@ async def get_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
     returning it would re-send the whole run body every few seconds to render
     a progress list that only needs the step ids.
     """
+    from openexecutive.workflows.run_outcome import shown_title
+
     run = _visible_run(run_id, request)
+    run["title"] = shown_title(str(run.get("title") or ""))
     run["resume_progress"] = _resume_progress(run.pop("resume_state_json", None))
     run["rerunnable"] = _rerunnable(run)
     return run

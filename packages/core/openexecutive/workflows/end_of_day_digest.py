@@ -46,6 +46,13 @@ from openexecutive.workflows.base import (
 logger = logging.getLogger(__name__)
 
 
+def _delivered_to_principal() -> bool:
+    """Whether this run goes to the principal alone (the scheduler's
+    delivery to them)."""
+    from openexecutive.workflows.morning_brief import PRINCIPAL_DELIVERY
+
+    return bool(PRINCIPAL_DELIVERY.get())
+
 class EndOfDayDigestInput(BaseModel):
     period_label: str = Field(
         default="",
@@ -241,11 +248,10 @@ def _render_eod_context(
 
     if handled:
         parts.append("ALERTS I HANDLED TODAY (already done — report, don't ask):")
+        from openexecutive.briefing.brief_state import handled_line
+
         for h in handled[:15]:
-            parts.append(
-                f"- [{str(h.get('at', ''))[:10]}] {h.get('kind', '')}: "
-                f"{str(h.get('summary', ''))[:140]}"
-            )
+            parts.append(handled_line(h))
         parts.append("")
 
     from openexecutive.briefing.brief_state import (
@@ -559,6 +565,8 @@ class EndOfDayDigestWorkflow(Workflow):
             # morning brief"), as for the morning brief and the header.
             activity_response = today_route._build_activity(
                 30, since=since, exclude_workflows=today_route.RHYTHM_WORKFLOWS,
+                # The principal's own items only on their own delivery.
+                viewer=today_route.principal_id() if _delivered_to_principal() else None,
             )
             activity = [item.model_dump() for item in activity_response.items]
         except Exception:

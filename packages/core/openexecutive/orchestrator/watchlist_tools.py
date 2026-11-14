@@ -175,10 +175,11 @@ ADD_WATCHLIST_ENTRY_TOOL: dict[str, Any] = {
                 "type": "string",
                 "enum": ["active", "dry_run"],
                 "description": (
-                    "'active' (default) surfaces signals normally. "
-                    "'dry_run' captures + scores but never promotes — use "
-                    "this when adding a new source you want to calibrate "
-                    "before the principal sees the noise."
+                    "'active' (default) tells the person on a card when its "
+                    "trigger is met. 'dry_run' is Watch quietly: never a "
+                    "card; what it finds goes only in their next brief. Use "
+                    "it when they ask to hear about it only in the brief, or "
+                    "quietly."
                 ),
             },
             "notes": {
@@ -253,7 +254,7 @@ TUNE_WATCHLIST_ENTRY_TOOL: dict[str, Any] = {
     "name": "tune_watchlist_entry",
     "description": (
         "Modify an existing watchlist entry. Use to disable a noisy source, "
-        "flip into dry_run mode, change the trigger (its threshold, keywords, "
+        "flip into dry_run mode (Watch quietly: only in the brief, never a card), change the trigger (its threshold, keywords, "
         "or 'only_big': true for big changes only), or set the goal or "
         "person it is for. Pass only the fields you want to change."
     ),
@@ -268,7 +269,7 @@ TUNE_WATCHLIST_ENTRY_TOOL: dict[str, Any] = {
             "mode": {
                 "type": "string",
                 "enum": ["active", "dry_run"],
-                "description": "Switch between active surfacing and dry-run capture.",
+                "description": "'active' tells the person on a card; 'dry_run' (Watch quietly) puts it only in their next brief.",
             },
             "for_goal_id": {
                 "type": ["integer", "null"],
