@@ -228,6 +228,22 @@ logger = logging.getLogger(__name__)
 # correction after it.
 _COLLECTING: ContextVar[bool] = ContextVar("executive_collecting", default=False)
 
+# Bound by ``Executive.chat`` to a list that a round the model refused
+# (stop_reason "refusal") appends to, so the collected reply never sends what
+# the refused round began writing.
+_REFUSED: ContextVar[list[int] | None] = ContextVar("executive_refused", default=None)
+
+# What ``Executive.chat`` answers for a turn the model refused.
+REFUSED_REPLY = "I can't help with that one."
+
+
+def _with_refusal(collected: str, refused_chars: int) -> str:
+    """A collected reply whose last round the model refused: the earlier
+    rounds' text without the refused round's (its last ``refused_chars``),
+    then ``REFUSED_REPLY``."""
+    kept = collected[: max(0, len(collected) - refused_chars)].strip()
+    return f"{kept}\n\n{REFUSED_REPLY}" if kept else REFUSED_REPLY
+
 # The tools that read the speaker's own notes or earlier chats: private rows,
 # withheld from the process log, and checked like a mail read.
 _OWN_RECALL_TOOL_NAMES: frozenset[str] = HISTORY_TOOL_NAMES | CHAT_SEARCH_TOOL_NAMES
@@ -2088,6 +2104,10 @@ class Executive:
             own_words=memory_text,
         )
         turn_calls: list[tuple[str, str]] = []
+        # A refused draft goes to no review or revision: they could rewrite
+        # it into an answer.
+        draft_refused: list[int] = []
+        refusing = _REFUSED.set(draft_refused)
         try:
             async for item in self._stream_agent_loop(
                 system_blocks,
@@ -2114,6 +2134,10 @@ class Executive:
                 else:
                     yield item
         finally:
+            # Closed from another context (a client that went away), the
+            # token can't be reset there; the turn still ends.
+            with contextlib.suppress(ValueError):
+                _REFUSED.reset(refusing)
             outside_content.end_turn(outside_turn)
 
         draft_ms = round((time.monotonic() - t0) * 1000)
@@ -2128,7 +2152,7 @@ class Executive:
         # review — there is nothing to critique. Still emit the remaining
         # phase events so the UI's stepper completes; otherwise it stays
         # frozen on "drafting" until the connection closes.
-        if not draft.strip():
+        if draft_refused or not draft.strip():
             yield {
                 "type": "phase",
                 "phase": "reviewing",
@@ -2139,7 +2163,10 @@ class Executive:
                 "phase": "finalizing",
                 "session_id": session.session_id,
             }
-            fallback = "I was unable to complete the analysis. Please try again."
+            fallback = (
+                REFUSED_REPLY if draft_refused
+                else "I was unable to complete the analysis. Please try again."
+            )
             yield fallback
             session.add_user_message(user_message)
             for added_text in inbox.taken_texts() if inbox is not None else []:
@@ -2683,6 +2710,8 @@ class Executive:
                 extra={"iter_marker": True},
             )
             full_text = ""
+            # The separator streamed before this round's text (_round_separator).
+            round_sep = 0
             tool_uses: list[dict[str, Any]] = []
             response_content: list[dict[str, Any]] = []
 
@@ -2754,6 +2783,7 @@ class Executive:
                             if separator:
                                 yield separator
                                 streamed_tail = separator
+                                round_sep = len(separator)
                         full_text += event.delta.text
                         streamed_tail = (streamed_tail + event.delta.text)[-2:]
                         yield event.delta.text
@@ -2836,6 +2866,20 @@ class Executive:
                 # synced excerpts checked, so what they tried is flagged to
                 # the person (outside_content.settle).
                 await outside_content.settle()
+                if final_msg.stop_reason == "refusal":
+                    # The model refused: no claim check or retry round, and
+                    # a caller collecting the reply learns of it (_REFUSED).
+                    logger.warning("round %d refused by the model", iteration)
+                    refused = _REFUSED.get()
+                    if refused is not None:
+                        # How much of the collected text the refused round
+                        # wrote, its separator included.
+                        refused.append(round_sep + len(full_text))
+                    else:
+                        # A streamed reply (the web chat) ends on a plain
+                        # refusal, not on what the refused round began.
+                        yield ("\n\n" if streamed_tail else "") + REFUSED_REPLY
+                    return
                 # Do what it says: a reply that claims a change no call this
                 # turn made gets one more round to make it or say it can't.
                 if claim_checked or handing_over or iteration >= max_iterations:
@@ -4045,6 +4089,7 @@ class Executive:
         cards: list[int] | None = None,
     ) -> str:
         """Non-streaming chat — collects and returns the full response.
+        A turn the model refused ends on ``REFUSED_REPLY``.
 
         ``cards``, when given, collects the ids of the approval cards the
         reply left (the ``decision_id`` on its ``action_taken`` events, as the
@@ -4113,6 +4158,8 @@ class Executive:
         )
         result = ""
         rewritten, before = False, ""
+        refused: list[int] = []
+        refusing = _REFUSED.set(refused)
         collecting = _COLLECTING.set(True)
         try:
             with turn_files.bind(offered or None) if offered else contextlib.nullcontext():
@@ -4128,9 +4175,15 @@ class Executive:
                             cards.append(decision_id)
         finally:
             _COLLECTING.reset(collecting)
+            _REFUSED.reset(refusing)
         if rewritten:
             # A retry that wrote nothing keeps the first reply.
             result = result.lstrip() or before
+        if refused:
+            # Nothing the refused round began ("You're") is sent. What the
+            # earlier rounds said stays (what their tools did), then a plain
+            # refusal.
+            result = _with_refusal(result, refused[-1])
         # A card named by its number ("card 220") tells the reader nothing:
         # name it by its headline, linked to it on Home (alerts.card_refs).
         # Private cards only when the principal reads it alone.
