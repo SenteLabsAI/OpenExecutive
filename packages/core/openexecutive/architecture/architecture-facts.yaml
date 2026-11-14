@@ -5211,7 +5211,7 @@ scheduler:
     GET /scheduled/{id} give the team's rows and the caller's own
     (api/own_rows.py, the Activity feed's owner rule: a follow-up from one
     person's chat, made by or assigned to them, is theirs alone and 404 by id
-    to anyone else; the list reads past `limit` and trims after). GET
+    to anyone else; the list reads on until the page is full or the rows run out). GET
     /memories/advice follows the same rule by the chat a row came from
     (another person's is 404 to edit or remove), as does the MCP resource
     oe://memory/advice. Decisions stay the whole team's: they are standing

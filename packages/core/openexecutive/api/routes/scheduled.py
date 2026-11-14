@@ -23,8 +23,9 @@ logger = logging.getLogger(__name__)
 
 _VALID_STATUS_FILTERS = {"pending", "running", "done", "failed", "cancelled"}
 _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
-# How many rows a list reads before keeping the caller's (the largest ``limit``).
-_READ_POOL = 1000
+# How many rows a list reads first, before keeping the caller's; it reads
+# more when that doesn't fill the page.
+_FIRST_READ = 200
 
 
 def _signed_in_caller(request: Request) -> str | None:
@@ -115,14 +116,20 @@ def list_scheduled(
     # The team's follow-ups and the caller's own (``api.own_rows``): one a
     # teammate asked for in their own chat is theirs alone.
     reader = own_rows.reader_for(request)
-    # Read past ``limit`` and trim after, so other people's rows ahead of
-    # the caller's can't push theirs off the page.
-    rows = list_scheduled_actions(
-        status=None if status == "all" else status,
-        limit=_READ_POOL,
-        order=order,
-    )
-    return [row for row in rows if reader.sees_action(row)][:limit]
+    # Read past ``limit`` and keep reading until the page is full or the rows
+    # run out, so other people's rows ahead of the caller's can't push theirs
+    # off the page however many there are.
+    pool = max(limit * 4, _FIRST_READ)
+    while True:
+        rows = list_scheduled_actions(
+            status=None if status == "all" else status,
+            limit=pool,
+            order=order,
+        )
+        kept = [row for row in rows if reader.sees_action(row)]
+        if len(kept) >= limit or len(rows) < pool:
+            return kept[:limit]
+        pool *= 4
 
 
 @router.get(

@@ -172,6 +172,24 @@ def test_other_peoples_rows_dont_push_the_callers_off_the_page(team: tuple[Path,
     assert _texts(rows, "intent_text") == {"Chase the launch post"}
 
 
+def test_the_list_reads_on_until_the_page_is_full(
+    team: tuple[Path, int, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db, _owner, _mate = team
+    monkeypatch.setattr("openexecutive.api.routes.scheduled._FIRST_READ", 2)
+    for i in range(9):
+        _follow_up(f"Owner's follow-up {i}", "s-owner", db)
+    episodic.insert_scheduled_action(
+        run_at=(datetime.now(UTC) + timedelta(days=2)).isoformat(),
+        channel="email", channel_ref="ops@example.com", intent_text="Chase the launch post",
+        originating_session_id="s-mate", db_path=db,
+    )
+
+    rows = _client().get("/scheduled?limit=1", headers=_as(MATE)).json()
+
+    assert _texts(rows, "intent_text") == {"Chase the launch post"}
+
+
 def _mcp(name: str, email: str) -> Any:
     async def _go() -> str:
         with patch.object(mcp_server, "_who", return_value=Caller("user", email)):
