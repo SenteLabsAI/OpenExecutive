@@ -415,6 +415,15 @@ def hold_many(
     from openexecutive.orchestrator import department_gate
 
     steps = [dict(i or {}) for i in tool_inputs] or [{}]
+    if not mcp and reason != SEND_SITE:
+        from openexecutive.orchestrator import extensions
+
+        if extensions.card_handler(tool) is not None:
+            # An extension card tool's "_" keys (the page a browser step was
+            # held on) are its own handler's, set only on its SEND_SITE hold:
+            # held anywhere else they came from the model, and the card and
+            # its tap would trust them.
+            steps = [{k: v for k, v in s.items() if not str(k).startswith("_")} for s in steps]
     if mcp and not str(tool or "").strip():
         # Nothing anyone could approve (no tool named).
         return json.dumps({"error": "call_tool needs the tool's name: find it with search_tools first."})

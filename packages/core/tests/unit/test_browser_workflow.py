@@ -12,8 +12,15 @@ import pytest
 
 from openexecutive.browser import relay as browser_relay
 from openexecutive.browser import tools as browser_tools
-from openexecutive.orchestrator import content_scan, extensions, levels, outside_mode
-from openexecutive.workflows import approved_targets, chat_tools
+from openexecutive.orchestrator import (
+    artifact_records,
+    content_scan,
+    extensions,
+    levels,
+    outside_mode,
+)
+from openexecutive.people import store as people_store
+from openexecutive.workflows import chat_tools, dynamic_store
 
 CART = "https://shop.example/cart"
 
@@ -22,11 +29,21 @@ CART = "https://shop.example/cart"
 def fresh(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     browser_relay._reset_for_tests()
     browser_tools._flagged.clear()
-    monkeypatch.setattr(approved_targets, "approver_for", lambda name: 7)
+    # Person 7 created the workflow and started this run.
+    monkeypatch.setattr(dynamic_store, "get_owner", lambda name: 7)
+    monkeypatch.setattr(artifact_records, "turn_owner", lambda: 7)
+    monkeypatch.setattr(people_store, "get_person", lambda pid: _Person(pid))
     monkeypatch.setattr(browser_tools, "_may_send", lambda: levels.is_approved())
     yield
     browser_relay._reset_for_tests()
     browser_tools._flagged.clear()
+
+
+class _Person:
+    def __init__(self, pid: int, *, archived: bool = False, kind: str = "team") -> None:
+        self.id = pid
+        self.archived = archived
+        self.kind = kind
 
 
 def _level(monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
@@ -201,3 +218,33 @@ def test_a_running_browser_step_says_what_it_is_doing(monkeypatch: pytest.Monkey
     assert progress_line("oe__browser_click", {"ref": "e12"}) == "Clicking…"
     # What is typed stays off the card.
     assert progress_line("oe__browser_type", {"ref": "e3", "text": "hunter2"}) == "Typing…"
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["someone_else_started_it", "no_creator", "a_pass_started_it", "inside_someone_elses_workflow", "creator_left"],
+)
+async def test_a_run_that_isnt_the_creators_never_uses_their_browser(
+    monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    _level(monkeypatch, outside_mode.TRUST)
+    owners = {"price_check": 7, "outer": 7}
+    if case == "someone_else_started_it":
+        monkeypatch.setattr(artifact_records, "turn_owner", lambda: 8)
+    elif case == "no_creator":
+        owners["price_check"] = None  # type: ignore[assignment]
+    elif case == "a_pass_started_it":
+        monkeypatch.setattr(chat_tools, "started_by_a_pass", lambda: True)
+    elif case == "inside_someone_elses_workflow":
+        owners["outer"] = 8
+    else:
+        monkeypatch.setattr(people_store, "get_person", lambda pid: _Person(pid, kind="contact"))
+    monkeypatch.setattr(dynamic_store, "get_owner", lambda name: owners.get(name))
+    with (
+        chat_tools.in_workflow("outer", owners["outer"]),
+        chat_tools.in_workflow("price_check", 7),
+        extensions.workflow_step("browser_look"),
+    ):
+        out = json.loads(await browser_tools._handler("browser_look")({}))
+    assert "Only the person who created this workflow" in out["error"]
+    assert await browser_relay.next_step(7, wait=0) is None

@@ -15,6 +15,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from openexecutive.api.routes import browser as browser_route
 from openexecutive.browser import relay as browser_relay
 from openexecutive.browser import tools as browser_tools
 from openexecutive.memory import episodic
@@ -128,6 +129,9 @@ def test_a_new_window_only_when_asked_for() -> None:
         "path": "/apps", "new_window": True,
     }
     assert browser_tools._args("browser_show_page", {"path": "/apps"})[0] == {"path": "/apps"}
+    for walk in ("/x/../api/backend/x", "/./oauth", "/x/..", "/%2e%2e/api", "/x%2Fapi", "/x%5capi"):
+        assert browser_tools._args("browser_show_page", {"path": walk})[0] is None, walk
+    assert browser_tools._args("browser_show_page", {"path": "/knowledge?q=a/../b"})[0] == {"path": "/knowledge?q=a/../b"}
     # Navigating stays in their tab.
     assert browser_tools._args("browser_navigate", {"url": "https://example.com", "new_window": True})[0] == {
         "url": "https://example.com",
@@ -303,6 +307,11 @@ def test_routes_are_for_people_on_the_team_and_their_own_steps(client: TestClien
     assert client.post("/browser/steps/nope", json={"ok": True}).status_code == 404
     assert client.post("/browser/steps/nope", content=b"[1]").status_code == 400
     assert client.post("/browser/steps/nope", content=b"[" * 200_000).status_code == 400
+    # Too big is refused before it is all read, by its stated length or as it streams.
+    big = b" " * (browser_route.MAX_BODY + 1)
+    assert client.post("/browser/steps/nope", content=big).status_code == 413
+    assert client.post("/browser/steps/nope", content=iter([big[:1000], big[1000:]])).status_code == 413
+    assert client.post("/browser/hand-over/nope", content=b" " * 3000).status_code == 413
     hello = client.get("/browser/hello").json()
     assert hello == {"exec_name": hello["exec_name"], "first_name": "Dana", "protocol": 1}
     assert hello["exec_name"]

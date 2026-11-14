@@ -25,7 +25,9 @@ only ever uses the browser of the person it's working for.
   approve its card.
 - A **Stop** bar sits at the top of the page while it works.
 - Saved workflows can use it too, in the browser of the workflow's creator,
-  in the extension's own window.
+  in the extension's own window. Only the creator can save a workflow with a
+  browser step, and it uses their browser only on runs they start or that run
+  on its schedule.
 
 ## Install the extension
 

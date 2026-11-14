@@ -80,9 +80,10 @@ async function render() {
     return;
   }
   $("connect").hidden = false;
-  const name = who.exec_name || "your Executive";
+  // The site's address first: it is the one thing the site can't choose.
+  const name = OE.squeeze(who.exec_name, 40) || "your Executive";
   $("connect-text").textContent =
-    `Let ${name} use this browser? Connect ${origin.replace(/^https:\/\//, "")} only if it's your Open Executive.`;
+    `Connect ${origin.replace(/^https:\/\//, "")}? Do it only if that's your Open Executive. It lets ${name} use this browser.`;
   $("connect-btn").onclick = async () => {
     const now = await origins();
     if (!now.includes(origin)) await chrome.storage.local.set({ origins: [...now, origin] });

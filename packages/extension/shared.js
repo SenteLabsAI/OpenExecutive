@@ -157,7 +157,11 @@
     const ok = p.length <= 512 && p.startsWith("/") && !p.startsWith("//") && !/[\\\s]/.test(p);
     // Pages only: never an API, sign-in or connector address (they download,
     // redirect or reload the tab).
-    return ok && !/^\/(api|oauth|mcp|\.well-known)(\/|\?|#|$)/i.test(p) ? p : "";
+    // No "." or ".." segment (or escaped dots and slashes) that could walk
+    // it out to one of those.
+    const bare = p.split(/[?#]/)[0];
+    const walks = /(^|\/)\.{1,2}(\/|$)|%2e|%2f|%5c/i.test(bare);
+    return ok && !walks && !/^\/(api|oauth|mcp|\.well-known)(\/|\?|#|$)/i.test(p) ? p : "";
   }
 
   /** The Open Executive tab (of this origin) the person is working in: the

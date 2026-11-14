@@ -124,11 +124,12 @@ def sends(defn: Any) -> bool:
 
 
 def as_creator(defn: Any) -> bool:
-    """Whether a workflow definition sends as its creator or reads their mail
-    (``workflow_reads``): only its creator, verified, may save or switch it on."""
-    from openexecutive.delegation.workflow_reads import reads
+    """Whether a workflow definition sends as its creator, reads their mail
+    or uses their browser (``workflow_reads``): only its creator, verified,
+    may save or switch it on."""
+    from openexecutive.delegation.workflow_reads import reads, uses_browser
 
-    return sends(defn) or reads(defn)
+    return sends(defn) or reads(defn) or uses_browser(defn)
 
 
 def _saved_part(defn: Any) -> dict[str, Any]:
@@ -198,11 +199,11 @@ def save_refusal(defn: Any, caller: Any, owner_id: int | None, *, check_tools: b
     if refused == NOT_YOURS:
         return (
             "Only the person who created this workflow can save or switch on a workflow "
-            "that reads their email or sends email as them."
+            "that reads their email, sends email as them or uses their browser."
         )
     if not sends(defn):
         return (
-            "A workflow that reads your email needs signed sign-ins on this server, so "
+            "A workflow that reads your email or uses your browser needs signed sign-ins on this server, so "
             "nobody else can save one in your name."
         )
     return (

@@ -12338,7 +12338,15 @@ browser:
     pauses on it.
   workflows: |
     Every browser tool but browser_show_page is workflow=True (oe__browser_*):
-    only the creator's browser, in the extension's own window, Approvals in
+    only the creator's browser, on a run that is theirs (2026-11-14 review:
+    a teammate could otherwise add browser steps to someone's workflow and
+    use their browser). Like mail reads: only the verified creator saves it
+    (workflow_email.as_creator includes workflow_reads.uses_browser), owns_runs
+    makes API and scheduled runs theirs, and _workflow refuses a run started
+    by someone else, a pass or another person's workflow, or with no creator
+    (no principal stand-in). Model-written _at/_element/_own/_side are dropped
+    by levels.hold_many on any hold but the tool's own SEND_SITE one.
+    In the extension's own window, Approvals in
     the step (extensions.workflow_hold), and extensions.workflow_wait when
     not connected; browser.relay resumes the run when the extension asks.
   customizing: |

@@ -48,6 +48,8 @@ router = APIRouter(prefix="/browser")
 PROTOCOL = 1
 
 MAX_BODY = 400_000
+# {"outcome": "done"} and nothing more.
+MAX_HAND_OVER_BODY = 2_000
 # Done or Stop on a workflow's bar looks for its waiting run this many times.
 WORKFLOW_TRIES = 4
 WORKFLOW_RETRY_S = 1.5
@@ -99,6 +101,20 @@ async def status(request: Request) -> dict[str, Any]:
     }
 
 
+async def _read_capped(request: Request, limit: int) -> bytes:
+    """The request body, refused (413) past ``limit`` bytes before more of it
+    is read: by its Content-Length first, then while it streams in."""
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > limit:
+        raise HTTPException(status_code=413, detail="That answer is too big.")
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw += chunk
+        if len(raw) > limit:
+            raise HTTPException(status_code=413, detail="That answer is too big.")
+    return bytes(raw)
+
+
 @router.get("/starters")
 async def starters(request: Request) -> dict[str, list[str]]:
     from openexecutive.browser import starters as browser_starters
@@ -124,9 +140,7 @@ async def steps(
 async def answer(step_id: str, request: Request) -> dict[str, bool]:
     _on()
     person = _caller(request)
-    raw = await request.body()
-    if len(raw) > MAX_BODY:
-        raise HTTPException(status_code=413, detail="That answer is too big.")
+    raw = await _read_capped(request, MAX_BODY)
     try:
         body = json.loads(raw or b"{}")
     except (ValueError, RecursionError) as exc:
@@ -152,7 +166,7 @@ async def hand_over(handover_id: str, request: Request) -> dict[str, bool]:
     _on()
     person = _caller(request)
     try:
-        body = json.loads((await request.body())[:2000] or b"{}")
+        body = json.loads(await _read_capped(request, MAX_HAND_OVER_BODY) or b"{}")
     except (ValueError, RecursionError) as exc:
         raise HTTPException(status_code=400, detail="Send JSON.") from exc
     outcome = body.get("outcome") if isinstance(body, dict) else None

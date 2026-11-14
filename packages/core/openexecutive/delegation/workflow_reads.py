@@ -57,6 +57,19 @@ TOOLS = frozenset(_CHAT_NAMES)
 _FALL_BACK = " Say in your report that it couldn't be read, and carry on without it."
 
 
+BROWSER_PREFIX = "oe__browser_"
+
+
+def uses_browser(defn: Any) -> bool:
+    """Whether a workflow definition has a step that uses its creator's own
+    browser (``browser.tools``). Like one that reads their mail, only its
+    creator may save it or start a run of it (``owns_runs``)."""
+    return any(
+        str(t).startswith(BROWSER_PREFIX)
+        for step in getattr(defn, "steps", []) for t in (getattr(step, "tools", None) or [])
+    )
+
+
 def reads(defn: Any) -> bool:
     """Whether a workflow definition has a step that reads its creator's mail."""
     return any(TOOLS & set(getattr(step, "tools", None) or []) for step in getattr(defn, "steps", []))
@@ -137,13 +150,13 @@ def run_rules(workflow_name: str) -> tuple[bool, str | None]:
 
 def owns_runs(workflow_name: str) -> int | None:
     """The person a run of ``workflow_name`` must belong to (its creator) when
-    it reads their mail, or None. Never raises: None on a lookup that fails,
+    it reads their mail or uses their browser, or None. Never raises: None on a lookup that fails,
     and the reads then refuse on the run."""
     from openexecutive.workflows.dynamic_store import get_definition, get_owner
 
     try:
         defn = get_definition(workflow_name)
-        return get_owner(workflow_name) if defn is not None and reads(defn) else None
+        return get_owner(workflow_name) if defn is not None and (reads(defn) or uses_browser(defn)) else None
     except Exception:
         logger.warning("workflow reads: couldn't read %r", workflow_name, exc_info=True)
         return None
@@ -158,7 +171,7 @@ def run_refusal(creator_id: int, runner_id: int | None, caller: Any) -> str | No
     from openexecutive.delegation.verified import caller_refusal
     from openexecutive.people.store import get_person
 
-    only_them = "This workflow reads its creator's email, so only they can run it."
+    only_them = "This workflow reads its creator's email or uses their browser, so only they can run it."
     if runner_id != creator_id:
         return only_them
     try:

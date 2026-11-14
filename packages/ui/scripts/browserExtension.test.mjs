@@ -124,6 +124,10 @@ test("only a plain path opens an Open Executive page", () => {
   assert.equal(OE.pagePath("/knowledge?tab=docs"), "/knowledge?tab=docs");
   assert.equal(OE.pagePath(" /today "), "/today");
   assert.equal(OE.pagePath("/apps"), "/apps");
+  for (const walk of ["/x/../api/backend/x", "/./oauth", "/x/..", "/%2e%2e/api", "/x%2fapi", "/x%5capi"]) {
+    assert.equal(OE.pagePath(walk), "", walk);
+  }
+  assert.equal(OE.pagePath("/knowledge?q=a/../b"), "/knowledge?q=a/../b");
   for (const bad of ["/api/account/export", "/oauth/authorize?x=1", "/MCP", "/.well-known/x", "//evil.com", "https://evil.com", "knowledge", "/a b", "/a\\b", "", null, "/" + "x".repeat(600)]) {
     assert.equal(OE.pagePath(bad), "", String(bad));
   }

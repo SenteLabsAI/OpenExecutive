@@ -94,7 +94,13 @@
       const body = await res.json();
       if (typeof body.exec_name !== "string") return { ok: false };
       const protocol = Number.isInteger(body.protocol) ? body.protocol : null;
-      return { ok: true, origin: OE.originOf(location.href), exec_name: body.exec_name, first_name: body.first_name || "", protocol };
+      return {
+        ok: true,
+        origin: OE.originOf(location.href),
+        exec_name: OE.squeeze(body.exec_name, 40),
+        first_name: OE.squeeze(body.first_name || "", 40),
+        protocol,
+      };
     } catch {
       return { ok: false };
     }

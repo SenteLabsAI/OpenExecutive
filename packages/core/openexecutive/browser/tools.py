@@ -391,6 +391,9 @@ def _url_ok(url: Any) -> bool:
 
 # Addresses on the site that aren't pages: they download, redirect or reload.
 _NOT_PAGES = re.compile(r"^/(api|oauth|mcp|\.well-known)(/|\?|#|$)", re.IGNORECASE)
+# A "." or ".." segment, or one spelled with escapes (%2e, %2f, %5c), could
+# walk a page path out to one of those.
+_DOT_SEGMENT = re.compile(r"(^|/)\.{1,2}(/|\?|#|$)|%2e|%2f|%5c", re.IGNORECASE)
 
 
 def _page_path(path: Any) -> tuple[dict[str, Any] | None, str]:
@@ -409,7 +412,7 @@ def _page_path(path: Any) -> tuple[dict[str, Any] | None, str]:
         p += f"#{parts.fragment}" if parts.fragment else ""
     if not p.startswith("/") or p.startswith("//") or "\\" in p or any(c.isspace() for c in p) or len(p) > 512:
         return None, "Give the page's path, like /knowledge."
-    if _NOT_PAGES.match(p):
+    if _NOT_PAGES.match(p) or _DOT_SEGMENT.search(p.split("?", 1)[0].split("#", 1)[0]):
         return None, "That isn't a page. Give a page's path, like /knowledge."
     return {"path": p}, ""
 
@@ -557,14 +560,28 @@ _flagged: dict[tuple[str, int], float] = {}
 
 def _workflow() -> tuple[str, int | None]:
     """The workflow running this step and the person whose browser it uses:
-    its creator (else the principal, ``approved_targets.approver_for``)."""
+    its creator, and only on a run that is theirs (started by them, or by its
+    schedule, which runs it as theirs: ``workflow_reads.owns_runs``), with
+    every workflow in the chain theirs too. Never on a run someone else, an
+    unattended pass or a workflow of someone else's started, and never a
+    stand-in when the creator is unknown: (name, None) then."""
+    from openexecutive.orchestrator.artifact_records import turn_owner
+    from openexecutive.people.store import get_person
     from openexecutive.workflows import chat_tools
-    from openexecutive.workflows.approved_targets import approver_for
+    from openexecutive.workflows.dynamic_store import get_owner
 
     chain, _creator = chat_tools.running()
     if not chain:
         return "", None
-    return chain[-1], approver_for(chain[-1])
+    creator = get_owner(chain[-1])
+    if creator is None or chat_tools.started_by_a_pass() or turn_owner() != creator:
+        return chain[-1], None
+    if any(get_owner(name) != creator for name in chain):
+        return chain[-1], None
+    person = get_person(creator)
+    if person is None or getattr(person, "archived", False) or getattr(person, "kind", "team") != "team":
+        return chain[-1], None
+    return chain[-1], creator
 
 
 def _what(name: str, given: dict[str, Any], result: dict[str, Any] | None = None) -> str:
@@ -747,7 +764,10 @@ def _handler(name: str) -> Any:
 
         workflow, person_id = _workflow()
         if person_id is None:
-            return json.dumps({"error": "This workflow has no one whose browser it can use."})
+            return json.dumps({"error": (
+                "Only the person who created this workflow can have it use their browser, on a run "
+                "that is theirs. Say in your report that the browser step couldn't run."
+            )})
         given = tool_input if isinstance(tool_input, dict) else {}
         if name == "browser_hand_over":
             return await _hand_over_in_workflow(person_id, given)
@@ -768,7 +788,8 @@ def _handler(name: str) -> Any:
                     args["element"] = element[:200]
         waits = _workflow_waits(name, workflow, person_id)
         if waits and name not in ACTS:
-            return extensions.workflow_hold(dict(given), _what(name, given))
+            held = {k: v for k, v in given.items() if not str(k).startswith("_")}
+            return extensions.workflow_hold(held, _what(name, held))
         if waits:
             # Only named, not done: the card says what it would act on.
             args["hold"] = True
