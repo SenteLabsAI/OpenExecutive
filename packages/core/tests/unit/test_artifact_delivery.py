@@ -394,7 +394,7 @@ def test_undeliverable_person_alert_carries_the_link() -> None:
     cid = _artifact(owner_person_id=pid)
     created: list[dict] = []
 
-    async def _fake_alert(payload: dict) -> str:
+    async def _fake_alert(payload: dict, **_kw: object) -> str:
         created.append(payload)
         return json.dumps({"ok": True})
 

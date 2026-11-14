@@ -1800,12 +1800,14 @@ async def _alert_undeliverable_person(
     try:
         from openexecutive.orchestrator.alert_tools import handle_create_alert
 
+        # As written: the card carries the message, not a triage rewrite of
+        # it with other cards' topics added.
         await handle_create_alert({
             "source": "executive",
             "subject": subject,
             "body": text,
             "assigned_to_person_id": person_id,
-        })
+        }, as_written=True)
     except Exception as exc:
         logger.exception("message_person: alert fallback failed")
         return json.dumps({"error": (
