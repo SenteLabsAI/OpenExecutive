@@ -317,6 +317,37 @@ def test_routes_are_for_people_on_the_team_and_their_own_steps(client: TestClien
     assert hello["exec_name"]
 
 
+def test_only_team_members_reach_the_routes_and_only_their_own_steps(client: TestClient) -> None:
+    import asyncio
+
+    dana = people_store.upsert_person(full_name="Dana Lee", email="dana@example.com", is_principal=True)
+    sam = people_store.upsert_person(full_name="Sam Ortiz", email="sam@example.com")
+    contact = people_store.upsert_person(full_name="Pat Vendor", email="pat@vendor.example", kind="contact")
+    gone = people_store.upsert_person(full_name="Lee Former", email="lee@example.com")
+    people_store.archive_person(gone)
+    for outsider in (contact, gone, 999_999):
+        client.who["id"] = outsider  # type: ignore[attr-defined]
+        for path in ("/browser/hello", "/browser/status", "/browser/starters", "/browser/steps?wait=0"):
+            assert client.get(path).status_code == 403, (outsider, path)
+        assert client.post("/browser/steps/x", json={"ok": True}).status_code == 403
+    # A step handed to Sam's browser can be answered only by Sam.
+    loop = asyncio.new_event_loop()
+    try:
+        step = browser_relay._Step(
+            id="sams-step", person_id=sam, action="look", args={}, future=loop.create_future(), taken=True
+        )
+        browser_relay._steps[step.id] = step
+        client.who["id"] = dana  # type: ignore[attr-defined]
+        assert client.post("/browser/steps/sams-step", json={"ok": True}).status_code == 404
+        assert not step.future.done()
+        client.who["id"] = sam  # type: ignore[attr-defined]
+        assert client.post("/browser/steps/sams-step", json={"ok": True}).status_code == 200
+        assert step.future.result()["ok"] is True
+    finally:
+        browser_relay._steps.pop("sams-step", None)
+        loop.close()
+
+
 def test_status_says_whether_stay_connected_is_ticked(client: TestClient) -> None:
     pid = people_store.upsert_person(full_name="Dana Lee", email="dana@example.com", is_principal=True)
     client.who["id"] = pid  # type: ignore[attr-defined]

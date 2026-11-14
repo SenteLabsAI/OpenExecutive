@@ -167,6 +167,10 @@ async def test_balanced_waits_when_the_page_check_fails(monkeypatch: pytest.Monk
     await _call("browser_look", {}, {"ok": True, "url": CART, "text": "Cart"})
     out, step, signals = await _call("browser_navigate", {"url": "https://shop.example/"})
     assert step is None and out["status"] == "waiting_for_approval" and signals[0].kind == "hold"
+    # An expired mark is dropped when the next one is made.
+    browser_tools._flagged[("old run", 8)] = 0.0
+    await _call("browser_look", {}, {"ok": True, "url": CART, "text": "Cart"})
+    assert ("old run", 8) not in browser_tools._flagged
 
 
 async def test_a_workflow_never_opens_open_executive_itself() -> None:

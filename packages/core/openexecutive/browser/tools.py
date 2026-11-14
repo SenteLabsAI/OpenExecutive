@@ -626,7 +626,12 @@ async def _scan_page(workflow: str, person_id: int, out: dict[str, Any]) -> None
         logger.warning("browser workflow: page check failed", exc_info=True)
         holds = True
     if holds:
-        _flagged[(workflow, person_id)] = time.monotonic() + FLAGGED_S
+        now = time.monotonic()
+        # Expired marks go as a new one is made, so this stays as small as
+        # the runs flagged in the last FLAGGED_S.
+        for key in [k for k, until in _flagged.items() if until <= now]:
+            _flagged.pop(key, None)
+        _flagged[(workflow, person_id)] = now + FLAGGED_S
 
 
 def _workflow_waits(name: str, workflow: str, person_id: int) -> bool:
