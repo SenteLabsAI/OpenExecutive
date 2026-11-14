@@ -46,6 +46,10 @@ _OUTCOME_MAX = 500
 EDITED_BODY_MAX = 8000
 
 
+class PlanChanged(Exception):
+    """The card's plan is no longer the one the approver saw."""
+
+
 class AlertApproval(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -91,6 +95,7 @@ def claim(
     *,
     approved_by_person_id: int | None,
     edited_body: str | None = None,
+    expected_plan: str | None = None,
     db_path: Path | None = None,
 ) -> AlertApproval | None:
     """Mark the card approved and record who approved it, in one go.
@@ -98,6 +103,9 @@ def claim(
     Returns the new approval, or None when the card can't be approved now:
     it has left the queue, it is already being carried out, or it was
     carried out. A card whose last approval failed can be approved again.
+    With ``expected_plan`` (the plan the approver saw on the card), raises
+    ``PlanChanged`` instead when a reply changed the plan meanwhile, so
+    Approve never carries out a plan its approver didn't see.
     """
     now = datetime.now(UTC).isoformat()
     with _get_conn(db_path) as conn:
@@ -105,9 +113,13 @@ def claim(
         # BEGIN IMMEDIATE takes the write lock before the reads, so two
         # approvals of the same card can't both pass the checks below.
         conn.execute("BEGIN IMMEDIATE")
-        status_row = conn.execute("SELECT status FROM alerts WHERE id = ?", (alert_id,)).fetchone()
+        status_row = conn.execute(
+            "SELECT status, COALESCE(suggested_action, '') AS plan FROM alerts WHERE id = ?", (alert_id,)
+        ).fetchone()
         if status_row is None:
             return None
+        if expected_plan is not None and status_row["plan"].strip() != expected_plan.strip():
+            raise PlanChanged(alert_id)
         last = conn.execute(
             "SELECT status FROM alert_approvals WHERE alert_id = ? ORDER BY id DESC LIMIT 1",
             (alert_id,),
