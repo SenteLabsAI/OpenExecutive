@@ -243,6 +243,7 @@ def test_the_bar_answers_only_done_or_stop_on_an_open_one(client: TestClient) ->
     assert client.post("/browser/hand-over/nope", json={"outcome": "done"}).status_code == 404
     handover = browser_handover.start(pid, "sign in")
     assert client.post(f"/browser/hand-over/{handover.id}", json={"outcome": "later"}).status_code == 422
+    assert client.post(f"/browser/hand-over/{handover.id}", json={"outcome": []}).status_code == 422
     assert client.post(f"/browser/hand-over/{handover.id}", content=b"[").status_code == 400
     # Someone else's is not theirs to finish.
     other = browser_handover.start(pid + 1, "sign in")

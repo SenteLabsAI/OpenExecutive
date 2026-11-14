@@ -173,7 +173,7 @@ async def hand_over(handover_id: str, request: Request) -> dict[str, bool]:
     except (ValueError, RecursionError) as exc:
         raise HTTPException(status_code=400, detail="Send JSON.") from exc
     outcome = body.get("outcome") if isinstance(body, dict) else None
-    if outcome not in browser_handover.OUTCOMES and outcome != browser_handover.AUTO:
+    if not isinstance(outcome, str) or (outcome not in browser_handover.OUTCOMES and outcome != browser_handover.AUTO):
         raise HTTPException(status_code=422, detail='Say "done" or "stop".')
     open_one = browser_handover.get(handover_id)
     if open_one is None or open_one.person_id != person.id:
