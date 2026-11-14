@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from openexecutive.alerts import dispatcher, preferences, store
 from openexecutive.alerts.models import (
+    PERSONAL_SOURCES,
     AlertChannel,
     AlertEvent,
     TriageDecision,
@@ -185,8 +186,10 @@ async def evaluate_and_dispatch(
             "dedup_key": a.dedup_key,
             "topic_tags": a.topic_tags,
         }
-        # Never anyone's drafted documents: they are their owners' alone.
+        # Never anyone's drafted documents or personal cards: they are their
+        # owners' alone (``models.visible_alert``).
         for a in store.recent_alerts(limit=20, db_path=path, exclude_source="artifact")
+        if a.source not in PERSONAL_SOURCES
     ]
     try:
         initiatives = get_active_initiatives()
