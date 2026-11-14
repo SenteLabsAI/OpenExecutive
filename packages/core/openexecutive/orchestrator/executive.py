@@ -1857,11 +1857,13 @@ class Executive:
             # Executive chose to keep this turn (keep_figure), checked against
             # the reply now that it is written and kept for this person alone
             # (private when the turn touched their mailbox).
-            from openexecutive.memory.worked_out import keep_turn_figures
+            from openexecutive.memory.worked_out import KEEP_TOOL, keep_turn_figures
 
             # Not from a turn the person wrote nothing in (``memory_text=""``,
             # e.g. an app's own ask): its numbers repeat what it was shown.
-            if own_text.strip():
+            # Most turns keep nothing: only a turn that called keep_figure
+            # opens the database.
+            if own_text.strip() and any(name == KEEP_TOOL for name, _ in turn_calls):
                 await asyncio.to_thread(keep_turn_figures, full_response, turn_calls, session=session,
                                         person_id=person_id, private=touched_mail)
 
@@ -2436,9 +2438,9 @@ class Executive:
                 )
 
             # What it worked out — see stream_chat.
-            from openexecutive.memory.worked_out import keep_turn_figures
+            from openexecutive.memory.worked_out import KEEP_TOOL, keep_turn_figures
 
-            if own_text.strip():
+            if own_text.strip() and any(name == KEEP_TOOL for name, _ in turn_calls):
                 await asyncio.to_thread(keep_turn_figures, final_response, turn_calls, session=session,
                                         person_id=person_id, private=touched_mail)
 

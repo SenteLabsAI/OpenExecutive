@@ -316,8 +316,10 @@ def test_both_chat_paths_read_and_keep_figures() -> None:
         assert "build_worked_out_block, person_id, _lookup_text(memory_text, user_message), session=session" in src, (
             method.__name__)
         assert "keep_turn_figures," in src and "private=touched_mail" in src, method.__name__
+        # Only a turn that called keep_figure opens the database.
+        assert "any(name == KEEP_TOOL for name, _ in turn_calls)" in src, method.__name__
         # Nothing from a turn the person wrote nothing in (an app's own ask).
-        assert "if own_text.strip():\n" in src, method.__name__
+        assert "if own_text.strip() and any(" in src, method.__name__
     assert "<worked_out>" in inspect.getsource(executive.Executive._build_messages)
 
 
