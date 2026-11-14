@@ -496,6 +496,49 @@ def search_past_messages(
     return out
 
 
+_RECENT_CHAT_LIMIT = 15
+
+
+def recent_own_chats(
+    caller_person_id: int,
+    *,
+    since: str,
+    exclude_session_id: str | None = None,
+    limit: int = _RECENT_CHAT_LIMIT,
+    db_path: Path = DB_PATH,
+) -> list[dict[str, Any]]:
+    """The caller's own chats with a message since ``since`` (ISO time),
+    newest first, at most ``limit``: ``title``, ``updated_at`` and
+    ``mail_private`` (``mark_mail_private``: its title can quote someone
+    else's mail, so the caller decides whether to show it).
+
+    Scoped like ``search_past_messages`` (chats they own, never one shared
+    with them), without ``exclude_session_id`` (the chat in progress)."""
+    if not db_path.exists():
+        return []
+    with _get_conn(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT s.title, s.updated_at, COALESCE(s.mail_private, 0) AS mail_private
+            FROM sessions s
+            WHERE s.caller_person_id = ? AND s.session_id != ?
+              AND s.updated_at >= ?
+              AND EXISTS (SELECT 1 FROM chat_messages m WHERE m.session_id = s.session_id)
+            ORDER BY s.updated_at DESC
+            LIMIT ?
+            """,
+            (caller_person_id, exclude_session_id or "", since, max(0, int(limit))),
+        ).fetchall()
+    return [
+        {
+            "title": str(row["title"] or ""),
+            "updated_at": str(row["updated_at"] or ""),
+            "mail_private": bool(row["mail_private"]),
+        }
+        for row in rows
+    ]
+
+
 def delete_session(session_id: str, db_path: Path = DB_PATH) -> bool:
     from openexecutive.orchestrator import conversation_files
 

@@ -89,6 +89,7 @@ from openexecutive.orchestrator.chat_search_tools import (
     CHAT_SEARCH_TOOL_HANDLERS,
     CHAT_SEARCH_TOOL_NAMES,
     CHAT_SEARCH_TOOLS,
+    recent_chats_block,
     search_person,
 )
 from openexecutive.orchestrator.content_trust import (
@@ -1430,6 +1431,15 @@ class Executive:
         # (correction_tools.pending_followups_block), so a turn about the
         # thing one waits for closes it instead of leaving it to fire stale.
         # Changes as they are set and sent, so the user turn.
+        # The speaker's own chats from the last two days, titles only
+        # (chat_search_tools.recent_chats_block), so "we did it earlier"
+        # reaches search_past_chats. Only where that tool is offered; per
+        # turn, so the user turn.
+        recent_chats = recent_chats_block(session)
+        if recent_chats:
+            user_content_parts.append(
+                {"type": "text", "text": f"<recent_chats>\n{recent_chats}\n</recent_chats>"}
+            )
         followups = pending_followups_block(session)
         if followups:
             user_content_parts.append(
