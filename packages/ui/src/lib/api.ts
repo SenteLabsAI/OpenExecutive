@@ -7188,6 +7188,8 @@ export interface HeldActionPayload {
   reason: string;
   requestedBy: string;
   details: { field: string; value: string }[];
+  // What Edit may change before Approve (an email's subject and text).
+  fields: LeadCardField[];
 }
 
 export async function getHeldAction(id: number, signal?: AbortSignal): Promise<HeldActionPayload> {
@@ -7204,6 +7206,9 @@ export async function getHeldAction(id: number, signal?: AbortSignal): Promise<H
       field: String(d.field ?? ""),
       value: String(d.value ?? ""),
     })),
+    fields: (Array.isArray(payload.fields) ? payload.fields : []).filter(
+      (f: { field?: unknown; value?: unknown }) => typeof f?.field === "string" && typeof f?.value === "string",
+    ),
   };
 }
 

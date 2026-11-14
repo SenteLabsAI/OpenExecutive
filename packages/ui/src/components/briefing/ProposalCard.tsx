@@ -18,7 +18,7 @@ import { hostOf } from "@/lib/url";
 import CardAsk from "./CardAsk";
 import CardTopRow from "./CardTopRow";
 import HeldActionCard, { isHeldAction } from "./HeldActionCard";
-import LeadTrainingCard, { isLeadTraining } from "./LeadTrainingCard";
+import LeadTrainingCard, { isLeadCard } from "./LeadTrainingCard";
 import { Chip, TONE_TEXT, buildMonitoringSeed, type ContinueHandler } from "./shared";
 
 // A proposal body longer than about half this (chars) is clamped to two
@@ -247,9 +247,9 @@ export default function ProposalCard({
       />
     );
   }
-  // A Take the lead card from training is answered on its own card too:
-  // Approve (with the "on its own next time" tick), Edit and Decline (LeadTrainingCard).
-  if (isLeadTraining(proposal)) {
+  // A Take the lead card is answered on its own card too: Approve (with the
+  // "on its own next time" tick in training), Edit and Decline (LeadTrainingCard).
+  if (isLeadCard(proposal)) {
     return <LeadTrainingCard proposal={proposal} emphasized={emphasized} onResolved={() => onDismiss?.(proposal)} />;
   }
   // A team member's chat send their department held: approved on its own
@@ -457,9 +457,10 @@ export default function ProposalCard({
   const showActions = Boolean(onApprove || onDismiss || onApproveWithEdits);
 
   const status = isMonitoring ? null : proposalStatusChip(proposal);
-  // "private:" tags only route the card; they mean nothing to the reader.
+  // Tags like "private:…", "decision_instance:12" or "meetings:…" only route
+  // or link the card; they mean nothing to the reader. Outside-world tags stay.
   const visibleTags = proposal.topic_tags.filter(
-    (t) => t !== "artifact" && !t.startsWith("failed_run:") && !t.startsWith("private:"),
+    (t) => t !== "artifact" && (!t.includes(":") || t.startsWith("external:")),
   );
   // The top row always shows its age.
   const { reviewLine, lifecycleRow, reviewedFooter } = buildProposalLifecycle(proposal, true);

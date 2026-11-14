@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import UTC, datetime, tzinfo
 from typing import Any
 
 # A served payload keeps a field's value up to this long; longer (a file's
@@ -29,7 +30,14 @@ _HIDDEN = frozenset({
     "content_mime_type", "mime_type", "mimetype", "content_type",
     "thread_id", "message_id", "in_reply_to", "references", "draft_id", "idempotency_key",
     "request_id", "supports_all_drives",
+    # How sure the model was, and whether the owner is invited: not what it does.
+    "confidence", "include_principal",
 })
+# An event's times, shown as one "When" in the company's time zone.
+_STARTS = ("start", "start_time")
+_ENDS = ("end", "end_time")
+# Who a meeting is with, by their People entry.
+_PEOPLE_IDS = frozenset({"attendee_person_ids", "person_ids", "participant_person_ids"})
 _REFS = frozenset({"thread_id", "message_id", "in_reply_to", "references", "draft_id"})
 # Shown only when not the default: an event on another calendar, a file in
 # a shared drive.
@@ -133,6 +141,65 @@ def _drive_link(key: str, value: Any) -> str | None:
     return f"https://drive.google.com/open?id={ident}"
 
 
+def _zone() -> tzinfo:
+    try:
+        from openexecutive.memory.workspace_settings import get_user_timezone
+
+        return get_user_timezone()
+    except Exception:
+        return UTC
+
+
+def _moment(value: Any, zone: tzinfo) -> datetime | None:
+    if not isinstance(value, str) or "T" not in value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    # A time with no offset is already the company's local time.
+    return dt.astimezone(zone) if dt.tzinfo is not None else dt
+
+
+def _clock(dt: datetime) -> str:
+    return f"{dt.hour % 12 or 12}:{dt.minute:02d}"
+
+
+def when(start: Any, end: Any = None, zone: tzinfo | None = None) -> str | None:
+    """``Tue Nov 18, 11:00 to 11:30 AM`` in the company's time zone, or
+    None when ``start`` isn't a date and time."""
+    zone = zone or _zone()
+    first = _moment(start, zone)
+    if first is None:
+        return None
+    day = f"{first:%a} {first:%b} {first.day}"
+    last = _moment(end, zone)
+    if last is None or last <= first:
+        return f"{day}, {_clock(first)} {first:%p}"
+    if last.date() != first.date():
+        return f"{day}, {_clock(first)} {first:%p} to {last:%a} {last:%b} {last.day}, {_clock(last)} {last:%p}"
+    if f"{first:%p}" == f"{last:%p}":
+        return f"{day}, {_clock(first)} to {_clock(last)} {last:%p}"
+    return f"{day}, {_clock(first)} {first:%p} to {_clock(last)} {last:%p}"
+
+
+def _names(value: Any) -> str | None:
+    """The People names for a list of person ids, or None."""
+    ids = value if isinstance(value, list) else [value]
+    try:
+        from openexecutive.people import registry
+
+        names = []
+        for raw in ids:
+            person = registry.get_person(int(raw), include_contacts=True)
+            if person is None:
+                return None
+            names.append(person.full_name or person.email or "someone")
+    except Exception:
+        return None
+    return ", ".join(names) if names else None
+
+
 def plain(tool: str, tool_input: Any) -> list[dict[str, str]]:
     """Each field of the call worth showing, as ``{"field", "value"}`` in
     plain words: never a file's bytes, an internal name or the plumbing."""
@@ -142,9 +209,23 @@ def plain(tool: str, tool_input: Any) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
     refs: list[dict[str, str]] = []
     seen: set[str] = set()
+    start_key = next((k for k in _STARTS if k in tool_input), None)
+    end_key = next((k for k in _ENDS if k in tool_input), None)
+    shown_when = when(tool_input.get(start_key), tool_input.get(end_key)) if start_key else None
     for key, value in tool_input.items():
         key = str(key)
         norm = key.strip().lower()
+        if shown_when is not None and norm in (start_key, end_key):
+            if norm == start_key:
+                out.append({"field": "When", "value": shown_when})
+                seen.add("When")
+            continue
+        if norm in _PEOPLE_IDS and value not in (None, "", [], {}):
+            names = _names(value)
+            if names is not None:
+                out.append({"field": "With", "value": names})
+                seen.add("With")
+                continue
         if norm in _REFS and value not in (None, "", [], {}):
             refs.append({"field": _label(key), "value": _text(value)})
             continue

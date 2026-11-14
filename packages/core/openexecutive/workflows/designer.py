@@ -330,7 +330,7 @@ def build_context_block(*, as_me: bool = False, user_email: str = "") -> str:
         "People on the roster (the only valid person_id values):\n"
         + ("\n".join(roster) if roster else "- (nobody yet — no approval gates or schedules)")
         + "\n\n"
-        f"The user's timezone: {get_user_timezone().key}. Cadences are in UTC.\n\n"
+        f"The user's timezone: {get_user_timezone().key}. Cadences are in that timezone.\n\n"
         "Sections:\n" + "\n".join(sections) + "\n\n"
         f"External tool gateway (email, sheets, files, etc.): {gateway}.\n"
         "Built-in tools (always available; the oe__ tools are the same tools "

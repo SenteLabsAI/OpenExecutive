@@ -820,6 +820,55 @@ def _mail_label(tool: str, tool_input: dict[str, Any], *, recipient: bool) -> st
     return f"Email {len(found)} people" if found else "Send an email"
 
 
+# Endings a word's other forms differ by, longest first: a Words rule on
+# "acquisition" also catches "acquiring", "acquired" and "acquisitions".
+_WORD_ENDINGS: tuple[str, ...] = (
+    "isations", "izations", "isation", "ization", "itions", "ations", "ition", "ation",
+    "ments", "ment", "ings", "ing", "ions", "ion", "ers", "er", "ies", "ied", "ed",
+    "es", "s", "e", "y",
+)
+_WORD_RE = re.compile(r"[a-z0-9]+(?:['’][a-z]+)?")
+
+
+def _stem(word: str) -> str:
+    """A word without its ending, kept to at least three letters."""
+    for ending in _WORD_ENDINGS:
+        if word.endswith(ending) and len(word) - len(ending) >= 3:
+            return word[: -len(ending)]
+    return word
+
+
+def _same_word(rule_word: str, word: str) -> bool:
+    """Whether ``word`` is a form of ``rule_word``: the same word, or the same
+    stem give or take its last letter ("acquis" / "acquir"). A stem under
+    five letters must match exactly, so "hire" never catches "his"."""
+    if rule_word == word:
+        return True
+    a, b = _stem(rule_word), _stem(word)
+    if a == b:
+        return True
+    short = min(len(a), len(b))
+    if short < 5:
+        return False
+    return a[: short - 1] == b[: short - 1] and abs(len(a) - len(b)) <= 2
+
+
+def words_match(value: str, lowered: str) -> bool:
+    """Whether a Words rule's ``value`` is in ``lowered`` text, in any form of
+    its words: each word of the rule, in order, next to each other."""
+    wanted = _WORD_RE.findall(value.lower())
+    if not wanted:
+        return False
+    if value.lower() in lowered:
+        return True
+    words = _WORD_RE.findall(lowered)
+    n = len(wanted)
+    return any(
+        all(_same_word(w, words[i + j]) for j, w in enumerate(wanted))
+        for i in range(len(words) - n + 1)
+    )
+
+
 def _rule_hit(rules: list[Rule], text: str, recipients: list[str]) -> Hit | None:
     """The first Waits rule that ``text`` / ``recipients`` match."""
     lowered = text.lower()
@@ -836,7 +885,7 @@ def _rule_hit(rules: list[Rule], text: str, recipients: list[str]) -> Hit | None
             if any(r.endswith("@" + value) or r.endswith("." + value) for r in recipients):
                 return Hit("rule", f"your rule about {value} says to wait", rule.id)
         elif rule.kind == RULE_WORDS:
-            if value.lower() in lowered:
+            if words_match(value, lowered):
                 return Hit("rule", f'your rule about "{value}" says to wait', rule.id)
         elif rule.kind == RULE_AMOUNT:
             limit = _number(value) or 0
@@ -1122,9 +1171,13 @@ _EDITABLE: dict[str, tuple[tuple[str, str, bool], ...]] = {
     "create_instant_meeting": (("title", "Title", False), ("description", "Description", True)),
     "assign_open_loop": (("task", "Task", True), ("due_date", "Due", False)),
 }
+# A connected app's email: its subject and text, never who it goes to.
+_MCP_EDITABLE: dict[str, tuple[tuple[str, str, bool], ...]] = {
+    "google_workspace__send_gmail_message": (("subject", "Subject", False), ("body", "Message", True)),
+}
 EDIT_MAX = 4000
 # The edited fields kept as an example of how it's wanted: the wording.
-_STYLE_FIELDS = frozenset({"text", "title", "description", "task"})
+_STYLE_FIELDS = frozenset({"text", "title", "description", "task", "body", "subject"})
 
 
 class EditError(ValueError):
@@ -1134,7 +1187,11 @@ class EditError(ValueError):
 def editable_fields(tool: str, tool_input: dict[str, Any], *, mcp: bool = False) -> list[dict[str, Any]]:
     """The fields a person may change on this action's card, with their values."""
     if mcp:
-        return []
+        return [
+            {"field": f, "label": label, "long": long, "value": tool_input[f]}
+            for f, label, long in _MCP_EDITABLE.get(tool, ())
+            if isinstance(tool_input.get(f), str)
+        ]
     return [
         {"field": f, "label": label, "long": long, "value": str(tool_input.get(f) or "")}
         for f, label, long in _EDITABLE.get(tool, ())
@@ -2330,12 +2387,45 @@ def _asked_hit(name: str, tool_input: dict[str, Any], *, mcp: bool) -> Hit | Non
         return Hit("rule", "its rules couldn't be read")
 
 
+_LEVEL_WORDS = {"ask": "Careful", "outsiders": "Balanced", "trust": "Hands-off"}
+
+
+def went_on_its_own_why(level: str) -> str:
+    """Why a step someone asked for went without a yes, for Done for you."""
+    shown = _LEVEL_WORDS.get(level)
+    return (f"Approvals is {shown} and no rule of yours said to wait" if shown
+            else "No rule of yours said to wait")
+
+
+def _went_on_its_own(name: str, tool_input: dict[str, Any], result: Any, *, mcp: bool) -> None:
+    """Log a step someone asked for (a contact's mail, a teammate) that went
+    without a yes, so Done for you and the counts show it. Best effort."""
+    try:
+        text = result if isinstance(result, str) else json.dumps(result) if isinstance(result, dict) else str(result)
+        if result_failed(text):
+            return
+        from openexecutive.orchestrator import levels
+        from openexecutive.orchestrator.schedule_tools import current_session
+
+        session = current_session.get()
+        why = went_on_its_own_why(levels.turn_level(session))
+        sender = str(getattr(session, "email_from", "") or "").strip()
+        asked = f"Answering {(_names_of([sender.lower()]) or [sender])[0]}'s email. " if sender else ""
+        record(scope=SCOPE_EXECUTIVE, source="chat", tool=name, summary=summarize(name, tool_input, mcp=mcp, quote=False),
+               status="done", why=f"{asked}Went on its own: {why}.", mail=mail_sent(name, tool_input) if mcp else None,
+               outcome=outcome_of(name, tool_input, text, mcp=mcp), to_person_id=_message_target(name, tool_input))
+    except Exception:
+        logger.warning("take_the_lead: couldn't log a step that went on its own", exc_info=True)
+
+
 async def _asked(name: str, inner: _Handler, tool_input: dict[str, Any], *, mcp: bool) -> Any:
     if (not mcp and _only_to_principal(name, tool_input)) or (mcp and _mail_only_to_principal(name, tool_input)):
         return await inner(tool_input)
     hit = _asked_hit(name, tool_input, mcp=mcp)
     if hit is None:
-        return await inner(tool_input)
+        result = await inner(tool_input)
+        _went_on_its_own(name, tool_input, result, mcp=mcp)
+        return result
     if mcp and not str(name or "").strip():
         return json.dumps({"error": "call_tool needs the tool's name: find it with search_tools first."})
     missing = [] if mcp else missing_args(name, tool_input)

@@ -323,6 +323,10 @@ def begin_turn(
     state.mode = outside_mode.for_turn(session)
     if getattr(session, "sender_off_team", False) is True:
         state.sources.add(SENDER)
+        if getattr(session, "sender_gave_orders", False) is True:
+            # The mail being answered tries to give orders: flagged as a read
+            # the check flagged would be, so Balanced holds its replies too.
+            _flag(state, SENDER, ("ignore_rules",))
     # A file or a synced page carries whoever wrote it, not the speaker: it is
     # checked like any other read (``mark_pending``), so Careful holds the
     # turn at once and Balanced once the check flags it.
@@ -562,6 +566,7 @@ _SOURCE_WORDS: dict[str, str] = {
     SYNCED: "A synced document",
     APP: "Something I read in a connected app",
     MAIL: "An email I read",
+    SENDER: "The email I'm answering",
 }
 
 # Put before a read's result under Hands-off when the check couldn't read it:

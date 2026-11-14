@@ -95,11 +95,6 @@ _OFF_THE_PAGE: frozenset[str] = frozenset({"executive_reflection", "executive_re
 # Daily write-ups that pile up: one closed group at the bottom of the page.
 _BRIEFS: frozenset[str] = frozenset({"morning_brief", "end_of_day_digest"})
 _BRIEFS_LABEL = "Briefs and wrap-ups"
-# What a run's title says about how it started (workflows/, research_tools,
-# workflow_run_tools, onboarding).
-_HOW_IT_STARTED: tuple[str, ...] = (
-    "(periodic)", "(post-onboarding auto-fire)", "(chat-tool fire)",
-)
 _CHATS_LABEL = "From chats"
 
 # Chars of body shown as a card preview. Unrelated to _DEFAULT_LIMIT despite
@@ -414,14 +409,10 @@ def _title(rec: ArtifactRecord) -> str:
     """A run's title without the note on how it started."""
     if rec.kind != "workflow":
         return rec.title
-    # The note on how a run started that the code appends to its name. Only
-    # these: "Report (Q1)" keeps its "(Q1)".
-    title = rec.title.rstrip()
-    for note in _HOW_IT_STARTED:
-        if title.endswith(note):
-            title = title[: -len(note)].rstrip()
-            break
-    return title or rec.title
+    # Only the note on how it started: "Report (Q1)" keeps its "(Q1)".
+    from openexecutive.workflows.run_outcome import shown_title
+
+    return shown_title(rec.title.rstrip()) or rec.title
 
 
 def _summary(

@@ -188,6 +188,56 @@ def test_chat_saves_tool_workflow_switched_off(scheduled: list[str]) -> None:
     assert scheduled == []
 
 
+def test_a_tool_workflow_the_person_asked_for_saves_switched_on(
+    scheduled: list[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Their own ask in chat is the yes: no review card, no second switch."""
+    monkeypatch.setattr(wat, "_person_asked", lambda: True)
+    d = _with_cadence(_action_definition())
+    assert "requires_review" not in _draft(d)
+    out = _save(d, wat._canonical_token(d))
+    assert out["status"] == "saved", out
+    stored = dynamic_store.get_definition("weekly_watch")
+    assert stored is not None and stored.is_active is True
+    assert scheduled == ["weekly_watch"]
+
+
+def test_who_asked_fails_closed_without_a_person() -> None:
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    token = current_session.set(None)
+    try:
+        assert wat._person_asked() is False
+    finally:
+        current_session.reset(token)
+
+
+def test_who_asked_fails_closed_after_any_outside_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A page read this turn can be the one asking, flagged or not."""
+    from types import SimpleNamespace
+
+    from openexecutive.memory import history_chat
+    from openexecutive.orchestrator import outside_content
+    from openexecutive.orchestrator.schedule_tools import current_session
+    from openexecutive.people import store as people_store
+
+    monkeypatch.setattr(wat, "_session_caller_id", lambda: 7)
+    monkeypatch.setattr(people_store, "get_person", lambda _pid: SimpleNamespace(kind="team"))
+    monkeypatch.setattr(history_chat, "verified_speaker", lambda *_a: True)
+    token = current_session.set(SimpleNamespace())  # type: ignore[arg-type]
+    try:
+        for state, asked in (
+            (None, True),
+            (outside_content.TurnOutside(), True),
+            (outside_content.TurnOutside(sources={"web"}), False),
+            (outside_content.TurnOutside(pending=[("web", "text")]), False),
+        ):
+            monkeypatch.setattr(outside_content, "current", lambda s=state: s)
+            assert wat._person_asked() is asked
+    finally:
+        current_session.reset(token)
+
+
 def test_under_hands_off_a_tool_workflow_saves_switched_on(
     scheduled: list[str], monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -71,7 +71,7 @@ def test_designer_context_names_the_workspace_zone(monkeypatch: pytest.MonkeyPat
         "openexecutive.workflows.dynamic_store.list_definitions", lambda active_only=True: []
     )
     _set_zone("America/Halifax")
-    assert "The user's timezone: America/Halifax. Cadences are in UTC." in (
+    assert "The user's timezone: America/Halifax. Cadences are in that timezone." in (
         designer.build_context_block()
     )
 
@@ -146,3 +146,63 @@ def test_existing_utc_row_follows_the_user_zone(tmp_path: Path) -> None:
     assert _in_quiet_hours(loaded, now=_NOW)
     _set_zone("America/New_York")
     assert not _in_quiet_hours(loaded, now=_NOW)
+
+
+def test_a_workflow_schedule_runs_on_the_companys_clock_all_year(monkeypatch: pytest.MonkeyPatch) -> None:
+    """"Every Monday at 9am" is 9 AM in the company's zone, winter and
+    summer alike, never 9 AM UTC."""
+    from openexecutive.workflows import dynamic_cadence
+    from openexecutive.workflows.dynamic_models import DynamicWorkflowDef
+
+    _set_zone("America/New_York")
+    queued: list[str] = []
+    monkeypatch.setattr(
+        "openexecutive.memory.episodic.insert_scheduled_action",
+        lambda **kw: queued.append(kw["run_at"]) or 1,
+    )
+    defn = DynamicWorkflowDef.model_construct(name="w", title="W", cadence="weekly@mon@09:00", cadence_person_id=1)
+    dynamic_cadence.schedule_dynamic_workflow_cadence(defn, after=datetime(2026, 11, 13, 12, tzinfo=UTC))
+    dynamic_cadence.schedule_dynamic_workflow_cadence(defn, after=datetime(2026, 7, 1, 12, tzinfo=UTC))
+    assert queued == ["2026-11-16T14:00:00+00:00", "2026-07-06T13:00:00+00:00"]
+
+
+def test_a_cadence_saved_in_utc_moves_to_the_companys_clock_once(tmp_path) -> None:
+    """Cadences saved while they were UTC keep their moment: 14:00 UTC on a
+    November Monday becomes 9 AM New York, once per database."""
+    import json
+
+    from openexecutive.memory.episodic import _get_conn
+    from openexecutive.workflows import dynamic_cadence, dynamic_store
+
+    _set_zone("America/New_York")
+    nov = datetime(2026, 11, 13, 12, tzinfo=UTC)
+    assert dynamic_cadence.from_utc("weekly@mon@14:00", dynamic_cadence._zone(), nov) == "weekly@mon@09:00"
+    assert dynamic_cadence.from_utc("weekly@tue@02:00", dynamic_cadence._zone(), nov) == "weekly@mon@21:00"
+    assert dynamic_cadence.from_utc("daily@13:30", dynamic_cadence._zone(), nov) == "daily@08:30"
+    assert dynamic_cadence.from_utc("quarterly@15-14:00", dynamic_cadence._zone(), nov) == "quarterly@15-09:00"
+    assert dynamic_cadence.from_utc("quarterly@01-02:00", dynamic_cadence._zone(), nov) == "quarterly@01-21:00"
+    assert dynamic_cadence.from_utc("whenever", dynamic_cadence._zone(), nov) == "whenever"
+
+    db = tmp_path / "episodic.db"
+    body = {
+        "name": "w", "title": "W", "cadence": "daily@14:00", "cadence_person_id": 1,
+        "steps": [
+            {"kind": "specialist", "id": "r", "title": "R", "specialist": "cso", "goal": "Go."},
+            {"kind": "synthesis", "id": "a", "title": "A"},
+        ],
+    }
+    with _get_conn(db) as conn:
+        conn.execute(
+            "CREATE TABLE dynamic_workflows (name TEXT PRIMARY KEY, definition TEXT NOT NULL, "
+            "is_active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO dynamic_workflows VALUES ('w', ?, 1, 'then', 'then')", (json.dumps(body),)
+        )
+    dynamic_store.initialize_dynamic_workflows_db(db)
+    moved = dynamic_store.get_definition("w", db_path=db)
+    assert moved is not None and moved.cadence in ("daily@09:00", "daily@10:00")  # EST, or EDT in summer
+    assert moved.updated_at == "then"
+    dynamic_store.initialize_dynamic_workflows_db(db)
+    again = dynamic_store.get_definition("w", db_path=db)
+    assert again is not None and again.cadence == moved.cadence

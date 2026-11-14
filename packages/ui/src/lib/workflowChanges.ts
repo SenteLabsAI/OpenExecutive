@@ -13,97 +13,49 @@ const DAYS: Record<string, string> = {
   sun: "Sunday",
 };
 
-/** Plain-words rendering of the cadence DSL (daily@HH:MM, weekly@DOW@HH:MM, quarterly@DD-HH:MM). */
+/** Plain-words rendering of the cadence DSL (daily@HH:MM, weekly@DOW@HH:MM,
+ * quarterly@DD-HH:MM), in the company's time zone, as it was saved. */
 export function describeCadence(cadence: string | null | undefined): string {
   if (!cadence) return "Only when you run it";
   const parts = cadence.split("@");
-  if (parts[0] === "daily" && parts[1]) return `Every day at ${parts[1]} UTC`;
+  if (parts[0] === "daily" && parts[1]) return `Every day at ${clock(parts[1]) ?? parts[1]}`;
   if (parts[0] === "weekly" && parts[1] && parts[2]) {
     const day = DAYS[parts[1].toLowerCase()] ?? parts[1];
-    return `Every ${day} at ${parts[2]} UTC`;
+    return `Every ${day} at ${clock(parts[2]) ?? parts[2]}`;
   }
   if (parts[0] === "quarterly" && parts[1]) {
     const [dd, time] = parts[1].split("-");
-    return `Quarterly on day ${Number(dd)} at ${time} UTC`;
+    return `Quarterly on day ${Number(dd)} at ${clock(time ?? "") ?? time}`;
   }
   return cadence;
 }
 
-const DOW = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
-const HHMM = /^(\d{1,2}):(\d{2})$/;
-
-/** [hour, minute] of a valid "HH:MM", else null (25:00 must not roll over). */
-function hhmm(s: string): [number, number] | null {
-  const m = HHMM.exec(s);
+/** "9:00 AM" for a valid "HH:MM" (24-hour), else null. */
+function clock(s: string): string | null {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(s);
   if (!m) return null;
   const h = Number(m[1]);
   const min = Number(m[2]);
-  return h <= 23 && min <= 59 ? [h, min] : null;
-}
-
-function localTime(d: Date, timeZone?: string): string {
-  return d.toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    timeZone,
-    timeZoneName: "short",
-  });
+  if (h > 23 || min > 59) return null;
+  return `${h % 12 || 12}:${m[2]} ${h < 12 ? "AM" : "PM"}`;
 }
 
 /**
- * The cadence in the viewer's own time: "Mondays at 9:00 AM EST". A saved
- * cadence is UTC, and a weekly one can land on another day locally, so the
- * day comes from the converted time. The conversion is anchored on the next
- * run from `now`, so the offset is the one in force when it fires (summer
- * time included). `timeZone` and `now` are for tests; the page uses the
- * browser's zone and the current time. Anything it can't read falls back to
- * `describeCadence`.
+ * The cadence as the company's clock says it: "Mondays at 9:00 AM". A saved
+ * cadence is already in the company's time zone, so it reads as written;
+ * `timeZone` and `now` are kept for callers and ignored. Anything else falls
+ * back to `describeCadence`.
  */
 export function describeCadenceLocal(
   cadence: string | null | undefined,
-  timeZone?: string,
-  now: Date = new Date(),
+  _timeZone?: string,
+  _now?: Date,
 ): string {
-  const raw = (cadence ?? "").trim();
-  const parts = raw.split("@");
-  const y = now.getUTCFullYear();
-  const mo = now.getUTCMonth();
-  const dd = now.getUTCDate();
-  if (parts[0] === "daily" && parts.length === 2) {
-    const t = hhmm(parts[1]);
-    if (t) {
-      const d = new Date(Date.UTC(y, mo, dd, t[0], t[1]));
-      return `Every day at ${localTime(d, timeZone)}`;
-    }
-  }
+  const parts = (cadence ?? "").trim().split("@");
   if (parts[0] === "weekly" && parts.length === 3) {
-    const t = hhmm(parts[2]);
-    const dow = DOW.indexOf(parts[1].toLowerCase());
-    if (t && dow >= 0) {
-      const ahead = (dow - now.getUTCDay() + 7) % 7;
-      const d = new Date(Date.UTC(y, mo, dd + ahead, t[0], t[1]));
-      const day = d.toLocaleDateString("en-US", { weekday: "long", timeZone });
-      return `${day}s at ${localTime(d, timeZone)}`;
-    }
-  }
-  if (parts[0] === "quarterly" && parts.length === 2) {
-    const m = /^(\d{1,2})-(\d{1,2}:\d{2})$/.exec(parts[1]);
-    const t = m && hhmm(m[2]);
-    const day = m ? Number(m[1]) : 0;
-    if (m && t && day >= 1 && day <= 31) {
-      // The next quarter month (Jan, Apr, Jul, Oct) that has that day, so
-      // the 31st never rolls into the month after, and not one already past.
-      for (let k = 0; k < 15; k++) {
-        const month = mo + k;
-        if (month % 3 !== 0) continue;
-        const d = new Date(Date.UTC(y, month, day, t[0], t[1]));
-        if (d.getUTCDate() !== day || d < now) continue;
-        // The local day can differ from the UTC one (the 1st at 02:00 UTC is
-        // the evening before in New York), so read it from the converted date.
-        const localDay = d.toLocaleDateString("en-US", { day: "numeric", timeZone });
-        return `Quarterly on day ${localDay} at ${localTime(d, timeZone)}`;
-      }
-    }
+    const t = clock(parts[2]);
+    const day = DAYS[parts[1].toLowerCase()];
+    if (t && day) return `${day}s at ${t}`;
   }
   return describeCadence(cadence);
 }
@@ -113,7 +65,7 @@ export interface ChangeLabels {
   person: (id: number | null | undefined) => string;
   specialist: (key: string | undefined) => string;
   tool: (name: string) => string;
-  /** How to say a schedule; UTC text when not given. */
+  /** How to say a schedule; `describeCadence` when not given. */
   cadence?: (cadence: string | null | undefined) => string;
 }
 
