@@ -26,6 +26,19 @@ def _isolate_audit_and_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("BACKEND_SHARED_SECRET", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _roster(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The list and the cancel read whose a row is from the roster: keep that
+    # read on the test's own file (the one every test here initializes).
+    from openexecutive.people import registry as people_registry
+    from openexecutive.people import store as people_store
+
+    db_path = tmp_path / "episodic.db"
+    monkeypatch.setattr(people_store, "DB_PATH", db_path)
+    people_store.initialize_db(db_path)
+    people_registry.invalidate()
+
+
 @pytest.fixture()
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     db_path = tmp_path / "episodic.db"

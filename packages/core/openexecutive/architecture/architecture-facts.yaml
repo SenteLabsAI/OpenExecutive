@@ -5128,7 +5128,9 @@ scheduler:
     cancels a `pending` row (409 otherwise; the UPDATE is itself guarded
     on status='pending', so a row the scheduler claimed in between is
     never overwritten). Like pause it only stops
-    work, so any signed-in user may: `require_cancel_permission` accepts
+    work, so any signed-in user may for the team's rows and their own
+    (`scheduled._may_cancel`: the principal for
+    anyone's; another person's reads as 404): `require_cancel_permission` accepts
     a matching X-Admin-Token (SCHEDULED_ADMIN_TOKEN, scripts), a signed-in
     user through the UI proxy — `x-caller-email` trusted only when the
     request also carries the BACKEND_SHARED_SECRET `x-api-key` — or a
@@ -5205,7 +5207,15 @@ scheduler:
     GET /scheduled?status=…&limit=…&order=asc|desc — list scheduled actions by
     status; `order` flips the run_at sort (asc default = soonest-first for the
     upcoming queue; desc = most-recent-first so a terminal-status history view
-    surfaces recent rows rather than the oldest within `limit`). DELETE
+    surfaces recent rows rather than the oldest within `limit`). The list and
+    GET /scheduled/{id} give the team's rows and the caller's own
+    (api/own_rows.py, the Activity feed's owner rule: a follow-up from one
+    person's chat, made by or assigned to them, is theirs alone and 404 by id
+    to anyone else; the list reads on until the page is full or the rows run out). GET
+    /memories/advice follows the same rule by the chat a row came from
+    (another person's is 404 to edit or remove), as does the MCP resource
+    oe://memory/advice. Decisions stay the whole team's: they are standing
+    facts every conversation reads. DELETE
     /scheduled/{id} cancels a pending action. The Memory page's Cadence section
     uses this: one status filter (pending/done/failed/cancelled/all) governs all
     rhythm groups, fetching asc for pending and desc for terminal statuses.
@@ -7713,7 +7723,10 @@ workflows:
       updater's result (a page, an echoed title, a shared doc's links or a
       stranger in ccRecipients could plant one). Approvals are cleared when
       the workflow's action-tool set changes (dynamic_store upsert /
-      save_if_unchanged), so a newly added tool never inherits them. Carried across pauses in
+      save_if_unchanged), so a newly added tool never inherits them, and
+      when someone other than the approver or the principal changes the steps
+      from the builder, the designer, chat or a change card (approved_targets.kept_on_edit_by →
+      keep_approvals=False), so the next run asks the approver again. Carried across pauses in
       WorkflowResumeState.run_created (both gate and held-writes pauses).
       Values in the workflow's own text are NOT trusted (anyone who can PUT
       the workflow could change them without review) — asked once.
@@ -11679,7 +11692,7 @@ delegation:
     scheduler-tick hook
     (runner._maybe_scan_inbox → inbox.maybe_scan, after the pause, profile
     and rotation gates), not a scheduled_actions row (those are on
-    /scheduled for everyone and anyone may cancel them): every
+    /scheduled for the team and its owner): every
     DELEGATION_INBOX_POLL_MINUTES (default 5) per person, one scan task at a
     time and one scan per person (inbox._SCANNING), never while a client
     slot is active; POST /delegation/inbox/check runs the same scan. A scan

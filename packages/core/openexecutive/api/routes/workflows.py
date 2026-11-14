@@ -338,6 +338,20 @@ def _refuse_unless_creator(
         raise HTTPException(status_code=403, detail=refused)
 
 
+def _keeps_approvals(name: str, request: Request) -> bool:
+    """Whether the caller's edit keeps the workflow's approved targets
+    (``approved_targets.kept_on_edit_by``): theirs to approve, or not."""
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+    from openexecutive.workflows.approved_targets import kept_on_edit_by
+
+    try:
+        editor = _resolve_caller_person_id(request)
+    except Exception:
+        logger.exception("workflows: caller lookup failed, approvals not kept")
+        editor = None
+    return kept_on_edit_by(name, editor)
+
+
 @router.get("/workflows/custom")
 async def list_custom_workflows() -> dict[str, Any]:
     """All dynamic definitions (active and inactive) for the builder UI."""
@@ -397,7 +411,7 @@ async def update_custom_workflow(name: str, request: Request) -> dict[str, Any]:
     current = get_definition(name)
     if current is not None:
         _refuse_unless_creator(current, request, owner, stored=True)
-    stored = upsert_definition(defn)
+    stored = upsert_definition(defn, keep_approvals=_keeps_approvals(name, request))
     _sync_cadence(stored)
     return stored.model_dump()
 
@@ -492,7 +506,7 @@ async def save_designer_edit(name: str, request: Request) -> dict[str, Any]:
         owner = get_owner(name)
         _refuse_unless_creator(defn, request, owner)
         _refuse_unless_creator(original, request, owner, stored=True)
-        stored = save_if_unchanged(defn, original)
+        stored = save_if_unchanged(defn, original, keep_approvals=_keeps_approvals(name, request))
         if stored is None:
             raise HTTPException(
                 status_code=409,
@@ -561,7 +575,13 @@ async def apply_chat_change(
         refused = save_refusal(checked, who, owner, check_tools=not stored)
         if refused is not None:
             raise HTTPException(status_code=403, detail=refused)
-    saved = save_if_unchanged(defn, current)
+    from openexecutive.workflows.approved_targets import kept_on_edit_by
+
+    # A creator who no longer approves its targets may still tap the card:
+    # the steps they change go back to the approver on the next run.
+    saved = save_if_unchanged(
+        defn, current, keep_approvals=kept_on_edit_by(name, _tapper_person_id(who)),
+    )
     if saved is None:
         raise HTTPException(
             status_code=409,
