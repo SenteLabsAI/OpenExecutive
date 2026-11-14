@@ -49,3 +49,19 @@ async def test_a_refused_turn_sends_a_plain_line(monkeypatch: pytest.MonkeyPatch
     executive.stream_chat = stream_chat  # type: ignore[method-assign]
     assert await executive.chat("why?", Session()) == "I can't help with that one."
     assert executive_module._REFUSED.get() is None
+
+
+def test_a_streamed_refusal_ends_on_the_plain_line() -> None:
+    # The web chat streams the loop with nothing bound to _REFUSED.
+    provider = _ScriptedProvider([_FinalMsg([_TextBlock("You're")], stop_reason="refusal")])
+
+    async def go() -> list[Any]:
+        with patch("openexecutive.orchestrator.executive.get_provider", return_value=provider):
+            return [
+                item async for item in executive_module.Executive()._stream_agent_loop(
+                    system_blocks=[], messages=[{"role": "user", "content": "why?"}], model="claude-test",
+                )
+                if isinstance(item, str)
+            ]
+
+    assert asyncio.run(go())[-1] == executive_module.REFUSED_REPLY

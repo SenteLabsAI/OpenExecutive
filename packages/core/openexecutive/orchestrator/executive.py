@@ -2848,6 +2848,10 @@ class Executive:
                     refused = _REFUSED.get()
                     if refused is not None:
                         refused.append(iteration)
+                    else:
+                        # A streamed reply (the web chat) ends on a plain
+                        # refusal, not on what the refused round began.
+                        yield ("\n\n" if streamed_tail else "") + REFUSED_REPLY
                     return
                 # Do what it says: a reply that claims a change no call this
                 # turn made gets one more round to make it or say it can't.
