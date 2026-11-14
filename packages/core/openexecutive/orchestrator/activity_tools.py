@@ -4,8 +4,8 @@
 (``api.routes.today._build_activity``): follow-ups and check-ins it ran,
 workflows it finished, decisions and advice it recorded, alerts it raised and
 cards that were settled. Without it, "what did you do on your own last night?"
-had no answer but a guess. It reads the shared feed only (the one every person
-on the team sees), never anyone's own mail or chats, and changes nothing.
+had no answer but a guess. It reads the team's items plus the asker's own (``viewer``),
+never another person's chats, cards or mail, and changes nothing.
 """
 from __future__ import annotations
 
@@ -28,8 +28,8 @@ LIST_MY_ACTIVITY_TOOL: dict[str, Any] = {
         "finished, decisions and advice you recorded, alerts you raised and "
         "cards that were approved or turned down. Use it whenever someone "
         "asks what you did, did overnight, or did on your own, instead of "
-        "guessing or asking the owner. It is the same list everyone on the "
-        "team sees on the Activity screen."
+        "guessing or asking the owner. It is the same list the person asking "
+        "sees on the Activity screen: the team's work and their own."
     ),
     "input_schema": {
         "type": "object",
@@ -81,6 +81,26 @@ def _refusal() -> str | None:
     return None
 
 
+def _reader() -> int | None:
+    """Who this turn answers: their own items join the team's, in a
+    conversation only they read. None (the team's alone) on an unattended
+    run, or where others read the reply (a channel, a shared chat, a call)."""
+    from openexecutive.delegation.settings import private_conversation
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    session = current_session.get()
+    if session is None or getattr(session, "unattended", False):
+        return None
+    try:
+        if not private_conversation(session):
+            return None
+    except Exception:
+        logger.warning("list_my_activity: couldn't tell whether the chat is private", exc_info=True)
+        return None
+    person_id = getattr(session, "caller_person_id", None)
+    return person_id if isinstance(person_id, int) and not isinstance(person_id, bool) else None
+
+
 async def handle_list_my_activity(tool_input: dict[str, Any]) -> str:
     from openexecutive.api.routes.today import _build_activity
 
@@ -90,7 +110,7 @@ async def handle_list_my_activity(tool_input: dict[str, Any]) -> str:
     limit = _bounded(tool_input.get("limit"), 30, _MAX_ITEMS)
     since = datetime.now(UTC) - timedelta(hours=hours)
     try:
-        items = _build_activity(limit, since=since).items
+        items = _build_activity(limit, since=since, viewer=_reader()).items
     except Exception:
         logger.exception("list_my_activity: the activity feed couldn't be read")
         return json.dumps({"error": "list_my_activity: the activity record couldn't be read right now"})
