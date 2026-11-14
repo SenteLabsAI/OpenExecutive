@@ -140,6 +140,10 @@ def initialize_db(db_path: Path | None = None) -> None:
         from openexecutive.alerts.approvals import ensure_schema as ensure_approvals_schema
 
         ensure_approvals_schema(conn)
+        # Plans changed from a reply on the card (alerts/replan.py).
+        from openexecutive.alerts.replan import ensure_schema as ensure_replan_schema
+
+        ensure_replan_schema(conn)
 
 
 def _now() -> str:

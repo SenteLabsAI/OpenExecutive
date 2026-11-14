@@ -217,12 +217,16 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
         refreshToday();  // re-sync narrative + counts (no chat nav to trigger it)
         return;
       }
-      // Its progress shows in Done for you, read from the server.
-      await approveAlert(proposal.alert_id);
+      // Its progress shows in Done for you, read from the server. The
+      // plan the card showed goes along, so a plan changed meanwhile is
+      // never the one carried out.
+      await approveAlert(proposal.alert_id, undefined, proposal.suggested_action || undefined);
       refreshToday();
     } catch (e) {
-      // Revert the optimistic removal on failure so the user can retry.
+      // Revert the optimistic removal on failure so the user can retry,
+      // and reload: the card may now show a changed plan.
       setActedAlertIds(prev);
+      refreshToday();
       console.error("Approve failed", e);
     }
   }, [actedAlertIds, refreshToday]);

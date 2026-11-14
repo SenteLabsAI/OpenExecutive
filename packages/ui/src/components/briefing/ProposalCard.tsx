@@ -8,19 +8,20 @@ import remarkGfm from "remark-gfm";
 import RosterRequestCard from "@/components/RosterRequestCard";
 import Button, { buttonClass } from "@/components/ui/Button";
 import OverflowMenu, { type OverflowItem } from "@/components/ui/OverflowMenu";
-import type { PersonBriefItem, ProposalItem, SteerResult } from "@/lib/api";
-import { MEMORY_ACTIONS, briefingMemoryLine, nudgeAction } from "@/lib/briefing-memory";
+import { type PersonBriefItem, type PlanResult, type ProposalItem, type SteerResult, undoCardPlan } from "@/lib/api";
+import { briefingMemoryLine, nudgeAction } from "@/lib/briefing-memory";
 import { ageLabel, daysUntil, proposalStatusChip } from "@/lib/briefingSummary";
 import { cardButtons, isSignalCard } from "@/lib/needsYou";
 import { type SnoozeChoice, snoozeChoices } from "@/lib/snooze";
 import { hostOf } from "@/lib/url";
 
 import CardAsk from "./CardAsk";
+import CardPlanReply from "./CardPlanReply";
 import CardSteer from "./CardSteer";
 import CardTopRow from "./CardTopRow";
 import HeldActionCard, { isHeldAction } from "./HeldActionCard";
 import LeadTrainingCard, { isLeadCard } from "./LeadTrainingCard";
-import { Chip, TONE_TEXT, buildMonitoringSeed, type ContinueHandler } from "./shared";
+import { Chip, TONE_TEXT, type ContinueHandler } from "./shared";
 
 // A proposal body longer than about half this (chars) is clamped to two
 // lines under the headline while the card is closed, so the "Needs you"
@@ -105,69 +106,6 @@ function buildProposalLifecycle(
   return { reviewLine, lifecycleRow, reviewedFooter };
 }
 
-// The chat seed for Discuss: the FULL body plus the suggested_action, so the
-// Executive has the entire card's worth of context, and a mode primer (what
-// it may and may not do from chat) that depends on the kind of card.
-function buildHandoffPrompt(
-  proposal: ProposalItem,
-  kind: { isArtifact: boolean; isMonitoring: boolean; isDecision: boolean },
-): string {
-  if (kind.isArtifact) {
-    // Artifacts aren't approved/executed — they're read. Seed the chat
-    // with the full document + rationale so the Executive can discuss
-    // it, and let it clear the card via ack_alert when the user is done.
-    const rationale = proposal.suggested_action
-      ? `\n\nWhy you flagged it: ${proposal.suggested_action}`
-      : "";
-    return (
-      `Let's discuss this artifact you flagged for my review:\n\n` +
-      `# ${proposal.headline}\n\n${proposal.body || ""}${rationale}\n\n` +
-      `[Discuss mode — alert_id=${proposal.alert_id}, artifact id ` +
-      `alert:${proposal.alert_id}; to revise it, publish a new version with ` +
-      `draft_artifact(supersedes="alert:${proposal.alert_id}")] This is a document ` +
-      `for review, not an action to approve. Answer my questions about it ` +
-      `conversationally. When I say I'm done ("got it", "reviewed", "thanks"), ` +
-      `call ack_alert(alert_id=${proposal.alert_id}, status="ack") to clear ` +
-      `it from my queue. Take no other action.`
-    );
-  }
-  if (kind.isMonitoring) {
-    // Monitoring signals are passive — there's nothing to approve, so the
-    // Discuss handoff asks the Executive to interpret the signal.
-    return buildMonitoringSeed(proposal);
-  }
-  if (kind.isDecision) {
-    // Gated calendar booking. Approval/rejection happens via the card's
-    // Approve/Dismiss (the /decisions endpoints book or cancel the event
-    // server-side) — NOT via chat. So the Discuss handoff is read-only.
-    const body = proposal.body || proposal.headline;
-    return (
-      `Let's talk through this meeting I've proposed:\n\n${body}\n\n` +
-      `[Discuss mode] This booking is awaiting your approval on the ` +
-      `briefing. Help me decide whether the time, attendees, and purpose ` +
-      `make sense. Do NOT book, cancel, or ack anything from chat — I'll ` +
-      `approve or dismiss it from the card itself.`
-    );
-  }
-  // alert_id is carried so the exec can clear the card once approval lands.
-  const text = proposal.body || proposal.headline;
-  const suggested = proposal.suggested_action
-    ? `\n\nIf I approve, you will:\n${proposal.suggested_action}`
-    : "";
-  const primer =
-    `\n\n[Discuss mode — alert_id=${proposal.alert_id}] ` +
-    `This proposal is NOT YET approved. Answer my questions conversationally. ` +
-    `When I explicitly approve ("ok", "approve", "go ahead", "do it"), switch to ` +
-    `execute mode: actually attempt the work (use web_search and your other tools — ` +
-    `don't just promise), reply inline with the deliverable, schedule a fresh ` +
-    `follow-up via schedule_followup if it's time-bound, and call ` +
-    `ack_alert(alert_id=${proposal.alert_id}, status="ack"). ` +
-    `If I dismiss it ("never mind", "drop it"), call ` +
-    `ack_alert(alert_id=${proposal.alert_id}, status="dismissed") and stop. ` +
-    `Until explicit approval/dismissal, take no action and do not ack.`;
-  return `Tell me about this proposal:\n\n${text}${suggested}${primer}`;
-}
-
 // One action a card can offer; the card shows one as its primary button and
 // the rest in its ⋯ menu.
 interface CardAction {
@@ -189,7 +127,8 @@ const NEEDS_CHIP: Record<string, { label: string; tone: "sky" | "amber" | "emera
 
 // A card in "Needs you" (and in the Across-the-team panel). Closed, it shows
 // the proposal, one status chip and who it is routed to, with one primary
-// button (the recommended move, or Approve) beside Discuss; the rest sit in
+// button (the recommended move, or Approve) and a reply box that changes
+// what Approve does (CardPlanReply); the rest sit in
 // ⋯. A click on the card opens it to show the review line, the lifecycle
 // chips, what approving does, the tags and when it was last reviewed.
 export default function ProposalCard({
@@ -243,6 +182,14 @@ export default function ProposalCard({
   const [expanded, setExpanded] = useState(false);
   // A reply on a watch's card closed it: its buttons go until Undo.
   const [steered, setSteered] = useState(false);
+  // The plan after a reply on the card changed it (or Undo change put one
+  // back), over the card as it was loaded (`from`): once the page reloads
+  // the card with another plan, the card's own wins.
+  const [planNow, setPlanNow] = useState<{ plan: string; changed: boolean; from: string } | null>(null);
+  const [undoing, setUndoing] = useState(false);
+  const [undoError, setUndoError] = useState<string | null>(null);
+  // Bumped by Undo change, so the reply box drops what it last said.
+  const [undos, setUndos] = useState(0);
   // A roster request ("who is this new sender?") is answered on its own
   // card — never through chat, so what a stranger wrote never seeds a turn.
   // Below the hooks, which must run on every render.
@@ -319,28 +266,27 @@ export default function ProposalCard({
   })();
   const isLongBody = description.length > LONG_BODY_CHARS / 2;
   const clamp = isLongBody && !expanded && !defaultBodyExpanded;
-  const handoffPrompt = buildHandoffPrompt(proposal, { isArtifact, isMonitoring, isDecision });
-  const handoffMemory = briefingMemoryLine(
-    isArtifact
-      ? MEMORY_ACTIONS.artifact
-      : isMonitoring
-        ? MEMORY_ACTIONS.monitoring
-        : isDecision
-          ? MEMORY_ACTIONS.meeting
-          : MEMORY_ACTIONS.proposal,
-    proposal.headline,
-  );
   // What approving commits the Executive to ("if I approve, the exec will
   // do THIS"). Never for monitoring; a document shows its why under the title.
+  const loadedPlan = proposal.suggested_action ?? "";
+  const local = planNow && planNow.from === loadedPlan ? planNow : null;
+  const plan = local?.plan ?? loadedPlan;
+  const planChanged = local?.changed ?? Boolean(proposal.plan_changed);
   const suggestedActionBlock =
-    !isMonitoring && !isArtifact && proposal.suggested_action ? (
-      <div className="rounded-xl border border-accent/30 bg-accent/5 px-3.5 py-2.5">
+    !isMonitoring && !isArtifact && plan ? (
+      <div
+        className={`rounded-xl border px-3.5 py-2.5 ${
+          planChanged ? "border-accent/70 bg-accent/10" : "border-accent/30 bg-accent/5"
+        }`}
+      >
         <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-accent">
-          If you approve
+          {planChanged
+            ? local
+              ? "If you approve · Updated"
+              : `If you approve · Updated${proposal.plan_changed_by ? ` by ${proposal.plan_changed_by}` : ""}`
+            : "If you approve"}
         </div>
-        <p className="text-sm leading-snug text-fg whitespace-pre-wrap break-words">
-          {proposal.suggested_action}
-        </p>
+        <p className="text-sm leading-snug text-fg whitespace-pre-wrap break-words">{plan}</p>
       </div>
     ) : null;
 
@@ -419,8 +365,29 @@ export default function ProposalCard({
   const { noApprove, gotIt } = cardButtons(needs, isSignal);
   const approve: CardAction | null =
     !noApprove && !isMonitoring && !isArtifact && !failedRun && onApprove
-      ? { label: "Approve", onSelect: () => onApprove(proposal) }
+      ? {
+          label: "Approve",
+          // The plan as this card shows it, which the server checks.
+          onSelect: () => onApprove({ ...proposal, suggested_action: plan }),
+        }
       : null;
+  // A reply on the card changes what Approve does (alerts/replan.py): only
+  // on a card whose Approve carries its plan out, as the server says.
+  const canReplan = Boolean(approve) && Boolean(proposal.plan_editable) && !isDecision;
+  async function undoPlan() {
+    if (undoing) return;
+    setUndoing(true);
+    setUndoError(null);
+    try {
+      const r = await undoCardPlan(proposal.alert_id);
+      setPlanNow({ plan: r.plan, changed: r.changed, from: loadedPlan });
+      setUndos((n) => n + 1);
+    } catch (e) {
+      setUndoError(e instanceof Error ? e.message : "Couldn't undo that. Try again.");
+    } finally {
+      setUndoing(false);
+    }
+  }
   const editApprove: CardAction | null =
     !noApprove && !isMonitoring && !isArtifact && !isDecision && !failedRun && onApproveWithEdits
       ? { label: "Edit & approve", onSelect: startEditing }
@@ -448,7 +415,7 @@ export default function ProposalCard({
   if (isArtifact) primary = openDoc;
   else if (asks) primary = null; // answered on the card
   else if (gotIt) primary = dismiss; // Got it
-  else if (isMonitoring) primary = null; // Discuss leads
+  else if (isMonitoring) primary = null; // nothing to approve
   else if (isLikelyStale && dismiss) primary = dismiss;
   else primary = rerun ?? nudge ?? workflow ?? approve;
   // Snooze: one item per choice, just above Dismiss. Not offered on a
@@ -479,7 +446,7 @@ export default function ProposalCard({
   const hasDetails = Boolean(
     reviewLine ||
       lifecycleRow ||
-      suggestedActionBlock ||
+      (suggestedActionBlock && !canReplan) ||
       surfacedNote ||
       visibleTags.length > 0 ||
       reviewedFooter ||
@@ -564,6 +531,22 @@ export default function ProposalCard({
         </p>
       )}
 
+      {canReplan && (
+        <>
+          {suggestedActionBlock && <div className="mt-3">{suggestedActionBlock}</div>}
+          <CardPlanReply
+            key={undos}
+            alertId={proposal.alert_id}
+            changed={planChanged}
+            disabled={busy || undoing}
+            onChanged={(r: PlanResult) => {
+              setUndoError(null);
+              setPlanNow({ plan: r.plan, changed: r.changed, from: loadedPlan });
+            }}
+          />
+        </>
+      )}
+
       {expanded && (
         <div className="mt-3 space-y-2.5">
           {radarBody && (
@@ -576,7 +559,7 @@ export default function ProposalCard({
           )}
           {reviewLine}
           {lifecycleRow}
-          {suggestedActionBlock}
+          {!canReplan && suggestedActionBlock}
           {surfacedNote}
           {visibleTags.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
@@ -636,13 +619,9 @@ export default function ProposalCard({
                 {primary.label}
               </Button>
             ))}
-          {onContinue && (
-            <Button
-              variant={primary ? "secondary" : "primary"}
-              onClick={() => onContinue(handoffPrompt, handoffMemory)}
-              disabled={busy}
-            >
-              Discuss
+          {canReplan && planChanged && (
+            <Button variant="ghost" onClick={() => void undoPlan()} disabled={busy || undoing}>
+              {undoing ? "Undoing…" : "Undo change"}
             </Button>
           )}
           {menu.length > 0 && (
@@ -668,6 +647,11 @@ export default function ProposalCard({
             </Button>
           )}
         </div>
+      )}
+      {undoError && (
+        <p role="alert" className="mt-1 text-sm text-red-500">
+          {undoError}
+        </p>
       )}
     </div>
   );
