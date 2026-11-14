@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
 
-import Button from "@/components/ui/Button";
+import Button, { buttonClass } from "@/components/ui/Button";
 import OverflowMenu from "@/components/ui/OverflowMenu";
-import type { ClientCockpitCard, HandledItem, InFlightItem, ProposalItem } from "@/lib/api";
+import type { ClientCockpitCard, HandledItem, InFlightItem, ProposalItem, SteerResult } from "@/lib/api";
 import { MEMORY_ACTIONS, briefingMemoryLine } from "@/lib/briefing-memory";
 import { ageLabel } from "@/lib/briefingSummary";
 import {
@@ -17,6 +18,7 @@ import {
   isCloseKind,
   type HandledRow,
 } from "@/lib/handled";
+import CardSteer from "./CardSteer";
 import { clientCountsSummary, renewalBadge } from "@/lib/practice";
 
 import {
@@ -105,11 +107,19 @@ function MonitoringRow({
   proposal,
   onContinue,
   onDismiss,
+  onSteered,
+  onSteerUndone,
 }: {
   proposal: ProposalItem;
   onContinue?: ContinueHandler;
   onDismiss?: (p: ProposalItem) => void;
+  onSteered?: (p: ProposalItem, result: SteerResult) => void;
+  onSteerUndone?: (p: ProposalItem, result: SteerResult) => void;
 }) {
+  // A watch's signal can be corrected right here ("that's our own repo"):
+  // Correct it opens the reply box under the row (CardSteer).
+  const [steering, setSteering] = useState(false);
+  const canSteer = Boolean(proposal.watch_slug && onDismiss);
   const seed = buildMonitoringSeed(proposal);
   const inner = (
     <>
@@ -122,25 +132,45 @@ function MonitoringRow({
     </>
   );
   return (
-    <div id={`alert-${proposal.alert_id}`} className="group flex items-start gap-2 py-3">
-      {onContinue ? (
-        <button
-          type="button"
-          onClick={() => onContinue(seed, briefingMemoryLine(MEMORY_ACTIONS.monitoring, proposal.headline))}
-          className="block min-w-0 flex-1 cursor-pointer rounded-lg text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-        >
-          {inner}
-        </button>
-      ) : (
-        <Link href="/watchlist" className="block min-w-0 flex-1">
-          {inner}
-        </Link>
-      )}
-      {onDismiss && (
-        <OverflowMenu
-          size="sm"
-          label="More actions for this signal"
-          items={[{ label: "Dismiss signal", onSelect: () => onDismiss(proposal) }]}
+    <div id={`alert-${proposal.alert_id}`} className="py-3">
+      <div className="group flex items-start gap-2">
+        {onContinue ? (
+          <button
+            type="button"
+            onClick={() => onContinue(seed, briefingMemoryLine(MEMORY_ACTIONS.monitoring, proposal.headline))}
+            className="block min-w-0 flex-1 cursor-pointer rounded-lg text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          >
+            {inner}
+          </button>
+        ) : (
+          <Link href="/watchlist" className="block min-w-0 flex-1">
+            {inner}
+          </Link>
+        )}
+        {canSteer && !steering && (
+          <button
+            type="button"
+            onClick={() => setSteering(true)}
+            className={buttonClass("ghost", "sm", "flex-shrink-0")}
+          >
+            Correct it
+          </button>
+        )}
+        {onDismiss && (
+          <OverflowMenu
+            size="sm"
+            label="More actions for this signal"
+            items={[{ label: "Dismiss signal", onSelect: () => onDismiss(proposal) }]}
+          />
+        )}
+      </div>
+      {canSteer && steering && proposal.watch_slug && (
+        <CardSteer
+          alertId={proposal.alert_id}
+          watchSlug={proposal.watch_slug}
+          autoFocus
+          onSteered={(r) => onSteered?.(proposal, r)}
+          onUndone={(r) => onSteerUndone?.(proposal, r)}
         />
       )}
     </div>
@@ -154,11 +184,15 @@ export function MonitoringPanelBody({
   onContinue,
   onDismiss,
   onBulkDismiss,
+  onSteered,
+  onSteerUndone,
 }: {
   proposals: ProposalItem[];
   onContinue?: ContinueHandler;
   onDismiss?: (p: ProposalItem) => void;
   onBulkDismiss?: (ids: number[]) => void;
+  onSteered?: (p: ProposalItem, result: SteerResult) => void;
+  onSteerUndone?: (p: ProposalItem, result: SteerResult) => void;
 }) {
   const staleIds = olderThan(proposals, MONITORING_DISMISS_OLDER_THAN_DAYS);
   return (
@@ -172,7 +206,14 @@ export function MonitoringPanelBody({
       ) : (
         <div className="divide-y divide-line">
           {proposals.map((p) => (
-            <MonitoringRow key={p.alert_id} proposal={p} onContinue={onContinue} onDismiss={onDismiss} />
+            <MonitoringRow
+              key={p.alert_id}
+              proposal={p}
+              onContinue={onContinue}
+              onDismiss={onDismiss}
+              onSteered={onSteered}
+              onSteerUndone={onSteerUndone}
+            />
           ))}
         </div>
       )}

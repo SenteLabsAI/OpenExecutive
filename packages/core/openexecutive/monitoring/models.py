@@ -233,6 +233,10 @@ OUTCOME_SUPPRESSED_TRIAGE = "suppressed_triage"
 # configured floor (external_monitor_enrichment_min_relevance). Recorded, not
 # promoted — the gate is opt-in (default threshold 0.0 = off) until calibrated.
 OUTCOME_SUPPRESSED_LOW_RELEVANCE = "suppressed_low_relevance"
+# Captured + enriched, and the watch's notes (what the person told it, often
+# from a reply on one of its cards: monitoring/steer.py) say to skip a change
+# like this. Recorded, never promoted.
+OUTCOME_SUPPRESSED_BY_NOTES = "suppressed_by_notes"
 # Recorded on the FIRST poll of a feed-listing source (rss, edgar): every
 # entry already in the feed is persisted as "seen" so dedup covers it, but
 # nothing is promoted — the watch reports what changes from now on, not
@@ -266,6 +270,7 @@ _VALID_OUTCOMES = frozenset({
     OUTCOME_SUPPRESSED_DUP,
     OUTCOME_SUPPRESSED_TRIAGE,
     OUTCOME_SUPPRESSED_LOW_RELEVANCE,
+    OUTCOME_SUPPRESSED_BY_NOTES,
     OUTCOME_FAILED,
 })
 
