@@ -10,6 +10,7 @@ import Link from "next/link";
 import { useState } from "react";
 
 import { type SteerResult, steerAlert, undoSteer } from "@/lib/api";
+import { isImeComposing } from "@/lib/imeComposing";
 
 const FIELD =
   "min-w-0 flex-1 resize-none [field-sizing:content] max-h-40 bg-transparent px-1 py-1 text-[15px] leading-snug text-fg placeholder:text-fg-subtle focus:outline-none disabled:opacity-50";
@@ -115,7 +116,7 @@ export default function CardSteer({
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
+            if (e.key === "Enter" && !isImeComposing(e) && !e.shiftKey) {
               e.preventDefault();
               void send();
             }
