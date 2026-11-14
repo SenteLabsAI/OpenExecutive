@@ -338,9 +338,30 @@ async def people_roster() -> str:
     from openexecutive.people.store import list_people
 
     # The team, never the principal's contacts (as GET /people gives it).
-    await _require_person()
+    who = await _require_person()
     people = await asyncio.to_thread(list_people)
-    return _json([p.model_dump(mode="json") for p in people])
+    # A teammate's phone, website and other details go only to the principal
+    # and to that person (as GET /people shows them).
+    shown = [
+        p if who.is_principal or not p.details or p.id == who.person_id
+        else p.model_copy(update={"details": []})
+        for p in people
+    ]
+    return _json([p.model_dump(mode="json") for p in shown])
+
+
+async def _reader(who: McpCaller) -> Any:
+    """``who``'s view of follow-ups and advice (``api.own_rows``):
+    the team's rows and their own."""
+    from openexecutive.api.own_rows import Reader
+    from openexecutive.api.routes.today import principal_id
+
+    viewer = who.person_id
+    if viewer is None and who.is_principal:
+        # The principal with no roster id of their own (a local, unsigned
+        # caller): their own rows are the roster principal's.
+        viewer = await asyncio.to_thread(principal_id)
+    return await asyncio.to_thread(Reader, viewer)
 
 
 @mcp.resource(
@@ -365,6 +386,7 @@ async def departments_state() -> str:
 async def memory_decisions() -> str:
     from openexecutive.memory.episodic import list_decisions
 
+    # Standing facts every conversation reads: the whole team's.
     await _require_person()
     rows = await asyncio.to_thread(list_decisions)
     return _json([r.model_dump(mode="json") for r in rows])
@@ -393,8 +415,8 @@ async def memory_initiatives() -> str:
 async def memory_advice() -> str:
     from openexecutive.memory.episodic import list_advice
 
-    await _require_person()
-    rows = await asyncio.to_thread(list_advice)
+    reader = await _reader(await _require_person())
+    rows = await asyncio.to_thread(lambda: [r for r in list_advice() if reader.sees_session_row(r)])
     return _json([r.model_dump(mode="json") for r in rows])
 
 

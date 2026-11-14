@@ -34,6 +34,13 @@ def _db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = tmp_path / "episodic.db"
     initialize_db(db_path)
     monkeypatch.setattr("openexecutive.memory.episodic.DB_PATH", db_path)
+    # The lists and the cancel read whose a row is, from the roster.
+    from openexecutive.people import registry as people_registry
+    from openexecutive.people import store as people_store
+
+    monkeypatch.setattr(people_store, "DB_PATH", db_path)
+    people_store.initialize_db(db_path)
+    people_registry.invalidate()
     # Empty rather than deleted: Settings also reads the repo .env (a
     # developer's may set the token) and the process env wins over it.
     monkeypatch.setenv("SCHEDULED_ADMIN_TOKEN", "")

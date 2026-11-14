@@ -57,7 +57,11 @@ def _as(who: Caller) -> Any:
 
 
 class _Dumpable:
-    """Stand-in for a Pydantic model: only ``model_dump`` is exercised."""
+    """Stand-in for a Pydantic model: ``model_dump``, and the chat and
+    department a memory row is read by (none: the team's)."""
+
+    session_id = ""
+    department = ""
 
     def __init__(self, payload: dict[str, Any]) -> None:
         self._payload = payload

@@ -104,17 +104,25 @@ def upsert_definition(
     db_path: Path | None = None,
     *,
     owner_person_id: int | None = None,
+    keep_approvals: bool = True,
 ) -> DynamicWorkflowDef:
     """Insert or replace a definition by name. Stamps created_at/updated_at.
 
     Returns the stored definition (with timestamps applied). On update, the
     original created_at and owner are preserved; ``owner_person_id`` only
-    applies when the row is new.
+    applies when the row is new. ``keep_approvals=False`` (an edit by someone
+    other than the person who approves its targets) drops the approved
+    targets when the steps changed, so the next run asks again.
     """
     initialize_dynamic_workflows_db(db_path)
     now = datetime.now(UTC).isoformat()
     existing = get_definition(defn.name, db_path=db_path)
-    _reset_approvals_if_tools_changed(existing, defn, db_path)
+    lapse = _approvals_lapse(existing, defn, keep_approvals)
+    if lapse:
+        from openexecutive.workflows.approved_targets import initialize_approved_targets_db
+
+        # On this store's own file: the delete below runs on its connection.
+        initialize_approved_targets_db(_resolve(db_path))
     created_at = existing.created_at if existing and existing.created_at else now
     defn = defn.model_copy(update={"created_at": created_at, "updated_at": now})
     with _get_conn(_resolve(db_path)) as conn:
@@ -137,6 +145,13 @@ def upsert_definition(
                 owner_person_id,
             ),
         )
+        if lapse:
+            # Same connection and commit as the write, as in
+            # ``save_if_unchanged``: an approval landing in between can't
+            # outlive the steps it was given for.
+            conn.execute(
+                "DELETE FROM workflow_approved_targets WHERE workflow_name = ?", (defn.name,)
+            )
     return defn
 
 
@@ -247,6 +262,7 @@ def save_if_unchanged(
     db_path: Path | None = None,
     *,
     owner_person_id: int | None = None,
+    keep_approvals: bool = True,
 ) -> DynamicWorkflowDef | None:
     """Write ``defn`` only if the row is still ``expected`` (None: still absent).
 
@@ -286,9 +302,9 @@ def save_if_unchanged(
                 (body, active, now, stored.name, expected.updated_at),
             )
         changed = cur.rowcount == 1
-        if changed and expected is not None and _tools_of(expected) != _tools_of(stored):
+        if changed and _approvals_lapse(expected, stored, keep_approvals):
             # Same connection and commit as the write: a crash can't leave the
-            # old approvals standing under the new tool set.
+            # old approvals standing under the new tool set or steps.
             conn.execute(
                 "DELETE FROM workflow_approved_targets WHERE workflow_name = ?", (stored.name,)
             )
@@ -303,16 +319,20 @@ def _tools_of(defn: DynamicWorkflowDef | None) -> set[str]:
     return {t for s in defn.steps if isinstance(s, ActionStepSpec) for t in s.tools}
 
 
-def _reset_approvals_if_tools_changed(
-    old: DynamicWorkflowDef | None, new: DynamicWorkflowDef, db_path: Path | None
-) -> None:
-    """Approved targets were approved for the tools the workflow had. A tool
-    set that changes (e.g. a send tool added to a sheet workflow) must earn
-    its approvals again, rather than inherit them unseen."""
-    if old is not None and _tools_of(old) != _tools_of(new):
-        from openexecutive.workflows.approved_targets import forget_all
-
-        forget_all(new.name, db_path=db_path)
+def _approvals_lapse(
+    old: DynamicWorkflowDef | None, new: DynamicWorkflowDef, keep_approvals: bool
+) -> bool:
+    """Approved targets were approved for the tools the workflow had, and for
+    what its steps did with them. A tool set that changes (e.g. a send tool
+    added to a sheet workflow) must earn its approvals again, rather than
+    inherit them unseen. So must steps changed by someone other than the
+    person who approves its targets (``keep_approvals=False``): what they now
+    write went past nobody who approved the address."""
+    if old is None:
+        return False
+    if _tools_of(old) != _tools_of(new):
+        return True
+    return not keep_approvals and old.steps != new.steps
 
 
 def get_owner(name: str, db_path: Path | None = None) -> int | None:

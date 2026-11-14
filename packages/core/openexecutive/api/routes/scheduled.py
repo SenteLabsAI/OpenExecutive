@@ -8,6 +8,7 @@ import os
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from openexecutive.api import caller as api_caller
+from openexecutive.api import own_rows
 from openexecutive.config import get_settings
 from openexecutive.memory.episodic import (
     ScheduledAction,
@@ -22,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 _VALID_STATUS_FILTERS = {"pending", "running", "done", "failed", "cancelled"}
 _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+# How many rows a list reads before keeping the caller's (the largest ``limit``).
+_READ_POOL = 1000
 
 
 def _signed_in_caller(request: Request) -> str | None:
@@ -59,8 +62,8 @@ def require_cancel_permission(
     - a loopback caller when no admin token is configured (`make dev`, curl).
 
     Anything else fails closed: 401 when an admin token is configured, 503
-    otherwise. GETs stay unauthenticated to match the /memories/* routes the
-    Pulse page already reads.
+    otherwise. Which follow-ups a signed-in caller may cancel is
+    ``_may_cancel``'s: their own and the team's, or any as the principal.
     """
     expected = get_settings().scheduled_admin_token
     if (
@@ -95,6 +98,7 @@ def require_cancel_permission(
     response_model=list[ScheduledAction],
 )
 def list_scheduled(
+    request: Request,
     status: str = "pending",
     limit: int = 100,
     order: str = "asc",
@@ -108,22 +112,43 @@ def list_scheduled(
         raise HTTPException(status_code=400, detail="limit must be between 1 and 1000")
     if order not in {"asc", "desc"}:
         raise HTTPException(status_code=400, detail="order must be 'asc' or 'desc'")
-    return list_scheduled_actions(
+    # The team's follow-ups and the caller's own (``api.own_rows``): one a
+    # teammate asked for in their own chat is theirs alone.
+    reader = own_rows.reader_for(request)
+    # Read past ``limit`` and trim after, so other people's rows ahead of
+    # the caller's can't push theirs off the page.
+    rows = list_scheduled_actions(
         status=None if status == "all" else status,
-        limit=limit,
+        limit=_READ_POOL,
         order=order,
     )
+    return [row for row in rows if reader.sees_action(row)][:limit]
 
 
 @router.get(
     "/scheduled/{action_id}",
     response_model=ScheduledAction,
 )
-def get_scheduled(action_id: int) -> ScheduledAction:
+def get_scheduled(action_id: int, request: Request) -> ScheduledAction:
     row = get_scheduled_action(action_id)
-    if row is None:
+    # Someone else's reads exactly as one that does not exist.
+    if row is None or not own_rows.reader_for(request).sees_action(row):
         raise HTTPException(status_code=404, detail="scheduled action not found")
     return row
+
+
+def _may_cancel(request: Request, actor: str, row: ScheduledAction) -> bool:
+    """Scripts and local callers cancel anything, and so does the principal.
+    Anyone else cancels the team's follow-ups and their own, never another
+    person's."""
+    from openexecutive.api.routes.people import caller_is_principal
+
+    # Not a signed-in caller whose stamped name happens to read like one.
+    if actor in {"admin-token", "local"} and _signed_in_caller(request) != actor:
+        return True
+    if caller_is_principal(request):
+        return True
+    return own_rows.reader_for(request).sees_action(row)
 
 
 @router.delete(
@@ -131,8 +156,11 @@ def get_scheduled(action_id: int) -> ScheduledAction:
     response_model=ScheduledAction,
 )
 def cancel_scheduled(
-    action_id: int, actor: str = Depends(require_cancel_permission)
+    action_id: int, request: Request, actor: str = Depends(require_cancel_permission)
 ) -> ScheduledAction:
+    existing = get_scheduled_action(action_id)
+    if existing is None or not _may_cancel(request, actor, existing):
+        raise HTTPException(status_code=404, detail="scheduled action not found")
     result = cancel_scheduled_action(action_id)
     if result == "not_found":
         raise HTTPException(status_code=404, detail="scheduled action not found")
