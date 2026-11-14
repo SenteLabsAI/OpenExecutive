@@ -699,12 +699,10 @@ async def steer_watch_from_alert(
     now_card = store.get_alert(alert_id)
     if now_card is None or now_card.status not in ("unread", "read"):
         raise HTTPException(status_code=409, detail="This card was just answered.")
-    now_item = monitoring_store.get_watchlist_item_by_slug(slug)
-    if now_item is None or now_item.id != item.id or now_item.notes != item.notes:
+    if not monitoring_store.set_watchlist_notes_if(item.id, item.notes, plan.notes):
         raise HTTPException(
             status_code=409, detail="The watch just changed. Try again."
         )
-    monitoring_store.update_watchlist_fields(item.id, {"notes": plan.notes})
     still_offered = {a.id for a in _watch_cards_to_offer(slug, alert_id, request)}
     closed: list[int] = []
     # Closed as dismissed so the card's Undo (reopen) works, but without the

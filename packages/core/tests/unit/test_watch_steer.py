@@ -214,6 +214,23 @@ def test_a_card_answered_during_the_reply_is_left_alone(
     assert alert_store.get_alert(aid, db_path=db).status == "acknowledged"  # type: ignore[union-attr]
 
 
+def test_notes_changed_during_the_reply_are_kept(
+    client: TestClient, db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wid = _watch(db)
+    aid = _card(db, "first")
+
+    async def fake_call(turn: str) -> dict[str, Any]:
+        ms.update_watchlist_fields(wid, {"notes": "- Edited on the watch page"}, db_path=db)
+        return {"notes": "- From the reply", "reply": "Got it.", "close_card_ids": []}
+
+    monkeypatch.setattr(steer, "_call_model", fake_call)
+    assert client.post(f"/alerts/{aid}/steer", json={"text": "ours"}).status_code == 409
+    item = ms.get_watchlist_item_by_slug(SLUG, db_path=db)
+    assert item is not None and item.notes == "- Edited on the watch page"
+    assert alert_store.get_alert(aid, db_path=db).status == "unread"  # type: ignore[union-attr]
+
+
 def test_only_cards_shown_to_the_model_can_be_closed(
     client: TestClient, db: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
