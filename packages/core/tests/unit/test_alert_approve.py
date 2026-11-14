@@ -46,7 +46,11 @@ def caller(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     who: dict[str, Any] = {"person_id": 1, "principal": True}
     monkeypatch.setattr(alerts_route, "_caller_person_id", lambda request: who["person_id"])
     monkeypatch.setattr(alerts_route, "_caller_is_principal", lambda request: who["principal"])
-    monkeypatch.setattr(alerts_route, "_caller_viewer", lambda request: None)
+    from openexecutive.orchestrator.artifact_records import Viewer
+
+    monkeypatch.setattr(
+        alerts_route, "_caller_viewer", lambda request: Viewer(person_id=who["person_id"], is_principal=who["principal"])
+    )
     return who
 
 
@@ -365,8 +369,8 @@ def test_done_on_a_waiting_on_you_card_is_theirs_alone_and_answers_a_waiting_tur
     browser_handover._reset_for_tests()
     monkeypatch.setattr(browser_handover, "end_bar", lambda handover: None)
     aid = _insert(db, "Waiting on you: sign in", source=browser_handover.SOURCE, routed_to_person_id=5, needs="ok")
-    # The principal can't press Done for them.
-    assert client.post(f"/alerts/{aid}/approve", json={}).status_code == 403
+    # The principal can't press Done for them, or even see it.
+    assert client.post(f"/alerts/{aid}/approve", json={}).status_code == 404
     caller.update(person_id=5, principal=False)
     # A turn still waiting for it gets the Done; no new chat.
     handover = browser_handover.start(5, "sign in", card_id=aid)
@@ -394,6 +398,9 @@ def test_closing_a_waiting_on_you_card_without_done_is_a_stop(
     one = _insert(db, "Waiting on you: sign in", source=browser_handover.SOURCE, routed_to_person_id=5, needs="ok")
     two = _insert(db, "Waiting on you: pick", source=browser_handover.SOURCE, routed_to_person_id=5, needs="ok")
     other = _insert(db, "Something else", routed_to_person_id=5)
+    # Not even the principal can see someone's hand-over card.
+    assert client.post(f"/alerts/{one}/ack", json={"status": "read"}).status_code == 404
+    caller.update(person_id=5, principal=False)
     assert client.post(f"/alerts/{one}/ack", json={"status": "read"}).status_code == 200
     assert closed == []
     assert client.post(f"/alerts/{one}/ack", json={"status": "dismissed"}).status_code == 200

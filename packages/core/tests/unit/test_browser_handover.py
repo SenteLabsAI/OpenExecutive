@@ -413,3 +413,27 @@ def test_done_on_an_old_hand_over_with_no_run_takes_the_bar_down(
     out = client.post(f"/browser/hand-over/{handover.id}", json={"outcome": "done"}).json()
     assert out == {"ok": True, "carried_on": False}
     assert browser_handover.get(handover.id) is None
+
+
+async def test_the_card_is_seen_only_by_the_person_it_was_handed_to(alerts_db: Path, chat_turn: None) -> None:
+    from openexecutive.alerts import lifecycle
+    from openexecutive.alerts.models import PERSONAL_SOURCES, visible_alert
+    from openexecutive.orchestrator.artifact_records import Viewer
+
+    assert browser_handover.SOURCE in PERSONAL_SOURCES
+    run, step = await _handed({"need": "sign in to Shop", "task": "buy the blue hat"})
+    handover = browser_handover.get(step["args"]["id"])
+    assert handover is not None and handover.card_id is not None
+    card = alert_store.get_alert(handover.card_id)
+    # Theirs on Home; not a teammate's, not even the principal's, and not on
+    # a surface everyone shares (the brief, the digest, the reflection).
+    assert visible_alert(card, Viewer(person_id=7))
+    assert not visible_alert(card, Viewer(person_id=8))
+    assert not visible_alert(card, Viewer(person_id=1, is_principal=True))
+    assert not visible_alert(card, None)
+    ids = lambda viewer: {a.id for a in lifecycle.list_live_alerts(limit=50, viewer=viewer)}  # noqa: E731
+    assert handover.card_id in ids(Viewer(person_id=7))
+    assert handover.card_id not in ids(Viewer(person_id=8))
+    assert handover.card_id not in ids(None)
+    browser_handover.finish(handover.id, 7, "stop")
+    await run
