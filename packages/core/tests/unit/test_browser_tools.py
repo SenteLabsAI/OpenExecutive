@@ -893,9 +893,11 @@ def test_the_add_button_goes_to_an_https_page_or_nowhere(monkeypatch: pytest.Mon
         assert browser_tools.store_url() is None
 
 
-def test_the_published_extension_is_offered_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_no_store_link_by_default_and_the_published_one_is_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(browser_tools.STORE_URL_ENV, raising=False)
-    assert browser_tools.store_url() == browser_tools.STORE_URL
+    assert browser_tools.store_url() is None
+    monkeypatch.setenv(browser_tools.STORE_URL_ENV, browser_tools.PUBLISHED_URL)
+    assert browser_tools.store_url() == browser_tools.PUBLISHED_URL
 
 
 def test_status_says_whether_their_own_browser_is_connected(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -52,7 +52,8 @@ An install can change what it needs without touching this file:
   window, never the tab in front of the computer, and a look brings its
   screenshot back (``AWAY_NO_SHOW_PAGE``, ``NOT_CONNECTED_AWAY`` say what the
   Executive tells them);
-- ``BROWSER_EXTENSION_URL``: where the Add to Chrome button goes (``store_url``).
+- ``BROWSER_EXTENSION_URL``: where the Add to Chrome button goes (``store_url``);
+  unset, there is no button and Settings shows how to load it from the repo.
 """
 from __future__ import annotations
 
@@ -328,11 +329,13 @@ def _away() -> bool:
     return False
 
 
-# Where people get the extension: the published Open Executive extension in
-# the Chrome Web Store. ``BROWSER_EXTENSION_URL`` points it at another page
-# (an install's own build), and set empty ("") it offers no install button:
-# Settings then shows how to load the extension from this repository.
-STORE_URL: str | None = "https://chromewebstore.google.com/detail/open-executive/fldlmnoancfnbloiineciijhdajhlbdh"
+# Where people get the extension. By default there is no install button:
+# Settings shows how to load the extension from this repository.
+# ``BROWSER_EXTENSION_URL`` sets an https page for Add to Chrome: an install's
+# own listing or build, or the published Open Executive listing
+# (``PUBLISHED_URL``), which connects to any Open Executive site.
+PUBLISHED_URL = "https://chromewebstore.google.com/detail/open-executive/fldlmnoancfnbloiineciijhdajhlbdh"
+STORE_URL: str | None = None
 STORE_URL_ENV = "BROWSER_EXTENSION_URL"
 _STORE_URL_RE = re.compile(r"^https://[^\s\"'<>\\]{3,2000}$")
 

@@ -31,18 +31,21 @@ only ever uses the browser of the person it's working for.
 
 ## Install the extension
 
-Pick one.
-
-**From the Chrome Web Store.** Settings → Browser in your Open Executive
-links to the published listing. The published extension connects to any Open
-Executive site you choose, including yours.
-
-**Load it unpacked** (no store needed):
+**Load it from this repo** (the default, no store needed):
 
 1. Open `chrome://extensions` and turn on **Developer mode**.
 2. Click **Load unpacked** and pick the `packages/extension` folder from this
    repo.
 3. Pin the extension so its button stays in the toolbar.
+
+Settings → Browser shows these steps.
+
+**Or use the published extension** (optional). Set `BROWSER_EXTENSION_URL` to
+its Chrome Web Store listing,
+`https://chromewebstore.google.com/detail/open-executive/fldlmnoancfnbloiineciijhdajhlbdh`.
+Settings → Browser then shows **Add to Chrome**. The published extension
+connects to any Open Executive site you choose, including yours. To offer your
+own build instead, see [Make it your own](#make-it-your-own).
 
 ## Connect it
 
@@ -58,7 +61,7 @@ Settings → Browser shows whether it's connected and has a few things to try.
 
 | Variable | Default | What it does |
 |---|---|---|
-| `BROWSER_EXTENSION_URL` | The published Chrome Web Store listing | Where the **Add to Chrome** button goes. Set your own listing's `https://` address, or leave it empty to show only the load unpacked steps |
+| `BROWSER_EXTENSION_URL` | unset | Where the **Add to Chrome** button goes: your own listing's `https://` address, or the published one above. Unset or empty shows only the steps to load it from this repo |
 | `OE_BROWSER_OFF` | unset | Set to `1` to turn browser use off for everyone. The Executive gets no browser tools, and Settings → Browser says it's off |
 
 ## Make it your own
