@@ -218,3 +218,20 @@ def test_the_feed_fails_rather_than_guess_whose_a_legacy_chat_is(
     monkeypatch.setattr(people_registry, "get_principal", broken)
     with pytest.raises(RuntimeError):
         today_route._build_activity(50, viewer=team[2])
+
+
+def test_a_chat_whose_owner_cant_be_read_stays_the_principals(
+    team: tuple[Path, int, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db, owner, mate = team
+    episodic.insert_scheduled_action(
+        run_at=_now(), channel="email", channel_ref="ops@example.com", intent_text="Check the prescription shipped",
+        originating_session_id="s-owner", department="finance", status="done", db_path=db,
+    )
+
+    def broken(*a: object, **k: object) -> object:
+        raise RuntimeError("sessions locked")
+
+    monkeypatch.setattr(session_store, "get_session_owner", broken)
+    assert "Check the prescription shipped" not in _feed(mate)
+    assert "Check the prescription shipped" in _feed(owner)

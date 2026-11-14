@@ -1382,6 +1382,11 @@ def principal_id() -> int | None:
     return principal.id if principal is not None else None
 
 
+# An owner no reader matches: a row whose owner couldn't be read on an
+# install with no principal.
+_NO_READER = -1
+
+
 class _Owners:
     """Whose an activity item is, for ``_build_activity``'s ``viewer``.
 
@@ -1417,8 +1422,11 @@ class _Owners:
             try:
                 found, caller = session_store.get_session_owner(session_id, db_path=episodic.DB_PATH)
             except Exception:
+                # Unread is not "not found": the row stays the principal's
+                # (no one's, with no principal), never the team's.
                 logger.warning("activity: couldn't read a session's owner", exc_info=True)
-                found, caller = False, None
+                self._sessions[session_id] = self.principal_id if self.principal_id is not None else _NO_READER
+                return self._sessions[session_id]
             if caller is None and found:
                 caller = self.principal_id
             elif not found:
