@@ -90,7 +90,8 @@ async def test_done_carries_the_turn_on_and_closes_its_card(alerts_db: Path, cha
     assert card is not None
     assert card.headline == "Waiting on you: sign in to Shop"
     assert card.needs == "ok" and card.routed_to_person_id == 7
-    assert browser_handover.TAG in card.topic_tags and "shop.example.com" in card.body
+    assert browser_handover.TAG in card.topic_tags
+    assert card.body.startswith("In your browser on shop.example.com. ")
     assert "buy the blue hat" in card.suggested_action and "buy the blue hat" in card.body
 
     got, waited = browser_handover.finish(handover.id, 7, "done")
