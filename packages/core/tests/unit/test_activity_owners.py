@@ -71,6 +71,16 @@ def test_a_card_for_one_person_stays_theirs(team: tuple[Path, int, int]) -> None
     assert "Waiting on you: sign in to the pharmacy" in _feed(owner)
     assert "Waiting on you: sign in to the pharmacy" not in _feed(mate)
     assert "Waiting on you: sign in to the pharmacy" not in _feed(None)
+    assert "Waiting on you: sign in to the pharmacy" in _feed(None, everyone=True)
+    # A teammate's hand-over card: theirs, not even the principal's.
+    alert_store.insert_alert(
+        source="browser_handover", external_id="h2", severity="medium",
+        headline="Waiting on you: pick a size", body="b",
+        topic_tags=["browser-handover"], routed_to_person_id=mate, db_path=db,
+    )
+    assert "Waiting on you: pick a size" in _feed(mate)
+    assert "Waiting on you: pick a size" not in _feed(owner)
+    assert "Waiting on you: pick a size" not in _feed(None)
     # A card for nobody in particular is the team's.
     assert "Payroll file is late" in _feed(mate)
 

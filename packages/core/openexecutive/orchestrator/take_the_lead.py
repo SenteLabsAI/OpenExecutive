@@ -1624,6 +1624,15 @@ def _connected_label(tool: str, tool_input: dict[str, Any], *, recipient: bool) 
     return f"{verb} {what} ({app})" if app else f"{verb} {what}"
 
 
+_BROWSER_LABELS = {
+    "browser_click": "Click",
+    "browser_click_at": "Click",
+    "browser_type": "Type",
+    "browser_select": "Pick an option",
+    "browser_key": "Press a key",
+}
+
+
 def summarize(tool: str, tool_input: dict[str, Any], *, mcp: bool = False, quote: bool = True) -> str:
     """One plain line saying what the action does; ``quote`` adds the start
     of what it says and, for a share, who it's shared with (the approval
@@ -1649,6 +1658,22 @@ def summarize(tool: str, tool_input: dict[str, Any], *, mcp: bool = False, quote
         label = f"Book {tool_input.get('title')}"
     elif tool == "run_workflow" and (tool_input.get("workflow") or tool_input.get("workflow_id")):
         label = f"Start the {tool_input.get('workflow') or tool_input.get('workflow_id')} workflow"
+    elif tool in _BROWSER_LABELS:
+        # A step in the person's own browser names the site (browser.tools).
+        from urllib.parse import urlsplit
+
+        try:
+            host = (urlsplit(str(tool_input.get("_at") or "")).hostname or "").removeprefix("www.")
+        except ValueError:
+            host = ""
+        label = _BROWSER_LABELS[tool]
+        if tool == "browser_key" and tool_input.get("key"):
+            label = f"Press {' '.join(str(tool_input.get('key')).split())[:20]}"
+        # What it acts on, as the page names it (a "Send" button).
+        element = " ".join(str(tool_input.get("_element") or "").split())[:100]
+        if element:
+            label = f"{label} ({element})"
+        label = f"{label} on {host}" if host else f"{label} in your browser"
     snippet = ""
     for key in ("text", "message", "body", "description", "subject"):
         value = tool_input.get(key)
@@ -2477,9 +2502,13 @@ def asked_call_tool(call_tool: _Handler) -> _Handler:
     return _call
 
 
-async def carry_out(payload: dict[str, Any], *, by_principal: bool) -> str:
+async def carry_out(payload: dict[str, Any], *, by_principal: bool, own_card: bool = False) -> str:
     """Do a held action someone approved: the exact call, outside the gate,
-    as an unattended run. Returns the tool's result."""
+    as an unattended run. Returns the tool's result. ``own_card``: the
+    person who asked approved a step held on their own card, for a tool
+    whose step only ever runs on their own device (an extension's ``card``
+    tool, ``extensions.card_handler``): their tap is the OK for that call,
+    as the owner's is."""
     from contextlib import nullcontext
 
     from openexecutive.orchestrator.people_tools import grant_contact_egress
@@ -2488,16 +2517,18 @@ async def carry_out(payload: dict[str, Any], *, by_principal: bool) -> str:
 
     tool = str(payload.get("tool") or "")
     tool_input = payload.get("input") if isinstance(payload.get("input"), dict) else {}
-    from openexecutive.orchestrator import levels
+    from openexecutive.orchestrator import extensions, levels
 
+    card_handler = extensions.card_handler(tool) if payload.get("held") is True and not payload.get("mcp") else None
+    own_ok = own_card and card_handler is not None
     token = current_session.set(Session(unattended=True))
     try:
         with (
             grant_contact_egress() if by_principal else nullcontext(),
             # The tap approves this one call: a skill that runs others
             # (a workflow, research) keeps every check for them.
-            levels.approved()
-            if by_principal and payload.get("held") is True and tool not in levels.NOT_RELAXED_SKILLS
+            levels.approved(payload.get("requested_by_person_id"))
+            if (by_principal or own_ok) and payload.get("held") is True and tool not in levels.NOT_RELAXED_SKILLS
             else nullcontext(),
         ):
             if payload.get("mcp"):
@@ -2512,12 +2543,15 @@ async def carry_out(payload: dict[str, Any], *, by_principal: bool) -> str:
             else:
                 from openexecutive.orchestrator.executive import _ALL_SKILL_HANDLERS
 
-                allowed = tool in _ALL_SKILL_HANDLERS and (tool in ACTING_TOOLS or payload.get("held") is True)
-                if not allowed:
+                # An extension's tool marked ``card`` is carried out from the
+                # card it waited on, like a held skill.
+                handler = _ALL_SKILL_HANDLERS.get(tool) or card_handler
+                allowed = handler is not None and (tool in ACTING_TOOLS or payload.get("held") is True)
+                if not allowed or handler is None:
                     raise RuntimeError(f"{tool} can't be done from here.")
 
                 async def run(step: dict[str, Any]) -> Any:
-                    return await _ALL_SKILL_HANDLERS[tool](step)
+                    return await handler(dict(step or {}))
 
             steps = payload.get("steps")
             if not (isinstance(steps, list) and len(steps) > 1 and all(isinstance(x, dict) for x in steps)):

@@ -864,8 +864,17 @@ async def _run_department_action(
     payload = payload if payload is not None else _parse_payload(instance)
     if not claim_for_execution(instance.id, resolver_person_id=resolver):
         raise HTTPException(status_code=409, detail="Someone else resolved this decision first.")
+    # The person who asked approving a step held on their own card, when it
+    # only ever runs on their own device (take_the_lead.carry_out decides
+    # which tools): their tap is that step's OK, as the owner's is.
+    own_card = (
+        not by_principal
+        and resolver is not None
+        and resolver == instance.approver_person_id
+        and resolver == payload.get("requested_by_person_id")
+    )
     try:
-        result = await take_the_lead.carry_out(payload, by_principal=by_principal)
+        result = await take_the_lead.carry_out(payload, by_principal=by_principal, own_card=own_card)
     except Exception as exc:
         logger.exception("decisions/approve: department action %d failed", instance.id)
         finish_execution(instance.id, STATUS_FAILED, final_payload={**payload, "error": type(exc).__name__})

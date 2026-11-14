@@ -54,6 +54,9 @@ def test_sections_have_unique_stable_ids() -> None:
         # `delegation` — Act as me: drafts written as the principal in their own
         # Gmail. New top-level module.
         "delegation",
+        # `browser` — the Executive uses a person's own Chrome through the
+        # browser extension. New top-level module.
+        "browser",
     ]
 
 

@@ -36,6 +36,7 @@ const SECTIONS = [
   { id: 'user_guide', label: 'User Guide Surface', sub: "The /guide page — plain-language, per-feature overviews served from static prebuilt JSON, sharing this page's loader and renderer but separate from this technical reference." },
   { id: 'clients', label: 'Client Companies (Slots)', sub: 'Multi-client mode for fractional executives: named save files of the full company context, one active at a time, with save-back switching and per-client MCP tool configs.' },
   { id: 'delegation', label: 'Act as Me (Delegation)', sub: "The one place the Executive writes as a person instead of itself: drafts in the principal's own Gmail, in their voice, offered only on their own verified turn and never sent." },
+  { id: 'browser', label: 'Browser Extension', sub: "The Executive uses each person's own Chrome through the Open Executive extension: a per-person step relay, the browser tools, hand-over to the person, and how Approvals applies." },
 ];
 
 interface SectionMeta {

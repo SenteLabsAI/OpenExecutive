@@ -659,7 +659,10 @@ class _StepCalls:
             writes = info.read_only is not True
             if writes:
                 targets = _target_digest(arguments)
-            decision = self._holds.decide(name, arguments, self._policy if writes else None)
+            # A tool that asks through Approvals itself (the browser) isn't
+            # held twice: one check, one card.
+            checked = writes and not _asks_through_approvals(name)
+            decision = self._holds.decide(name, arguments, self._policy if checked else None)
             if isinstance(decision, str):
                 (content, is_error), outcome = _refusal(decision), "refused: target check"
             elif decision is not None:
@@ -1133,6 +1136,18 @@ def drop_held_calls(workflow_name: str, step_id: str, held: list[HeldCall], reas
         _audit(workflow_name, step_id, call.tool, f"held → dropped ({reason})",
                _target_digest(call.arguments))
     return f"{len(held)} held write(s) were not run"
+
+
+def _asks_through_approvals(name: str) -> bool:
+    """Whether a step's tool decides Approvals and holds on its own card
+    (``extensions.asks_through_approvals``). Never raises: an error is False."""
+    try:
+        from openexecutive.orchestrator import extensions
+
+        return extensions.asks_through_approvals(name)
+    except Exception:
+        logger.warning("action_step: couldn't tell whether %s asks itself", name, exc_info=True)
+        return False
 
 
 def _held_where(call: HeldCall) -> str:

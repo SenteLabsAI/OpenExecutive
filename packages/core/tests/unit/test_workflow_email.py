@@ -368,6 +368,29 @@ def test_a_sending_workflow_needs_its_verified_creator(people, monkeypatch: pyte
     assert "Only the person who created" in str(workflow_email.save_refusal(defn, olivia, teammate_id))
 
 
+def test_a_workflow_that_uses_their_browser_is_saved_only_by_its_creator(
+    people, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.delegation import workflow_reads
+
+    owner_id, teammate_id = people
+    monkeypatch.setattr("openexecutive.api.caller.signing_on", lambda: True)
+    defn = _defn(["oe__browser_open_tab", "oe__browser_look"])
+    olivia = SimpleNamespace(kind="user", email=OWNER)
+    ben = SimpleNamespace(kind="user", email=TEAM)
+
+    assert workflow_reads.uses_browser(defn)
+    assert not workflow_reads.uses_browser(_defn(["oe__search_knowledge"]))
+    assert workflow_email.save_refusal(defn, olivia, owner_id) is None
+    assert "uses their browser" in str(workflow_email.save_refusal(defn, ben, owner_id))
+    assert "Only the person who created" in str(workflow_email.save_refusal(defn, olivia, teammate_id))
+    # A run of it is its creator's, from the API too.
+    monkeypatch.setattr("openexecutive.workflows.dynamic_store.get_definition", lambda name: defn)
+    monkeypatch.setattr("openexecutive.workflows.dynamic_store.get_owner", lambda name: owner_id)
+    assert workflow_reads.owns_runs("price_check") == owner_id
+    assert "uses their browser" in str(workflow_reads.run_refusal(owner_id, teammate_id, ben))
+
+
 def test_a_sending_workflow_needs_signed_sign_ins(people, monkeypatch: pytest.MonkeyPatch) -> None:
     owner_id, _ = people
     monkeypatch.setattr("openexecutive.api.caller.signing_on", lambda: False)

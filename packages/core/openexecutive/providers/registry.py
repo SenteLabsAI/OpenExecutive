@@ -449,6 +449,21 @@ def _openrouter() -> OpenRouterProvider:
     return _openrouter_provider
 
 
+def sees_images(model: str) -> bool:
+    """Whether ``model`` can be shown a picture (a browser screenshot,
+    ``browser.tools``). Claude and OpenAI's own models can; another model
+    only when the OpenRouter catalog lists image input for it, and a local
+    one never. Unknown is no."""
+    from openexecutive.providers import openrouter_catalog
+
+    if model in _local_models(get_settings()):
+        return False
+    known = openrouter_catalog.accepts_images(model)
+    if known is not None:
+        return known
+    return _is_claude(model) or model.startswith(("anthropic/", "openai/"))
+
+
 def get_provider(model: str) -> LLMProvider:
     """Return the provider that should serve calls for ``model``.
 

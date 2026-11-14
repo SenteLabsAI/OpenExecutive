@@ -46,7 +46,11 @@ def caller(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     who: dict[str, Any] = {"person_id": 1, "principal": True}
     monkeypatch.setattr(alerts_route, "_caller_person_id", lambda request: who["person_id"])
     monkeypatch.setattr(alerts_route, "_caller_is_principal", lambda request: who["principal"])
-    monkeypatch.setattr(alerts_route, "_caller_viewer", lambda request: None)
+    from openexecutive.orchestrator.artifact_records import Viewer
+
+    monkeypatch.setattr(
+        alerts_route, "_caller_viewer", lambda request: Viewer(person_id=who["person_id"], is_principal=who["principal"])
+    )
     return who
 
 
@@ -352,3 +356,53 @@ def test_a_failed_approval_says_to_check_before_retrying(db: Path) -> None:
     approvals.fail_stale_running()
     after = approvals.get(approval.id)
     assert after is not None and "check its chat" in after.outcome
+
+
+def test_done_on_a_waiting_on_you_card_is_theirs_alone_and_answers_a_waiting_turn(
+    client: TestClient, db: Path, caller: dict, turns: _Turns, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A step handed over in someone's own browser (browser/handover.py)."""
+    import asyncio
+
+    from openexecutive.browser import handover as browser_handover
+
+    browser_handover._reset_for_tests()
+    monkeypatch.setattr(browser_handover, "end_bar", lambda handover: None)
+    aid = _insert(db, "Waiting on you: sign in", source=browser_handover.SOURCE, routed_to_person_id=5, needs="ok")
+    # The principal can't press Done for them, or even see it.
+    assert client.post(f"/alerts/{aid}/approve", json={}).status_code == 404
+    caller.update(person_id=5, principal=False)
+    # A turn still waiting for it gets the Done; no new chat.
+    handover = browser_handover.start(5, "sign in", card_id=aid)
+    loop = asyncio.new_event_loop()
+    handover.future = loop.create_future()
+    try:
+        res = client.post(f"/alerts/{aid}/approve", json={})
+        assert res.status_code == 202 and turns.calls == []
+        assert handover.future.result() == "done"
+    finally:
+        loop.close()
+        browser_handover._reset_for_tests()
+
+
+def test_closing_a_waiting_on_you_card_without_done_is_a_stop(
+    client: TestClient, db: Path, caller: dict, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dismissing or clearing it stops the waiting turn and takes the bar down."""
+    from openexecutive.browser import handover as browser_handover
+
+    monkeypatch.setattr(alerts_route, "_caller_clears_anything", lambda request: True)
+    monkeypatch.setattr(alerts_route, "_caller_may_clear", lambda alert, request: True)
+    closed: list[int] = []
+    monkeypatch.setattr(browser_handover, "card_closed", lambda card_id: closed.append(card_id) or True)
+    one = _insert(db, "Waiting on you: sign in", source=browser_handover.SOURCE, routed_to_person_id=5, needs="ok")
+    two = _insert(db, "Waiting on you: pick", source=browser_handover.SOURCE, routed_to_person_id=5, needs="ok")
+    other = _insert(db, "Something else", routed_to_person_id=5)
+    # Not even the principal can see someone's hand-over card.
+    assert client.post(f"/alerts/{one}/ack", json={"status": "read"}).status_code == 404
+    caller.update(person_id=5, principal=False)
+    assert client.post(f"/alerts/{one}/ack", json={"status": "read"}).status_code == 200
+    assert closed == []
+    assert client.post(f"/alerts/{one}/ack", json={"status": "dismissed"}).status_code == 200
+    assert client.post("/alerts/bulk-ack", json={"status": "ack", "alert_ids": [two, other]}).status_code == 200
+    assert closed == [one, two]

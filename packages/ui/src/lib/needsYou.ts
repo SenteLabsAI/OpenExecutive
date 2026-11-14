@@ -116,6 +116,10 @@ export function approveLabel(n: number): string {
   return n > 1 ? `Approve ${n}` : "Approve";
 }
 
+// A "Waiting on you" card from the browser (browser/handover.py): its Done
+// carries the work on.
+export const BROWSER_HANDOVER_TAG = "browser-handover";
+
 // A card that's a signal from outside (the watch list, an app's new entries,
 // a watched stock's move) is for the reader to know: Got it, nothing to
 // approve, unless it says it needs an OK. A card that asks or is for them to

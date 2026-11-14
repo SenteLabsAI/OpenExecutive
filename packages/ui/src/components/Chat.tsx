@@ -4,6 +4,9 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useSession } from "next-auth/react";
 import Message from "./Message";
 import HeldStepsCard, { APPROVE_MESSAGE } from "./HeldStepsCard";
+import BrowserExtensionCard, { BROWSER_GO_AHEAD } from "./browser/BrowserExtensionCard";
+import BrowserWelcomeCard from "./browser/BrowserWelcomeCard";
+import { browserWelcomeClosed, closeBrowserWelcome, showBrowserWelcome } from "@/lib/browserWelcome";
 import BrandMark from "./BrandMark";
 import TurnStatusRow, { useTurnClock } from "./TurnStatusRow";
 import TurnSteps from "./TurnSteps";
@@ -24,6 +27,8 @@ import {
   CommitteePhase,
   DebugEvent,
   FALLBACK_ACTIVITY_LABEL,
+  getBrowserStarters,
+  getBrowserStatus,
   getFollowupSuggestion,
   getSessionMessages,
   getSessionPeople,
@@ -178,6 +183,24 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
   const [isConsulting, setIsConsulting] = useState(false);
   // The reply whose held steps the person put off with Not now (its index).
   const [heldDismissed, setHeldDismissed] = useState<number | null>(null);
+  const [browserDismissed, setBrowserDismissed] = useState<number | null>(null);
+  // "Your browser is connected" on a new chat
+  // (components/browser/BrowserWelcomeCard.tsx): asked once per page.
+  const [browserWelcome, setBrowserWelcome] = useState<string[] | null>(null);
+  const [browserWelcomeShut, setBrowserWelcomeShut] = useState(false);
+  const browserWelcomeWanted = !member && !(initialMessages && initialMessages.length > 0);
+  useEffect(() => {
+    if (!browserWelcomeWanted || browserWelcomeClosed()) return;
+    const ctrl = new AbortController();
+    getBrowserStatus()
+      .then(async (status) => {
+        if (!status.connected || status.available === false || ctrl.signal.aborted) return;
+        const starters = await getBrowserStarters(ctrl.signal);
+        if (!ctrl.signal.aborted) setBrowserWelcome(starters);
+      })
+      .catch(() => undefined);
+    return () => ctrl.abort();
+  }, [browserWelcomeWanted]);
   const [activityLabel, setActivityLabel] = useState<string | null>(null);
   // The running turn's steps (lib/turnSteps.ts), and whether the person
   // pressed I'll finish it and the turn is writing up what it has.
@@ -642,6 +665,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     // Steps the turn held for an outside read; sent once, just before `done`.
     let turnHeld: string[] | undefined;
     let turnFlags: string[] | undefined;
+    let turnBrowser: { store_url: string | null } | undefined;
     let wasStopped = false;
     // Row id of the persisted reply, from `done`; it is what makes the reply
     // rateable with 👍/👎.
@@ -727,6 +751,8 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
           turnHeld = item.steps.length > 0 ? item.steps : undefined;
         } else if (item.type === "flags") {
           turnFlags = item.flags.length > 0 ? item.flags : undefined;
+        } else if (item.type === "browser_needed") {
+          turnBrowser = { store_url: item.store_url ?? null };
         } else if (item.type === "message_added") {
           setQueued(markTaken(queuedRef.current, item.ids));
         } else if (item.type === "stopped") {
@@ -787,6 +813,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
             id: replyId,
             held_steps: turnHeld,
             flags: turnFlags,
+            browser_needed: turnBrowser,
           },
         ]);
         // Only a complete, persisted reply gets a follow-up: a stopped one
@@ -1262,6 +1289,26 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                       </button>
                     ))}
               </div>
+              {browserWelcome &&
+                showBrowserWelcome({
+                  landing: isEmpty,
+                  connected: true,
+                  starters: browserWelcome,
+                  closed: browserWelcomeShut,
+                }) && (
+                  <BrowserWelcomeCard
+                    starters={browserWelcome}
+                    onPick={(text) => {
+                      setBrowserWelcomeShut(true);
+                      closeBrowserWelcome();
+                      setInput(text);
+                    }}
+                    onClose={() => {
+                      setBrowserWelcomeShut(true);
+                      closeBrowserWelcome();
+                    }}
+                  />
+                )}
             </div>
           ) : (
             <>
@@ -1325,6 +1372,17 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                       onDismiss={() => setHeldDismissed(i)}
                     />
                   )}
+                {msg.role === "assistant" && i === messages.length - 1 && browserDismissed !== i && msg.browser_needed && (
+                  <BrowserExtensionCard
+                    storeUrl={msg.browser_needed.store_url}
+                    onDismiss={() => setBrowserDismissed(i)}
+                    disabled={isLoading}
+                    onGoAhead={() => {
+                      setBrowserDismissed(i);
+                      void handleSend(BROWSER_GO_AHEAD);
+                    }}
+                  />
+                )}
                 </div>
               ))}
 

@@ -37,12 +37,25 @@ def artifact_visible_to(
     return person_id is not None and person_id == owner_person_id
 
 
+# Sources of cards that belong to the one person they are routed to: a
+# browser hand-over ("Waiting on you: sign in to ...", with the task from that
+# person's own chat). Only that person sees one, not even the principal, and
+# no surface shared by everyone (``visible_alert``).
+PERSONAL_SOURCES: frozenset[str] = frozenset({"browser_handover"})
+
+
 def visible_alert(alert: object, viewer: object | None) -> bool:
     """Whether ``alert`` may be shown to ``viewer`` (anything with
     ``person_id`` and ``is_principal``, e.g. ``artifact_records.Viewer``).
-    Every alert but a drafted artifact may; an artifact only to its owner,
-    and to no one when there is no viewer (a surface shared by everyone)."""
-    if getattr(alert, "source", None) != ARTIFACT_SOURCE:
+    Every alert but a drafted artifact or a personal card may; an artifact
+    only to its owner, a personal card (``PERSONAL_SOURCES``) only to the
+    person it is routed to, and neither to anyone when there is no viewer (a
+    surface shared by everyone)."""
+    source = getattr(alert, "source", None)
+    if source in PERSONAL_SOURCES:
+        routed = getattr(alert, "routed_to_person_id", None)
+        return viewer is not None and routed is not None and getattr(viewer, "person_id", None) == routed
+    if source != ARTIFACT_SOURCE:
         return True
     if viewer is None:
         return False

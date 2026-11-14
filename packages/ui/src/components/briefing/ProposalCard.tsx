@@ -11,7 +11,7 @@ import OverflowMenu, { type OverflowItem } from "@/components/ui/OverflowMenu";
 import { type PersonBriefItem, type PlanResult, type ProposalItem, type SteerResult, undoCardPlan } from "@/lib/api";
 import { briefingMemoryLine, nudgeAction } from "@/lib/briefing-memory";
 import { ageLabel, daysUntil, proposalStatusChip } from "@/lib/briefingSummary";
-import { cardButtons, isSignalCard } from "@/lib/needsYou";
+import { BROWSER_HANDOVER_TAG, cardButtons, isSignalCard } from "@/lib/needsYou";
 import { type SnoozeChoice, snoozeChoices } from "@/lib/snooze";
 import { hostOf } from "@/lib/url";
 
@@ -363,10 +363,12 @@ export default function ProposalCard({
   const needs = proposal.needs ?? "";
   const asks = (needs === "answer" || needs === "choice") && Boolean(onAnswer);
   const { noApprove, gotIt } = cardButtons(needs, isSignal);
+  // A "Waiting on you" card from the browser: Done carries the work on.
+  const handedOver = (proposal.topic_tags ?? []).includes(BROWSER_HANDOVER_TAG);
   const approve: CardAction | null =
     !noApprove && !isMonitoring && !isArtifact && !failedRun && onApprove
       ? {
-          label: "Approve",
+          label: handedOver ? "Done" : "Approve",
           // The plan as this card shows it, which the server checks.
           onSelect: () => onApprove({ ...proposal, suggested_action: plan }),
         }
@@ -389,7 +391,7 @@ export default function ProposalCard({
     }
   }
   const editApprove: CardAction | null =
-    !noApprove && !isMonitoring && !isArtifact && !isDecision && !failedRun && onApproveWithEdits
+    !handedOver && !noApprove && !isMonitoring && !isArtifact && !isDecision && !failedRun && onApproveWithEdits
       ? { label: "Edit & approve", onSelect: startEditing }
       : null;
   // Dismiss sits apart at the right of every card; a card that is only for

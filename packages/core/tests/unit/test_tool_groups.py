@@ -40,11 +40,15 @@ def _no_audit_writes(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
 
 
 def test_every_deferred_name_is_a_real_tool_with_a_handler() -> None:
+    from openexecutive.orchestrator import extensions
     from openexecutive.orchestrator.executive import _ALL_SKILL_HANDLERS, _ALL_SKILL_TOOLS
 
     names = {t["name"] for t in _ALL_SKILL_TOOLS}
-    assert set(tool_groups.DEFERRED) <= names
-    assert set(tool_groups.DEFERRED) <= set(_ALL_SKILL_HANDLERS)
+    # Tools an extension registered (the browser's, once loaded) have their
+    # own handlers in the extension registry.
+    core = set(tool_groups.DEFERRED) - set(extensions._tools)
+    assert core <= names
+    assert core <= set(_ALL_SKILL_HANDLERS)
 
 
 def test_each_tool_sits_in_one_group() -> None:

@@ -932,3 +932,54 @@ def test_a_conditional_save_that_changes_tools_clears_approvals_in_the_same_writ
     current = dynamic_store.get_definition("file_bills_wf")
     assert dynamic_store.save_if_unchanged(retooled, current) is not None
     assert at.approved_values("file_bills_wf") == set()
+
+
+@pytest.mark.asyncio
+async def test_a_tool_that_asks_through_approvals_is_not_held_again(
+    monkeypatch: pytest.MonkeyPatch, gateway: _FakeGateway, audit: list[dict[str, Any]]
+) -> None:
+    from openexecutive.orchestrator import extensions
+
+    monkeypatch.setattr(extensions, "asks_through_approvals", lambda name: name == APPEND)
+    provider = _ScriptedProvider(
+        [
+            _resp(_use(APPEND, {"spreadsheet_id": OTHER, "rows": [["x"]]}, "tu_1")),
+            _resp(_text("Filed it.")),
+        ]
+    )
+    _install(monkeypatch, provider)
+    out = []
+    async for item in act.run_action_step(
+        _step(max_tool_calls=1),
+        workflow_name="file_bills_wf", workflow_title="File bills", goal="File them.",
+        values={}, company_block="", prior_outputs={},
+        policy=_policy(approved={SHEET}),
+    ):
+        out.append(item)
+    assert not [p for k, p in out if k == "held"]
+    assert [c["arguments"]["spreadsheet_id"] for c in gateway.calls] == [OTHER]
+
+
+def test_only_card_tools_ask_through_approvals() -> None:
+    from openexecutive.orchestrator import extensions
+
+    async def handler(_: dict[str, Any]) -> str:
+        return "ok"
+
+    def tool(name: str, card: bool) -> extensions.ExtraTool:
+        return extensions.ExtraTool(
+            definition={"name": name, "description": name, "input_schema": {"type": "object"}},
+            handler=handler, workflow=True, card=card,
+        )
+
+    saved = dict(extensions._tools)
+    try:
+        extensions.register_tool(tool("held_test_carded", True))
+        extensions.register_tool(tool("held_test_plain", False))
+        assert extensions.asks_through_approvals("oe__held_test_carded")
+        assert extensions.asks_through_approvals("held_test_carded")
+        assert not extensions.asks_through_approvals("oe__held_test_plain")
+        assert not extensions.asks_through_approvals("oe__no_such_tool")
+    finally:
+        extensions._tools.clear()
+        extensions._tools.update(saved)

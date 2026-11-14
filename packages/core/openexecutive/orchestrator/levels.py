@@ -66,9 +66,12 @@ NEW_PERSON = "new_person"
 FILE_PLACE = "file_place"
 URL_FETCH = "url_fetch"
 SCRIPT = "apps_script"
+# A click or typing on an email or chat site in the person's own browser
+# (``browser.tools``), where it can send a message.
+SEND_SITE = "send_site"
 REASONS: frozenset[str] = frozenset({
     OUTSIDE, OWN_MAIL, MAIL_FLAGGED, PRIVATE, SHARED, AI_APP, NOT_OWNER, UNATTENDED, STRANGER, NEW_PERSON,
-    FILE_PLACE, URL_FETCH, SCRIPT,
+    FILE_PLACE, URL_FETCH, SCRIPT, SEND_SITE,
 })
 
 # What the card says it waited for, in the owner's words.
@@ -86,6 +89,7 @@ _WHY: dict[str, str] = {
     FILE_PLACE: "the folder it goes in is shared outside the company",
     URL_FETCH: "it has a service fetch a web address",
     SCRIPT: "it runs a script as your Executive's Google account",
+    SEND_SITE: "it clicks or types on an email or chat site, where that can send a message",
 }
 
 # A step the owner approved on a card is being carried out
@@ -96,16 +100,27 @@ NOT_RELAXED_SKILLS: frozenset[str] = frozenset({
     "run_workflow", "run_executive_research", "run_script", "run_python_job", "suggest_workflow",
 })
 _APPROVED: contextvars.ContextVar[bool] = contextvars.ContextVar("levels_approved", default=False)
+# Who asked for the approved step (the card's requester on People).
+_APPROVED_FOR: contextvars.ContextVar[int | None] = contextvars.ContextVar("levels_approved_for", default=None)
 
 
 @contextlib.contextmanager
-def approved() -> Iterator[None]:
-    """Carry out a step the owner approved: inside it, ``relaxed`` is true."""
+def approved(requester: int | None = None) -> Iterator[None]:
+    """Carry out a step the owner approved: inside it, ``relaxed`` is true.
+    ``requester`` is the person on People who asked for it."""
     token = _APPROVED.set(True)
+    who = _APPROVED_FOR.set(requester if isinstance(requester, int) and not isinstance(requester, bool) else None)
     try:
         yield
     finally:
+        _APPROVED_FOR.reset(who)
         _APPROVED.reset(token)
+
+
+def approved_requester() -> int | None:
+    """Inside an approved step, the person who asked for it (their own
+    browser is the one it uses, ``browser.tools``); else None."""
+    return _APPROVED_FOR.get() if _APPROVED.get() else None
 
 
 def is_approved() -> bool:
@@ -314,14 +329,16 @@ def only_to_owner(tool_name: str, tool_input: Any) -> bool:
 def carriable(tool: str, *, mcp: bool) -> bool:
     """Whether an Approve tap can carry out ``tool`` exactly: a connected
     app's call, or a skill the Executive runs. A script or a new server is
-    the turn's own and can't wait on a card."""
+    the turn's own and can't wait on a card. An extension's tool marked
+    ``card`` too (``extensions.card_handler``)."""
     if mcp:
         return True
     try:
+        from openexecutive.orchestrator import extensions
         from openexecutive.orchestrator.executive import _ALL_SKILL_HANDLERS
     except Exception:
         return False
-    return tool in _ALL_SKILL_HANDLERS
+    return tool in _ALL_SKILL_HANDLERS or extensions.card_handler(tool) is not None
 
 
 def _requester(session: Any) -> Any:
@@ -398,6 +415,15 @@ def hold_many(
     from openexecutive.orchestrator import department_gate
 
     steps = [dict(i or {}) for i in tool_inputs] or [{}]
+    if not mcp and reason != SEND_SITE:
+        from openexecutive.orchestrator import extensions
+
+        if extensions.card_handler(tool) is not None:
+            # An extension card tool's "_" keys (the page a browser step was
+            # held on) are its own handler's, set only on its SEND_SITE hold:
+            # held anywhere else they came from the model, and the card and
+            # its tap would trust them.
+            steps = [{k: v for k, v in s.items() if not str(k).startswith("_")} for s in steps]
     if mcp and not str(tool or "").strip():
         # Nothing anyone could approve (no tool named).
         return json.dumps({"error": "call_tool needs the tool's name: find it with search_tools first."})

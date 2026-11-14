@@ -215,6 +215,7 @@ test("the Settings hub: one tile per page, each with its own route", () => {
       "Your Executive → /settings/executive",
       "Notifications → /settings/notifications",
       "About you → /settings/memory",
+      "Browser → /settings/browser",
       "Workspace → /settings/workspace",
       "Advanced → /settings/advanced",
       "About → /settings/about",
@@ -258,7 +259,7 @@ test("every Settings page sits in a known group, and the hub lists the groups in
   assert.deepEqual(
     groupSettingsPages(SETTINGS_PAGES).map(({ group, pages }) => [group.label, pages.map((p) => p.label)]),
     [
-      ["You and your Executive", ["Your Executive", "Notifications", "About you"]],
+      ["You and your Executive", ["Your Executive", "Notifications", "About you", "Browser"]],
       ["Company", ["Workspace"]],
       ["More", ["Advanced", "About"]],
     ],

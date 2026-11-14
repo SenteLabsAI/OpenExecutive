@@ -1751,6 +1751,7 @@ def test_a_private_turn_opens_a_onedrive_file_and_nothing_else_with_download_byt
 
 
 def test_a_normal_turn_offers_and_runs_them_unchanged(roster: SimpleNamespace) -> None:
+    from openexecutive.browser import tools as browser_tools
     from openexecutive.orchestrator import executive as executive_module
     from openexecutive.orchestrator.content_trust import PRINCIPAL_ONLY_TOOLS
     from openexecutive.orchestrator.executive import _ALL_SKILL_TOOLS, SPECIALIST_TOOLS
@@ -1786,6 +1787,9 @@ def test_a_normal_turn_offers_and_runs_them_unchanged(roster: SimpleNamespace) -
             CHAT_TOOL_DEFINITION,
             LIST_SAVED_TOOLS_DEFINITION,
             SHOW_PROGRESS_TOOL,
+            # A web chat turn of someone on the People list gets the browser
+            # (built in, see openexecutive.browser.tools).
+            *({"name": n} for n in browser_tools.TOOLS),
         ]
         # No sandbox in the tests (python_job.available).
         if t["name"] != "run_python_job"

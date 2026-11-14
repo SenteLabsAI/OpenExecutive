@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Open Executive</title>
+    <style>
+      [hidden] { display: none !important; }
+      body { margin: 0; width: 320px; font: 14px/1.45 system-ui, sans-serif; color: #111827; background: #fff; }
+      main { padding: 16px; }
+      h1 { font-size: 15px; margin: 0 0 8px; display: flex; align-items: center; gap: 8px; }
+      h1 img { width: 20px; height: 20px; }
+      p { margin: 8px 0; color: #374151; }
+      .muted { color: #6b7280; font-size: 12px; }
+      button { font: 600 13px system-ui, sans-serif; border: 0; border-radius: 999px; padding: 8px 14px; cursor: pointer; }
+      .primary { background: #4f46e5; color: #fff; }
+      .quiet { background: #f3f4f6; color: #111827; }
+      .danger { background: #dc2626; color: #fff; }
+      ul { list-style: none; padding: 0; margin: 8px 0; }
+      li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid #f3f4f6; }
+      li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .row { display: flex; gap: 8px; align-items: flex-start; margin: 8px 0; color: #374151; cursor: pointer; }
+      .row input { margin-top: 3px; }
+      @media (prefers-color-scheme: dark) {
+        body { background: #111827; color: #f9fafb; }
+        p { color: #d1d5db; }
+        .quiet { background: #1f2937; color: #f9fafb; }
+        li { border-color: #1f2937; }
+        .row { color: #d1d5db; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1><img src="icons/icon32.png" alt="" />Open Executive</h1>
+      <div id="connect" hidden>
+        <p id="connect-text"></p>
+        <button id="connect-btn" class="primary" type="button">Connect</button>
+      </div>
+      <div id="none" hidden>
+        <p>Open your Open Executive in a tab, then open this again to connect it.</p>
+      </div>
+      <div id="sites" hidden>
+        <p>Your Executive can use this browser while one of these is open in a tab:</p>
+        <ul id="site-list"></ul>
+      </div>
+      <label id="stay" class="row" hidden>
+        <input id="stay-box" type="checkbox" />
+        <span>Stay connected while Chrome is open, so your workflows can use it. It works in its own Open Executive window.</span>
+      </label>
+      <div id="update" hidden>
+        <p id="update-text"></p>
+      </div>
+      <div id="stopped" hidden>
+        <p>Stopped for now.</p>
+        <button id="resume" class="quiet" type="button">Let it go on</button>
+      </div>
+      <p class="muted">It uses the page you're on to get things done for you. It never fills passwords or card numbers. Press Stop on the bar at the top of the page to stop it.</p>
+    </main>
+    <script src="site-rules.js"></script>
+    <script src="shared.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

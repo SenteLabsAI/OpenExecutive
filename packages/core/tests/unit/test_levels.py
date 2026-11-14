@@ -247,3 +247,25 @@ def test_the_card_says_when_a_mail_read_was_flagged() -> None:
         assert "instructions" in levels._WHY[levels.MAIL_FLAGGED]
     finally:
         outside_content.end_turn(state)
+
+
+def test_a_held_browser_step_never_keeps_the_page_the_model_named(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import department_gate, extensions
+
+    seen: list[dict[str, Any]] = []
+
+    def fake_hold(requester: Any, tool: str, tool_input: dict[str, Any], verdict: Any, **kw: Any) -> int:
+        seen.append(tool_input)
+        return 7
+
+    monkeypatch.setattr(department_gate, "hold", fake_hold)
+    monkeypatch.setattr(extensions, "card_handler", lambda tool: (lambda _i: None) if tool == "browser_click" else None)
+    step = {"ref": 4, "_at": "https://bank.example/", "_element": 'button "Pay"', "_own": True}
+    with set_session(Session(from_web_chat=True)):
+        # Held by Approvals before the tool ran: those keys are the model's.
+        levels.hold("browser_click", dict(step), mcp=False, reason=levels.OUTSIDE)
+        # Held by the tool itself on an email or chat site: they are its own.
+        levels.hold("browser_click", dict(step), mcp=False, reason=levels.SEND_SITE)
+        # Another tool's keys are left as they are.
+        levels.hold("message_person", {"_x": 1}, mcp=False, reason=levels.OUTSIDE)
+    assert seen == [{"ref": 4}, step, {"_x": 1}]

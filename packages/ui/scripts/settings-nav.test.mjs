@@ -16,6 +16,7 @@ test("the menu lists the hub's pages in the hub's groups", () => {
         "Your Executive → /settings/executive",
         "Notifications → /settings/notifications",
         "About you → /settings/memory",
+        "Browser → /settings/browser",
       ],
     ],
     ["Company", ["Workspace → /settings/workspace"]],
@@ -26,7 +27,7 @@ test("the menu lists the hub's pages in the hub's groups", () => {
 });
 
 test("a page the person can't open isn't listed", () => {
-  const groups = settingsNav(SETTINGS_PAGES.filter((p) => p.id !== "memory" && p.id !== "notifications"), SETTINGS_GROUPS);
+  const groups = settingsNav(SETTINGS_PAGES.filter((p) => p.id !== "memory" && p.id !== "notifications" && p.id !== "browser"), SETTINGS_GROUPS);
   assert.deepEqual(menu(groups)[0], ["You and your Executive", ["Your Executive → /settings/executive"]]);
 });
 
