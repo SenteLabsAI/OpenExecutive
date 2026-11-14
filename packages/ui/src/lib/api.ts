@@ -5697,6 +5697,9 @@ export interface ProposalItem {
   // external/watchlist signal was pulled into the action lane by its severity
   // (e.g. a large stock move). Null/absent for everything else.
   surfaced_reason?: string | null;
+  // The watch that raised this card, when a watch did: the card offers a
+  // reply that steers it (steerAlert) and links to its page.
+  watch_slug?: string | null;
   // Set when this proposal is backed by a decision_instance (a gated calendar
   // booking awaiting approval). The briefing routes Approve/Reject to the
   // /decisions endpoints (which book/cancel server-side) instead of the
@@ -6628,6 +6631,40 @@ export async function approveAlert(alertId: number, editedBody?: string): Promis
   }
   return res.json();
 }
+
+// What changed when the person replied to a watch's card. To undo it, put
+// the watch's notes back to `previous_notes` and reopen `closed_alert_ids`.
+export interface SteerResult {
+  reply: string;
+  watch_slug: string;
+  watch_title: string;
+  notes: string;
+  previous_notes: string;
+  closed_alert_ids: number[];
+}
+
+// Reply to a watch's card to correct or steer the watch.
+export async function steerAlert(alertId: number, text: string): Promise<SteerResult> {
+  const res = await fetch(`${API_BASE}/alerts/${alertId}/steer`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(body ? detailOf(body) : "Couldn't send that. Try again.");
+  }
+  return res.json();
+}
+
+// Undo a steer: the watch's notes as they were, and its closed cards back.
+export async function undoSteer(result: SteerResult): Promise<void> {
+  await patchWatchlistItem(result.watch_slug, { notes: result.previous_notes });
+  for (const id of result.closed_alert_ids) {
+    await reopenAlert(id);
+  }
+}
+
 
 // What a Needs you card asks of its reader (ProposalItem.needs).
 export type CardNeeds = "" | "answer" | "choice" | "ok" | "fyi";

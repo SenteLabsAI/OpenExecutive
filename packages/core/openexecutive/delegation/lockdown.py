@@ -141,6 +141,9 @@ MAIL_TOUCHED_ALLOWED_TOOLS: frozenset[str] = frozenset({
     "remember_fact",
     "forget_fact",
     "update_company_profile",
+    # A figure kept for the speaker alone, private when the turn read their
+    # mail (figure_tools, memory.worked_out).
+    "keep_figure",
     # The speaker's own bookkeeping (correction_tools: their own follow-ups
     # and drafts; a brief item kept out only in the principal's quoted words).
     "cancel_followup",

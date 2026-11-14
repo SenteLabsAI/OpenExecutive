@@ -203,6 +203,9 @@ class ProposalItem(BaseModel):
     # severity (large stock move, etc.). Null for everything else; the UI
     # renders it as a small note so the promotion reads as deliberate.
     surfaced_reason: str | None = None
+    # The watch that raised this card, when a watch did: the card offers a
+    # reply that steers it (POST /alerts/{id}/steer) and links to its page.
+    watch_slug: str | None = None
     # Set when this proposal is backed by a decision_instance (a gated
     # calendar booking awaiting approval). The UI routes Approve/Reject to
     # the /decisions endpoints (which book/cancel server-side) instead of the
@@ -1151,7 +1154,7 @@ def _build_today(
     from openexecutive.alerts import lifecycle as lifecycle_module
     from openexecutive.alerts.lifecycle import list_live_alerts
     from openexecutive.alerts.store import count_superseded_by
-    from openexecutive.briefing.ranking import score_and_categorize
+    from openexecutive.briefing.ranking import score_and_categorize, watch_slug_of
     from openexecutive.workflows.failure_alerts import SOURCE as FAILED_RUN_SOURCE
     from openexecutive.workflows.failure_alerts import failed_run_id
 
@@ -1199,6 +1202,7 @@ def _build_today(
             score=item_score,
             category=item_category,
             surfaced_reason=item_reason,
+            watch_slug=watch_slug_of(alert),
             decision_instance_id=_parse_decision_instance_id(alert.topic_tags or []),
             failed_run_id=(
                 failed_run_id(alert.topic_tags or [])

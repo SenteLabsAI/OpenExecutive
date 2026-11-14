@@ -394,13 +394,13 @@ function WatchForm({ initial, onCreated }: WatchFormProps) {
         />
       </div>
       <div>
-        <label htmlFor="watch-notes" className={labelCls}>Notes</label>
+        <label htmlFor="watch-notes" className={labelCls}>What I should know (optional)</label>
         <input
           id="watch-notes"
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
           maxLength={500}
-          placeholder="Why watch this?"
+          placeholder="Why watch this, or what to skip"
           className={fieldCls}
         />
       </div>

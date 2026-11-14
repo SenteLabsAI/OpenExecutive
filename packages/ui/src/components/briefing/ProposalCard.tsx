@@ -8,7 +8,7 @@ import remarkGfm from "remark-gfm";
 import RosterRequestCard from "@/components/RosterRequestCard";
 import Button, { buttonClass } from "@/components/ui/Button";
 import OverflowMenu, { type OverflowItem } from "@/components/ui/OverflowMenu";
-import type { PersonBriefItem, ProposalItem } from "@/lib/api";
+import type { PersonBriefItem, ProposalItem, SteerResult } from "@/lib/api";
 import { MEMORY_ACTIONS, briefingMemoryLine, nudgeAction } from "@/lib/briefing-memory";
 import { ageLabel, daysUntil, proposalStatusChip } from "@/lib/briefingSummary";
 import { BROWSER_HANDOVER_TAG, cardButtons, isSignalCard } from "@/lib/needsYou";
@@ -16,6 +16,7 @@ import { type SnoozeChoice, snoozeChoices } from "@/lib/snooze";
 import { hostOf } from "@/lib/url";
 
 import CardAsk from "./CardAsk";
+import CardSteer from "./CardSteer";
 import CardTopRow from "./CardTopRow";
 import HeldActionCard, { isHeldAction } from "./HeldActionCard";
 import LeadTrainingCard, { isLeadCard } from "./LeadTrainingCard";
@@ -201,6 +202,8 @@ export default function ProposalCard({
   onRerun,
   onApproveWithEdits,
   onAnswer,
+  onSteered,
+  onSteerUndone,
   busy = false,
   defaultBodyExpanded = false,
   emphasized = false,
@@ -218,6 +221,10 @@ export default function ProposalCard({
   // Answer a card that asks something (needs "answer" or
   // "choice"); rejects with the reason when it couldn't be sent.
   onAnswer?: (p: ProposalItem, answer: string) => Promise<void>;
+  // A watch's card (watch_slug): the person replied to steer the watch.
+  // The card stays to show what changed; the page drops the others it closed.
+  onSteered?: (p: ProposalItem, result: SteerResult) => void;
+  onSteerUndone?: (p: ProposalItem, result: SteerResult) => void;
   busy?: boolean;
   // Show the whole body while closed (no clamp) — the first card in the
   // queue, so its full text reads without a click.
@@ -234,6 +241,8 @@ export default function ProposalCard({
   const [editing, setEditing] = useState(false);
   const [editedBody, setEditedBody] = useState("");
   const [expanded, setExpanded] = useState(false);
+  // A reply on a watch's card closed it: its buttons go until Undo.
+  const [steered, setSteered] = useState(false);
   // A roster request ("who is this new sender?") is answered on its own
   // card — never through chat, so what a stranger wrote never seeds a turn.
   // Below the hooks, which must run on every render.
@@ -602,7 +611,22 @@ export default function ProposalCard({
         />
       )}
 
-      {showActions && (
+      {proposal.watch_slug && onDismiss && !asks && (
+        <CardSteer
+          alertId={proposal.alert_id}
+          watchSlug={proposal.watch_slug}
+          onSteered={(r) => {
+            setSteered(true);
+            onSteered?.(proposal, r);
+          }}
+          onUndone={(r) => {
+            setSteered(false);
+            onSteerUndone?.(proposal, r);
+          }}
+        />
+      )}
+
+      {showActions && !steered && (
         <div className="mt-4 flex flex-wrap items-center gap-2">
           {primary &&
             (primary.href ? (

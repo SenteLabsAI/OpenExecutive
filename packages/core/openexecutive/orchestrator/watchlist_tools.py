@@ -255,8 +255,9 @@ TUNE_WATCHLIST_ENTRY_TOOL: dict[str, Any] = {
     "description": (
         "Modify an existing watchlist entry. Use to disable a noisy source, "
         "flip into dry_run mode (Watch quietly: only in the brief, never a card), change the trigger (its threshold, keywords, "
-        "or 'only_big': true for big changes only), or set the goal or "
-        "person it is for. Pass only the fields you want to change."
+        "or 'only_big': true for big changes only), set the goal or "
+        "person it is for, or rewrite its notes when the person corrects it. "
+        "Pass only the fields you want to change."
     ),
     "input_schema": {
         "type": "object",
@@ -291,7 +292,17 @@ TUNE_WATCHLIST_ENTRY_TOOL: dict[str, Any] = {
                     "merge — keep all fields you want preserved)."
                 ),
             },
-            "notes": {"type": "string"},
+            "notes": {
+                "type": "string",
+                "description": (
+                    "What you know about this watch (its What I know). Every "
+                    "check reads it before deciding whether to tell anyone, so "
+                    "when the person corrects a watch (e.g. 'that's our own "
+                    "repo, skip it') put it here: keep what still holds, add "
+                    "the correction, short lines. Replaces the whole note "
+                    "(max ~500 chars)."
+                ),
+            },
         },
         "required": ["slug"],
     },
