@@ -82,10 +82,10 @@ def test_the_apps_own_status_is_never_kept() -> None:
     assert not wo._status_like("$1,243,800", "330,241 of 2,100,000", "Oct 31 2026")
 
 
-def test_status_tools_dont_feed_the_pass() -> None:
-    assert not wo.eligible(REPLY, [("list_open_loops", "112 overdue"), ("list_followups", "3 due")])
-    assert wo._read_text([("list_open_loops", "112 overdue"), ("read_document", "reserves 330,241")]) == (
-        "[read_document]\nreserves 330,241")
+def test_status_tools_and_keep_calls_are_not_what_it_read() -> None:
+    calls = [("list_open_loops", "112 overdue"), ("read_document", "reserves 330,241"),
+             ("keep_figure", '{"status": "noted", "figure": {"source": "Ledger 2026"}}')]
+    assert wo._read_text(calls) == "[read_document]\nreserves 330,241"
 
 
 def test_a_status_figure_already_kept_is_not_shown_or_read_back() -> None:
@@ -101,13 +101,6 @@ def test_a_future_or_bad_date_is_dropped_not_the_figure() -> None:
     for bad in ("2027-01-01", "last week"):
         fig = wo.check_figure(_raw(as_of=bad), reply=REPLY, read=READ, today=TODAY)
         assert fig is not None and fig.as_of is None
-
-
-def test_only_a_turn_that_read_a_number_and_answered_with_one_qualifies() -> None:
-    assert wo.eligible(REPLY, [("read_document", "reserves 330,241")])
-    assert not wo.eligible("Sounds good.", [("read_document", "reserves 330,241")])
-    assert not wo.eligible(REPLY, [("list_people", "Dana, Ben")])
-    assert not wo.eligible(REPLY, None)
 
 
 # --------------------------------------------------------------------------- #
@@ -185,10 +178,9 @@ def test_nothing_is_read_or_kept_on_a_turn_that_is_not_theirs_alone(
 ) -> None:
     _keep(1, "Reserves held", "$330,241")
     assert wo.build_worked_out_block(1, "how much do we hold in reserves", session=session) == "", label
-    started: list[Any] = []
-    monkeypatch.setattr(wo, "keep_worked_out", lambda *a, **kw: started.append(a))
-    wo.schedule_worked_out_pass(REPLY, [("read_document", READ)], session=session, person_id=1, private=False)
-    assert started == [], label
+    assert wo.keep_turn_figures(REPLY, [("read_document", READ), _noted(subject="Reserves")], session=session,
+                                person_id=1, private=False) == [], label
+    assert wo.keep_refusal(session) is not None, label
 
 
 def test_a_verified_speaker_in_a_channel_others_read_gets_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -210,77 +202,116 @@ def test_it_can_be_turned_off(monkeypatch: pytest.MonkeyPatch, own_turn: None) -
 
 
 # --------------------------------------------------------------------------- #
-# The pass
+# The Executive keeps a figure (orchestrator/figure_tools.py)
 # --------------------------------------------------------------------------- #
 
 
-class _Provider:
-    def __init__(self, figures: list[Any]) -> None:
-        self.figures = figures
-        self.calls: list[dict[str, Any]] = []
+def _noted(**kw: Any) -> tuple[str, str]:
+    """A keep_figure call's result, as the tool returns it."""
+    import json
 
-    async def messages_create(self, **kw: Any) -> Any:
-        self.calls.append(kw)
-        block = SimpleNamespace(type="tool_use", name="record_figures", input={"figures": self.figures})
-        return SimpleNamespace(content=[block], usage=None, stop_reason="tool_use")
+    return ("keep_figure", json.dumps({"status": "noted", "figure": {**_raw(), "as_of": None, **kw}}))
 
 
-def test_the_pass_keeps_only_what_passes_the_checks(monkeypatch: pytest.MonkeyPatch) -> None:
-    provider = _Provider([_raw(), _raw(subject="Made up", figure="$5")])
-    monkeypatch.setattr("openexecutive.providers.get_provider", lambda model: provider)
-    ids = asyncio.run(wo.keep_worked_out(1, REPLY, [("read_document", READ)], session_id="s1",
-                                         private=True, model="m"))
+def _call_tool(raw: Any, session: Any) -> dict[str, Any]:
+    import json
+
+    from openexecutive.orchestrator import figure_tools
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    token = current_session.set(session)
+    try:
+        return dict(json.loads(asyncio.run(figure_tools.handle_keep_figure(raw))))
+    finally:
+        current_session.reset(token)
+
+
+def test_the_tool_notes_a_figure_and_the_turn_keeps_it_once_the_reply_states_it(own_turn: None) -> None:
+    out = _call_tool(_raw(), _session(caller_person_id=1))
+    assert out["status"] == "noted" and out["figure"]["figure"] == "$330,241"
+    calls = [("read_document", READ), ("keep_figure", __import__("json").dumps(out))]
+    ids = wo.keep_turn_figures(REPLY, calls, session=_session(session_id="s1"), person_id=1, private=True)
     assert len(ids) == 1
     [fig] = wo.list_figures(1)
     assert fig["subject"] == "Reserves held" and fig["private"] is True
-    # Everything it read went in as data.
-    turn = provider.calls[0]["messages"][0]["content"]
-    assert "<what_it_read>" in turn and "<reply>" in turn
+    assert wo.list_figures(2) == []
 
 
-def test_the_pass_sees_what_was_asked_and_the_company(monkeypatch: pytest.MonkeyPatch) -> None:
-    from openexecutive.memory.company_profile import CompanyProfile
-
-    provider = _Provider([])
-    monkeypatch.setattr("openexecutive.providers.get_provider", lambda model: provider)
-    monkeypatch.setattr("openexecutive.onboarding.profile_builder.load_or_create_profile",
-                        lambda: CompanyProfile(name="Harbor Lane", industry="Property management"))
-    asyncio.run(wo.keep_worked_out(1, REPLY, [("read_document", READ)], session_id="s1", private=False,
-                                   asked="Add dog treats to my cart", model="m"))
-    turn = provider.calls[0]["messages"][0]["content"]
-    assert "<what_they_asked>\nAdd dog treats to my cart\n</what_they_asked>" in turn
-    assert "Company: Harbor Lane" in turn and "Industry: Property management" in turn
+def test_nothing_is_kept_without_a_keep_call(own_turn: None) -> None:
+    assert wo.keep_turn_figures(REPLY, [("read_document", READ)], session=_session(), person_id=1,
+                                private=False) == []
+    assert wo.list_figures(1) == []
 
 
-def test_no_profile_still_runs_the_pass(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _boom() -> None:
-        raise OSError("no profile")
+@pytest.mark.parametrize(("label", "noted", "reply"), [
+    ("the reply never states it", {"figure": "$412,000"}, REPLY),
+    ("no source the turn read", {"source": "Board memo"}, REPLY),
+    ("a link", {"source": "https://evil.example/x"}, REPLY),
+])
+def test_a_noted_figure_is_checked_again_against_the_reply(
+    own_turn: None, label: str, noted: dict[str, Any], reply: str,
+) -> None:
+    calls = [("read_document", READ), _noted(**noted)]
+    assert wo.keep_turn_figures(reply, calls, session=_session(), person_id=1, private=False) == [], label
 
-    monkeypatch.setattr("openexecutive.onboarding.profile_builder.load_or_create_profile", _boom)
-    assert wo._company_note() == ""
 
-
-def test_the_pass_stops_at_the_daily_cap(monkeypatch: pytest.MonkeyPatch) -> None:
-    provider = _Provider([_raw()])
-    monkeypatch.setattr("openexecutive.providers.get_provider", lambda model: provider)
-    monkeypatch.setattr("openexecutive.config.get_settings",
-                        lambda: SimpleNamespace(worked_out_max_per_day=1, worked_out_enabled=True))
-    asyncio.run(wo.keep_worked_out(1, REPLY, [("read_document", READ)], session_id="s1", private=False, model="m"))
-    asyncio.run(wo.keep_worked_out(1, REPLY, [("read_document", READ)], session_id="s1", private=False, model="m"))
-    assert len(provider.calls) == 1
+def test_the_tool_refuses_what_is_no_figure(own_turn: None) -> None:
+    for raw in (_raw(figure="none"), _raw(subject="Meeting passcode", figure="481 220"), "junk"):
+        assert "error" in _call_tool(raw, _session(caller_person_id=1)), raw
 
 
 @pytest.mark.parametrize(("label", "session"), [
-    ("replay", SimpleNamespace(replay=True, from_host=False, from_mcp_client=False, unattended=False)),
-    ("host page", SimpleNamespace(replay=False, from_host=True, from_mcp_client=False, unattended=False)),
-    ("another app", SimpleNamespace(replay=False, from_host=False, from_mcp_client=True, unattended=False)),
-    ("unattended", SimpleNamespace(replay=False, from_host=False, from_mcp_client=False, unattended=True)),
+    ("replay", _session(replay=True, caller_person_id=1)),
+    ("host page", _session(from_host=True, caller_person_id=1)),
+    ("another app", _session(from_mcp_client=True, caller_person_id=1)),
+    ("unattended", _session(unattended=True, caller_person_id=1)),
+    ("nobody known", _session()),
 ])
-def test_no_pass_for_a_turn_that_is_not_theirs(label: str, session: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    started: list[Any] = []
-    monkeypatch.setattr(wo, "keep_worked_out", lambda *a, **kw: started.append(a))
-    wo.schedule_worked_out_pass(REPLY, [("read_document", READ)], session=session, person_id=1, private=False)
-    assert started == [], label
+def test_the_tool_says_up_front_when_the_turn_cant_keep_one(own_turn: None, label: str, session: Any) -> None:
+    assert "error" in _call_tool(_raw(), session), label
+    if getattr(session, "caller_person_id", None) is not None:
+        assert wo.keep_turn_figures(REPLY, [("read_document", READ), _noted()], session=session, person_id=1,
+                                    private=False) == [], label
+
+
+def test_the_tool_refuses_when_it_is_off(own_turn: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(wo, "_enabled", lambda: False)
+    assert "error" in _call_tool(_raw(), _session(caller_person_id=1))
+
+
+def test_a_turn_keeps_at_most_five(own_turn: None) -> None:
+    reply = " ".join(f"Item {i}: ${i}00,000." for i in range(1, 8)) + " Per the DCA statement."
+    calls = [("read_document", READ)] + [_noted(subject=f"Item {i} total", figure=f"${i}00,000")
+                                         for i in range(1, 8)]
+    assert len(wo.keep_turn_figures(reply, calls, session=_session(), person_id=1, private=False)) == 5
+
+
+def test_turns_that_keep_stop_at_the_daily_cap(own_turn: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("openexecutive.config.get_settings",
+                        lambda: SimpleNamespace(worked_out_max_per_day=1, worked_out_enabled=True))
+    calls = [("read_document", READ), _noted()]
+    assert wo.keep_turn_figures(REPLY, calls, session=_session(), person_id=1, private=False)
+    assert wo.keep_turn_figures(REPLY, calls, session=_session(), person_id=1, private=False) == []
+
+
+def test_the_tool_tells_the_executive_what_is_worth_keeping() -> None:
+    from openexecutive.orchestrator.figure_tools import KEEP_FIGURE_TOOL
+
+    words = KEEP_FIGURE_TOOL["description"].casefold()
+    for phrase in ("lasting knowledge about their company", "what they asked", "personal errand",
+                   "live count", "most turns keep nothing", "kept only if your reply states it"):
+        assert phrase in words, phrase
+
+
+def test_the_tool_is_offered_in_chat_and_withheld_where_nobody_is_there() -> None:
+    from openexecutive.orchestrator import executive, schedule_tools
+
+    assert "keep_figure" in {t["name"] for t in executive._ALL_SKILL_TOOLS}
+    assert "keep_figure" in executive._ALL_SKILL_HANDLERS
+    assert executive._private_tool_row("keep_figure")
+    assert "keep_figure" in schedule_tools.UNATTENDED_WITHHELD_TOOLS
+    assert "keep_figure" in schedule_tools.PRIVATE_TURN_WITHHELD_TOOLS
+    assert "keep_figure" in schedule_tools.MCP_CLIENT_WITHHELD_TOOLS
 
 
 def test_both_chat_paths_read_and_keep_figures() -> None:
@@ -292,8 +323,7 @@ def test_both_chat_paths_read_and_keep_figures() -> None:
         src = inspect.getsource(method)
         assert "build_worked_out_block, person_id, _lookup_text(memory_text, user_message), session=session" in src, (
             method.__name__)
-        assert "schedule_worked_out_pass(" in src and "private=touched_mail" in src, method.__name__
-        assert "asked=own_text" in src, method.__name__
+        assert "keep_turn_figures," in src and "private=touched_mail" in src, method.__name__
         # Nothing from a turn the person wrote nothing in (an app's own ask).
         assert "if own_text.strip():\n" in src, method.__name__
     assert "<worked_out>" in inspect.getsource(executive.Executive._build_messages)
@@ -377,13 +407,6 @@ def test_the_same_value_on_another_thing_stays_apart() -> None:
     _keep(1, "Q3 revenue forecast", "$1,000,000", "Ledger")
     _keep(1, "Q3 revenue budget", "$1,000,000", "Ledger")
     assert len(wo.list_figures(1)) == 13
-
-
-def test_the_pass_is_told_to_keep_only_lasting_business_figures() -> None:
-    prompt = wo._PROMPT.casefold()
-    for words in ("lasting knowledge about this company", "what the person asked", "personal errand",
-                  "live counts", "none is the\nusual answer"):
-        assert words in prompt, words
 
 
 def test_figures_from_one_turn_never_replace_each_other() -> None:

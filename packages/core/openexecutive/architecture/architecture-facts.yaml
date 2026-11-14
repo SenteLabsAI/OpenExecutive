@@ -5405,16 +5405,22 @@ chat:
     Why a separate store: a standing fact must be in the person's own words
     (fact_tools quote gate), and a document's figure is not; mixing them
     would let the Executive's inference read as something the person said.
-    Written by a post-turn pass (schedule_worked_out_pass) only after a turn
-    that read a number (a tool result) and answered with one: one forced
-    record_figures call on the notes model, results checked in code
-    (check_figure): every number in the figure is in the reply, the source
-    shares a word with what was read or the reply, and the lesson deny
-    patterns and non-Latin check refuse links, handles, markup, instruction
-    and approval talk. The pass also gets what the person asked and a short
-    company note from the profile (_company_note), because without them it
-    could not tell a personal errand (a shopping cart) from company work and
-    kept both. It keeps only lasting numbers about the business (its own prices, plans, targets, terms, a customer's or deal's
+    Written by the Executive itself during the turn, with the keep_figure
+    chat tool (orchestrator/figure_tools.py), not by a separate model pass:
+    the Executive already knows what was asked, what the company does and
+    what it read, and a small side pass with less context kept errands and
+    lookups (a gift's price, an app's review status) even when told the
+    company and the question. The tool only notes the figure, after its
+    shape check and keep_refusal (on, no replay/host/MCP/unattended turn, a
+    verified speaker's private conversation), so the reply never claims a
+    figure that can't be kept. After the reply, keep_turn_figures checks
+    each noted figure in code (check_figure): every number in the figure is
+    in the reply, the source shares a word with what was read (keep calls
+    excluded) or the reply, and the lesson deny patterns and non-Latin check
+    refuse links, handles, markup, instruction and approval talk. Withheld
+    from unattended, private-to-principal and MCP-client turns; private
+    dispatch row. The tool description asks for only lasting numbers about
+    the business (its own prices, plans, targets, terms, a customer's or deal's
     numbers, ids it was issued); shopping and web-search lookups and live
     counts it would look up again (sign-ups, a waitlist, open issues, stars)
     are left out, since they filled the list with noise. Same subject (stem
@@ -5422,7 +5428,7 @@ chat:
     (same_figure: a value of 6+ characters, one subject's words a subset
     of the other's, at least two, and no qualifier such as plan, target or
     limit among the extra words); 200 per person;
-    WORKED_OUT_MAX_PER_DAY passes (default 40); WORKED_OUT_ENABLED. Read back
+    WORKED_OUT_MAX_PER_DAY turns that keep (default 40); WORKED_OUT_ENABLED. Read back
     by build_worked_out_block as a <worked_out> user-turn block, up to five
     by shared words with the message, labelled data and "from before", only
     on the person's own turn: never shared_chat, unattended, from_mcp_client
@@ -5433,16 +5439,16 @@ chat:
     people owe, reminders, watchlist, goals, roster) changes hourly and is
     always read live, so a count of it is no figure about the person. Tools
     that read it (_STATUS_TOOLS: list_open_loops, list_followups, ...) don't
-    feed the pass, the prompt leaves such counts out and asks for plain words
+    count as a source, the tool leaves such counts out and asks for plain words
     with items named, not numbered, and _status_like refuses a figure that
     lists record ids or says "loops" when kept, listed, read back or shown
     under Memory changes (so an older one like that stays hidden).
     One row per thing: same_subject treats subjects with the same words, once
     each one's own parenthetical is dropped, as the same, so a new figure
-    replaces the old (never one kept in the same pass). Never a meeting's time, id or passcode,
+    replaces the old (never one kept in the same turn). Never a meeting's time, id or passcode,
     a count of watch suggestions or error occurrences, or a number whose
     source is the brief, a digest or memory itself. A transcript's number is
-    kept as "heard on a call". No pass on a turn the person wrote nothing in
+    kept as "heard on a call". Nothing kept from a turn the person wrote nothing in
     (memory_text=""), and lookups rank on the speaker's own words
     (_lookup_text), not notes put before the question.
   chat_review: |

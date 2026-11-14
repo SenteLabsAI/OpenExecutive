@@ -2017,6 +2017,9 @@ UNATTENDED_WITHHELD_TOOLS: frozenset[str] = frozenset({
     "remember_fact",
     "resolve_roster_request",
     "update_company_profile",
+    # A figure kept for the person (orchestrator/figure_tools.py): their own
+    # turn only, never stored text with nobody watching.
+    "keep_figure",
     # Answers a Needs you card as the person (orchestrator/card_answers.py).
     "answer_card",
     # App control (orchestrator/app_control.py) acts as the person asking, and
@@ -2070,6 +2073,8 @@ def unattended_withheld_error(tool_name: str) -> str:
 #   its retirement) and the company profile are read on everyone's turns and
 #   in every brief. They also refuse any surface but the principal's verified
 #   ones, which email is not.
+# - keep_figure: a figure is kept only from a verified speaker's own private
+#   conversation, which an email turn is not.
 # Still offered: the email, DM and invite paths reach the principal and
 # refuse anyone else (`people_tools.PRIVATE_TURN_REFUSAL`, the gateway's
 # allow-list), and an alert the turn raises is private to the principal. The
@@ -2089,6 +2094,7 @@ PRIVATE_TURN_WITHHELD_TOOLS: frozenset[str] = frozenset({
     "create_instant_meeting",
     "draft_artifact",
     "forget_fact",
+    "keep_figure",
     "load_mcp_server",
     "read_document",
     "remember_fact",
