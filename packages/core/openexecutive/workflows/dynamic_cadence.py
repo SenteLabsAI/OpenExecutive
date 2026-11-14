@@ -134,3 +134,39 @@ def cancel_cadence_rows(name: str, db_path: Path | None = None) -> int:
     if cancelled:
         logger.info("dynamic_cadence: cancelled %d row(s) for %r", cancelled, name)
     return cancelled
+
+
+def retime_pending(db_path: Path | None = None) -> int:
+    """After the company's time zone changes: each workflow with a run
+    already scheduled gets it again at its time in the new zone. One that
+    is off or has nothing scheduled is left alone. Returns the count
+    scheduled again. Never raises."""
+    from openexecutive.memory.episodic import _get_conn, _resolve_db_path
+    from openexecutive.workflows.dynamic_store import get_definition
+
+    moved = 0
+    try:
+        resolved = _resolve_db_path(db_path)
+        if not resolved.exists():
+            return 0
+        with _get_conn(resolved) as conn:
+            names = [
+                str(row[0]) for row in conn.execute(
+                    "SELECT DISTINCT channel_ref FROM scheduled_actions "
+                    "WHERE kind = 'dynamic_workflow' AND status = 'pending'"
+                ).fetchall()
+            ]
+    except Exception:
+        logger.warning("dynamic_cadence: couldn't read the scheduled runs to re-time", exc_info=True)
+        return 0
+    for name in names:
+        try:
+            defn = get_definition(name)
+            if defn is None or not defn.is_active or not defn.cadence:
+                continue
+            cancel_cadence_rows(name, db_path)
+            if schedule_dynamic_workflow_cadence(defn, db_path=db_path) is not None:
+                moved += 1
+        except Exception:
+            logger.warning("dynamic_cadence: couldn't re-time %r", name, exc_info=True)
+    return moved

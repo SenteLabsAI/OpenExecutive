@@ -144,7 +144,7 @@ function CheckInPicker({
             </label>
           )}
           <label className={cls(LABEL_CLS, "flex-1 min-w-[10rem]")}>
-            Time (UTC)
+            Time (company time zone)
             <input
               type="time"
               step={60}

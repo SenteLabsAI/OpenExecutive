@@ -1578,7 +1578,8 @@ def test_the_look_is_told_the_standing_jobs_and_a_job_is_picked_by_number() -> N
     assert ttl.jobs_note() == ""
     job = ttl.add_job("Chase overdue tasks every morning", created_by="t")
     note = ttl.jobs_note()
-    assert f"[{job.id}] Chase overdue tasks every morning" in note and "for_standing_job" in note
+    assert f"[{job.id}] (asked by the owner) Chase overdue tasks every morning" in note and "for_standing_job" in note
+    assert "never to anyone else on the team" in note
     assert "error" in ttl.focus_job(job.id)  # no look running
     with ttl.looking(ttl.DAILY_LOOK) as look:
         assert "error" in asyncio.run(ttl.handle_focus_job({"job_id": 999}))
@@ -1612,11 +1613,13 @@ def watched() -> Iterator[None]:
     ttl._WATCHED.at = None
     ttl._WATCHED.goals = {}
     ttl._WATCHED.pending = []
+    ttl._WATCHED.slipped = set()
     ttl._LAST_WAKE.clear()
     yield
     ttl._WATCHED.at = None
     ttl._WATCHED.goals = {}
     ttl._WATCHED.pending = []
+    ttl._WATCHED.slipped = set()
     ttl._LAST_WAKE.clear()
 
 
@@ -1663,6 +1666,35 @@ def test_a_slipping_goal_failed_workflow_overdue_task_or_ended_meeting_wakes_it(
     assert reason is not None
     assert reason == "a workflow failed (and 2 more)"
     assert "Supplier sync" not in str([get_scheduled(w["id"]).intent_text for w in _wakes()])
+
+
+def test_the_look_is_told_which_goal_slipped_and_to_tell_its_owner(
+    monkeypatch: pytest.MonkeyPatch, watched: None, owner: Any, db: Path,
+) -> None:
+    from datetime import timedelta
+
+    from openexecutive.departments import store as dept_store
+    from openexecutive.people import registry as people_registry
+    from openexecutive.people import store as people_store
+
+    monkeypatch.setattr(dept_store, "DB_PATH", db)
+    dept_store.initialize_db(db)
+    jordan = people_store.upsert_person(full_name="Jordan Lee", email="jordan@co.example")
+    people_registry.invalidate()
+    late = dept_store.insert_goal(None, period_value="Q1 2027", key_result="Late deliveries", target="2%")
+    dept_store.update_goal(late, owner_person_id=jordan)
+    calm = dept_store.insert_goal(None, period_value="Q1 2027", key_result="Repeat orders", target="20%")
+    assert ttl.watch(NOW) is None
+    dept_store.update_goal(late, status="at_risk")
+    assert ttl.watch(NOW + timedelta(minutes=2)) == "a goal slipped"
+
+    note = ttl.goals_note()
+    assert f"[{late}] SLIPPED Late deliveries (at risk; owner Jordan Lee)" in note
+    assert f"[{calm}] Repeat orders (on track; owner " in note and f"[{calm}] SLIPPED" not in note
+    assert "message its owner" in note
+    # Told once: the next look sees it as an ordinary goal.
+    again = ttl.goals_note()
+    assert "SLIPPED" not in again and "message its owner" not in again
 
 
 def test_standing_jobs_are_wiped_with_the_rest() -> None:

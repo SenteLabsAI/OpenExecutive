@@ -940,6 +940,8 @@ async def _drop_phishing(
             topic_tags=[PRIVATE_ALERT_TAG],
             dedup_key=f"phishing:{msg.message_id}",
             routed_to_person_id=principal.id if principal is not None else None,
+            # Nothing to approve: it is for them to know (Got it).
+            needs="fyi",
         )
     except Exception:
         logger.exception("email: couldn't raise the phishing alert for message=%s", msg.message_id)

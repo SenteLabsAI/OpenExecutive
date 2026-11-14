@@ -612,7 +612,7 @@ async def _carry_out_lead(
             )
         except take_the_lead.EditError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None
-        payload = {**payload, "input": new_input}
+        payload = _edited(payload, new_input, changed)
     grant = payload.get("allow") if isinstance(payload.get("allow"), dict) else None
     allowing = edits.get("allow") is True
     if allowing:
@@ -822,20 +822,40 @@ async def _carry_out_department_action(
             raise HTTPException(status_code=422, detail="This one can't be changed from its card.")
         source: dict[str, Any] = payload["input"] if isinstance(payload.get("input"), dict) else {}
         try:
-            new_input, _changed = take_the_lead.apply_edits(
+            new_input, changed = take_the_lead.apply_edits(
                 str(payload.get("tool") or ""), source, edits["input"], mcp=bool(payload.get("mcp")),
             )
         except take_the_lead.EditError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None
-        payload = {**payload, "input": new_input}
+        payload = _edited(payload, new_input, changed)
+        edited = bool(changed)
+    else:
+        edited = False
     return await _run_department_action(
-        instance, resolver, by_principal=_approver_is_principal(request), payload=payload,
+        instance, resolver, by_principal=_approver_is_principal(request), payload=payload, edited=edited,
     )
+
+
+def _edited(payload: dict[str, Any], new_input: dict[str, Any], changed: dict[str, str] | None) -> dict[str, Any]:
+    """The card's payload as the person changed it: what it does, and the
+    line Activity and Done for you show, say what goes out, never what the
+    card first said."""
+    from openexecutive.orchestrator import take_the_lead
+
+    out = {**payload, "input": new_input}
+    if changed:
+        try:
+            out["summary"] = take_the_lead.summarize(
+                str(payload.get("tool") or ""), new_input, mcp=bool(payload.get("mcp")),
+            )
+        except Exception:
+            logger.warning("decisions/approve: couldn't restate an edited card", exc_info=True)
+    return out
 
 
 async def _run_department_action(
     instance: DecisionInstance, resolver: int | None, *, by_principal: bool,
-    payload: dict[str, Any] | None = None,
+    payload: dict[str, Any] | None = None, edited: bool = False,
 ) -> DecisionInstance:
     from openexecutive.audit import log_event
     from openexecutive.memory.decision_ledger import claim_for_execution, finish_execution
@@ -867,7 +887,7 @@ async def _run_department_action(
     failed = take_the_lead.result_failed(result)
     finish_execution(
         instance.id,
-        STATUS_FAILED if failed else STATUS_APPROVED_UNCHANGED,
+        STATUS_FAILED if failed else STATUS_APPROVED_WITH_EDIT if edited else STATUS_APPROVED_UNCHANGED,
         final_payload={**payload, "result": result[:2000]},
     )
     _clear_decision_alert(instance.id, "dismissed" if failed else "ack")

@@ -595,3 +595,21 @@ def test_org_block_is_unchanged_without_loose_goals() -> None:
     registry.invalidate()
     assert "No Department" not in render_org_block()
     assert "No area" not in render_org_block(mode="solo")
+
+
+def test_chat_hands_a_goal_to_a_teammate_never_a_contact() -> None:
+    from openexecutive.orchestrator.department_tools import handle_update_department_goal
+
+    _, teammate = _people()
+    contact = people_store.upsert_person(full_name="Casey Contact", email="casey@co.example", kind="contact")
+    gid = _goal(None)
+    result = _tool(handle_update_department_goal,
+                   {"goal_id": gid, "owner_person_id": teammate, "status": "at_risk",
+                    "rationale": "They said Jordan owns it now."})
+    assert result["status"] == "ok" and result["owner_person_id"] == teammate
+    assert store.get_goal(gid).owner_person_id == teammate  # type: ignore[union-attr]
+    # The owner alone is enough to call it.
+    again = _tool(handle_update_department_goal,
+                  {"goal_id": gid, "owner_person_id": contact, "rationale": "x"})
+    assert "on the team" in again["error"]
+    assert store.get_goal(gid).owner_person_id == teammate  # type: ignore[union-attr]
