@@ -2131,7 +2131,10 @@ class Executive:
                 else:
                     yield item
         finally:
-            _REFUSED.reset(refusing)
+            # Closed from another context (a client that went away), the
+            # token can't be reset there; the turn still ends.
+            with contextlib.suppress(ValueError):
+                _REFUSED.reset(refusing)
             outside_content.end_turn(outside_turn)
 
         draft_ms = round((time.monotonic() - t0) * 1000)
@@ -2704,6 +2707,8 @@ class Executive:
                 extra={"iter_marker": True},
             )
             full_text = ""
+            # The separator streamed before this round's text (_round_separator).
+            round_sep = 0
             tool_uses: list[dict[str, Any]] = []
             response_content: list[dict[str, Any]] = []
 
@@ -2775,6 +2780,7 @@ class Executive:
                             if separator:
                                 yield separator
                                 streamed_tail = separator
+                                round_sep = len(separator)
                         full_text += event.delta.text
                         streamed_tail = (streamed_tail + event.delta.text)[-2:]
                         yield event.delta.text
@@ -2863,8 +2869,9 @@ class Executive:
                     logger.warning("round %d refused by the model", iteration)
                     refused = _REFUSED.get()
                     if refused is not None:
-                        # How much of the collected text the refused round wrote.
-                        refused.append(len(full_text))
+                        # How much of the collected text the refused round
+                        # wrote, its separator included.
+                        refused.append(round_sep + len(full_text))
                     else:
                         # A streamed reply (the web chat) ends on a plain
                         # refusal, not on what the refused round began.
