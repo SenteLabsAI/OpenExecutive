@@ -196,3 +196,14 @@ async def test_list_my_activity_reads_the_askers_feed(team: tuple[Path, int, int
     assert "Waiting on you: sign in to the pharmacy" not in await ask(mate)
     # Where others read the reply (a channel, a call), not even the owner's own.
     assert "Waiting on you: sign in to the pharmacy" not in await ask(owner, private=False)
+
+
+def test_the_feed_fails_rather_than_guess_who_a_message_is_for(
+    team: tuple[Path, int, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken() -> dict[tuple[str, str], object]:
+        raise RuntimeError("people store locked")
+
+    monkeypatch.setattr(today_route, "_channel_people", broken)
+    with pytest.raises(RuntimeError):
+        today_route._build_activity(50, viewer=team[2])

@@ -1389,17 +1389,16 @@ class _Owners:
     caller; a chat with no recorded caller is the principal's), was made by
     or assigned to them, is a card routed to them, or is a message to them
     that no department sent. Everything else is the team's. Built once per
-    feed; never raises (an owner it can't work out is the principal's, so a
-    lookup failure hides a row rather than showing it to the wrong person).
+    feed. An owner it can't work out is the principal's, so a lookup failure
+    hides a row rather than showing it to the wrong person; the people map
+    failing fails the feed.
     """
 
     def __init__(self) -> None:
         self.principal_id = principal_id()
-        try:
-            self._reach = {key: p.id for key, p in _channel_people().items() if p.id is not None}
-        except Exception:
-            logger.warning("activity: couldn't map channels to people", exc_info=True)
-            self._reach = {}
+        # Not caught: with no map, a message to one person would read as the
+        # team's. The feed fails instead (as ``_build_channel_lookup`` does).
+        self._reach = {key: p.id for key, p in _channel_people().items() if p.id is not None}
         self._sessions: dict[str, int | None] = {}
 
     def of_session(self, session_id: str | None, *, department: str | None = None) -> int | None:
