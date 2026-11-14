@@ -12,6 +12,7 @@ from openexecutive.alerts import dispatcher, preferences, store
 from openexecutive.alerts.models import (
     AlertChannel,
     AlertEvent,
+    AlertSeverity,
     TriageDecision,
 )
 
@@ -146,37 +147,13 @@ def _label_team_raised(decision: TriageDecision, name: str) -> TriageDecision:
     return decision.model_copy(update={"body": f"{label} {body}".strip()})
 
 
-async def evaluate_and_dispatch(
-    event: AlertEvent,
-    db_path: Path | None = None,
-) -> tuple[TriageDecision, int | None]:
-    """Run triage on a single event and dispatch the alert.
-
-    Returns (decision, alert_id). alert_id is None when the alert is
-    suppressed or a duplicate.
-    """
+async def _triage(event: AlertEvent, path: Path) -> TriageDecision:
+    """The triage model's decision on ``event``, mute-checked and grounded
+    in what the event (or the profile, or the initiatives) supports."""
     from openexecutive.agents.triage import TriageAgent
     from openexecutive.memory.episodic import get_active_initiatives
 
-    path = db_path or store.DB_PATH
-
-    if _rate_limited():
-        logger.warning(
-            "alerts.pipeline rate-limited: dropping event source=%s ext_id=%s",
-            event.source,
-            event.external_id,
-        )
-        return (
-            TriageDecision(
-                alert=False,
-                dedup_key=f"rate-limited-{event.source}-{event.external_id}",
-                reason_if_suppressed="rate_limited",
-            ),
-            None,
-        )
-
     # Cheap pre-checks: load context for the triage prompt + post-decision mute.
-    prefs = preferences.get_preferences(db_path=path)
     mutes = [m.pattern for m in store.list_mutes(db_path=path)]
     recent = [
         {
@@ -217,12 +194,68 @@ async def evaluate_and_dispatch(
         # We still persist a low-severity record so the UI can show "23 events
         # triaged, 1 surfaced" if we ever want it. For now keep it simple:
         # only persist when the decision says alert=true.
-        return decision, None
+        return decision
 
     # Triage rewrote the event into a headline and body nobody reads before
     # dispatch: keep only what the event itself (or the profile, or the
     # initiatives triage was shown) supports.
-    decision = _ground_decision(decision, event, initiatives)
+    return _ground_decision(decision, event, initiatives)
+
+
+def _as_written_decision(event: AlertEvent) -> TriageDecision:
+    """A card for a message passed on to one person: its subject and body
+    as written, with no model call. Triage would rewrite them with the
+    recent cards and initiatives in view, adding to the message things its
+    sender never asked to pass on. The same text again folds into the same
+    open card."""
+    import hashlib
+
+    text = f"{event.subject}\n{event.body}"
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    return TriageDecision(
+        alert=True,
+        severity=AlertSeverity.MEDIUM,
+        channels=[AlertChannel.WEB, AlertChannel.PERSISTED],
+        headline=event.subject,
+        body=event.body,
+        dedup_key=f"message:{digest}",
+    )
+
+
+async def evaluate_and_dispatch(
+    event: AlertEvent,
+    db_path: Path | None = None,
+) -> tuple[TriageDecision, int | None]:
+    """Run triage on a single event and dispatch the alert.
+
+    Returns (decision, alert_id). alert_id is None when the alert is
+    suppressed or a duplicate.
+    """
+    path = db_path or store.DB_PATH
+
+    if _rate_limited():
+        logger.warning(
+            "alerts.pipeline rate-limited: dropping event source=%s ext_id=%s",
+            event.source,
+            event.external_id,
+        )
+        return (
+            TriageDecision(
+                alert=False,
+                dedup_key=f"rate-limited-{event.source}-{event.external_id}",
+                reason_if_suppressed="rate_limited",
+            ),
+            None,
+        )
+
+    prefs = preferences.get_preferences(db_path=path)
+    if event.as_written:
+        decision = _as_written_decision(event)
+    else:
+        triaged = await _triage(event, path)
+        if not triaged.alert:
+            return triaged, None
+        decision = triaged
     if event.raised_by:
         decision = _label_team_raised(decision, event.raised_by)
 

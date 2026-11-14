@@ -519,3 +519,54 @@ def test_open_alerts_keyed_lists_one_senders_open_cards(db: Path) -> None:
     assert [c.dedup_key for c in cards] == [
         "email-from:casey@example.com", "email-from:casey@example.com#ab12cd34",
     ]
+
+
+def test_as_written_message_skips_triage_and_keeps_its_words(monkeypatch, db: Path) -> None:
+    """A message passed on to one person keeps its subject and body: the
+    triage model (which sees other cards) never rewrites it."""
+    from openexecutive.agents import triage as triage_module
+    from openexecutive.alerts import dispatcher, pipeline
+
+    async def no_triage(self, event, **kwargs):  # noqa: ARG001
+        raise AssertionError("triage must not run for a passed-on message")
+
+    monkeypatch.setattr(triage_module.TriageAgent, "triage", no_triage)
+    sent: list[list[AlertChannel]] = []
+
+    async def fake_dispatch(alert, channels, **kw):  # noqa: ARG001
+        sent.append(list(channels))
+
+    monkeypatch.setattr(dispatcher, "dispatch_all", fake_dispatch)
+    event = AlertEvent(
+        source="team_member", external_id="m-1",
+        subject="From Sam: the shared folder won't open",
+        body="From Sam: the shared folder won't open for me.",
+        raised_by="Sam Lee", routed_to_person_id=1, as_written=True,
+    )
+
+    _, alert_id = asyncio.run(pipeline.evaluate_and_dispatch(event, db_path=db))
+
+    assert alert_id is not None
+    row = list_alerts(db_path=db)[0]
+    assert row.headline == "From Sam: the shared folder won't open"
+    assert row.body == "Raised by Sam Lee. From Sam: the shared folder won't open for me."
+    assert row.routed_to_person_id == 1
+    assert sent and AlertChannel.WEB in sent[0]
+
+
+def test_as_written_same_message_folds_into_open_card(monkeypatch, db: Path) -> None:
+    from openexecutive.alerts import dispatcher, pipeline
+
+    async def fake_dispatch(alert, channels, **kw):  # noqa: ARG001
+        return None
+
+    monkeypatch.setattr(dispatcher, "dispatch_all", fake_dispatch)
+
+    def ev(ext: str) -> AlertEvent:
+        return AlertEvent(source="executive", external_id=ext, subject="Hi", body="Hi there", as_written=True)
+
+    _, first = asyncio.run(pipeline.evaluate_and_dispatch(ev("a"), db_path=db))
+    _, second = asyncio.run(pipeline.evaluate_and_dispatch(ev("b"), db_path=db))
+    assert first is not None
+    assert second is None
+    assert len(list_alerts(db_path=db)) == 1

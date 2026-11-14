@@ -393,7 +393,10 @@ def without_utc(text: str) -> str:
     return _UTC_ASIDE.sub("", text)
 
 
-async def handle_create_alert(tool_input: dict[str, Any]) -> str:
+async def handle_create_alert(tool_input: dict[str, Any], *, as_written: bool = False) -> str:
+    """The create_alert tool. ``as_written`` (server callers only: the tool
+    call passes ``tool_input`` alone) keeps the subject and body exactly as
+    given (``AlertEvent.as_written``)."""
     from openexecutive.alerts.models import AlertEvent
     from openexecutive.alerts.pipeline import schedule_evaluation
     from openexecutive.audit import log_event as audit_log
@@ -478,6 +481,7 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
                     event.user = f"person:{routed_id}"
         if private:
             event.private = True
+        event.as_written = as_written
         event.needs, event.question, event.choices = _card_ask(tool_input)
         _one_card_per_sender(event, current_session.get())
         ask_first = _sender_card_choice(event, tool_input.get("joins_card"))

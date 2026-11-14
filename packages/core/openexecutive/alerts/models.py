@@ -131,6 +131,11 @@ class AlertEvent(BaseModel):
     # turn asked, and never goes out as a company-wide broadcast — a person
     # or department only (alerts/pipeline.py).
     raised_by: str = ""
+    # A message passed on to one person (``message_person`` with no chat
+    # app to reach them): the card shows the subject and body as written,
+    # with no triage rewrite, so nothing from other cards is added to what
+    # the sender asked to pass on. Set only by server code, never the model.
+    as_written: bool = False
     # What the card needs from its reader (``Alert.needs``).
     needs: str = ""
     question: str = ""
