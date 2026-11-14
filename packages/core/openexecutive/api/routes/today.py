@@ -2858,15 +2858,16 @@ def _done_for_you(request: Request, caller: int | None, now: datetime) -> list[D
         except Exception:
             logger.warning("today: reading approvals for Done for you failed", exc_info=True)
     try:
-        # The shared feed is what the Executive did for the company, so it
-        # is "done for you" only to the principal; anyone else gets their
-        # own approvals and what was sent as them.
+        # What the Executive did for the team, plus the reader's own items
+        # (``_build_activity``'s viewer rule): a teammate never gets the
+        # owner's. A teammate's rows read as their Activity does: who and
+        # what an email said are the owner's alone.
         shared = (
             _build_activity(
                 20, since, include_alert_raised=False, exclude_workflows=RHYTHM_WORKFLOWS,
                 viewer=caller,
             ).items
-            if owner else []
+            if owner or caller is not None else []
         )
         activity = [*shared, *_sent_as_caller(request)]
     except Exception:
@@ -2891,15 +2892,15 @@ def _done_for_you(request: Request, caller: int | None, now: datetime) -> list[D
             continue
         seen.add(key)
         title = item.summary or item.kind
-        if item.mail_to:
-            # Done for you is the owner's own, so it says who and what.
+        if item.mail_to and owner:
+            # The owner's Done for you says who and what.
             who = _mail_names(item.mail_to)
             title = f"Emailed {who}" + (" (after a yes)" if title.endswith("(after a yes)") else "")
             if item.mail_subject:
                 title = f"{title}: {item.mail_subject}"
         rows.append(DoneRow(
             key=key, kind=item.kind, title=title[:240],
-            detail=item.lead_line or item.detail or "", at=item.at, artifact_id=item.artifact_id,
+            detail=(item.lead_line if owner else "") or item.detail or "", at=item.at, artifact_id=item.artifact_id,
         ))
     rows.sort(key=lambda r: _parse_aware(r.at) or datetime.min.replace(tzinfo=UTC), reverse=True)
     rows.sort(key=lambda r: 0 if r.status == "working" else 1)
