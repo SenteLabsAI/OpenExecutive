@@ -225,6 +225,14 @@ logger = logging.getLogger(__name__)
 # correction after it.
 _COLLECTING: ContextVar[bool] = ContextVar("executive_collecting", default=False)
 
+# Bound by ``Executive.chat`` to a list that a round the model refused
+# (stop_reason "refusal") appends to, so the collected reply never sends what
+# the refused round began writing.
+_REFUSED: ContextVar[list[int] | None] = ContextVar("executive_refused", default=None)
+
+# What ``Executive.chat`` answers for a turn the model refused.
+REFUSED_REPLY = "I can't help with that one."
+
 # The tools that read the speaker's own notes or earlier chats: private rows,
 # withheld from the process log, and checked like a mail read.
 _OWN_RECALL_TOOL_NAMES: frozenset[str] = HISTORY_TOOL_NAMES | CHAT_SEARCH_TOOL_NAMES
@@ -2833,6 +2841,14 @@ class Executive:
                 # synced excerpts checked, so what they tried is flagged to
                 # the person (outside_content.settle).
                 await outside_content.settle()
+                if final_msg.stop_reason == "refusal":
+                    # The model refused: no claim check or retry round, and
+                    # a caller collecting the reply learns of it (_REFUSED).
+                    logger.warning("round %d refused by the model", iteration)
+                    refused = _REFUSED.get()
+                    if refused is not None:
+                        refused.append(iteration)
+                    return
                 # Do what it says: a reply that claims a change no call this
                 # turn made gets one more round to make it or say it can't.
                 if claim_checked or handing_over or iteration >= max_iterations:
@@ -4021,6 +4037,7 @@ class Executive:
         cards: list[int] | None = None,
     ) -> str:
         """Non-streaming chat — collects and returns the full response.
+        A turn the model refused returns ``REFUSED_REPLY``.
 
         ``cards``, when given, collects the ids of the approval cards the
         reply left (the ``decision_id`` on its ``action_taken`` events, as the
@@ -4089,6 +4106,8 @@ class Executive:
         )
         result = ""
         rewritten, before = False, ""
+        refused: list[int] = []
+        refusing = _REFUSED.set(refused)
         collecting = _COLLECTING.set(True)
         try:
             with turn_files.bind(offered or None) if offered else contextlib.nullcontext():
@@ -4104,9 +4123,14 @@ class Executive:
                             cards.append(decision_id)
         finally:
             _COLLECTING.reset(collecting)
+            _REFUSED.reset(refusing)
         if rewritten:
             # A retry that wrote nothing keeps the first reply.
             result = result.lstrip() or before
+        if refused:
+            # Nothing a refused round began ("You're") is sent: email and
+            # chat apps get a plain refusal.
+            result = REFUSED_REPLY
         # A card named by its number ("card 220") tells the reader nothing:
         # name it by its headline, linked to it on Home (alerts.card_refs).
         # Private cards only when the principal reads it alone.
