@@ -1390,12 +1390,17 @@ class _Owners:
     or assigned to them, is a card routed to them, or is a message to them
     that no department sent. Everything else is the team's. Built once per
     feed. An owner it can't work out is the principal's, so a lookup failure
-    hides a row rather than showing it to the wrong person; the people map
-    failing fails the feed.
+    hides a row rather than showing it to the wrong person; the principal or
+    the people map failing fails the feed.
     """
 
     def __init__(self) -> None:
-        self.principal_id = principal_id()
+        from openexecutive.people import registry as people_registry
+
+        # Not caught: with no principal read, their legacy chats and briefs
+        # would read as the team's. None only when the roster has none.
+        principal = people_registry.get_principal()
+        self.principal_id = principal.id if principal is not None else None
         # Not caught: with no map, a message to one person would read as the
         # team's. The feed fails instead (as ``_build_channel_lookup`` does).
         self._reach = {key: p.id for key, p in _channel_people().items() if p.id is not None}

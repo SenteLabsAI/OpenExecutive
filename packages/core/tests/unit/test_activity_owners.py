@@ -207,3 +207,14 @@ def test_the_feed_fails_rather_than_guess_who_a_message_is_for(
     monkeypatch.setattr(today_route, "_channel_people", broken)
     with pytest.raises(RuntimeError):
         today_route._build_activity(50, viewer=team[2])
+
+
+def test_the_feed_fails_rather_than_guess_whose_a_legacy_chat_is(
+    team: tuple[Path, int, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken() -> object:
+        raise RuntimeError("people store locked")
+
+    monkeypatch.setattr(people_registry, "get_principal", broken)
+    with pytest.raises(RuntimeError):
+        today_route._build_activity(50, viewer=team[2])
