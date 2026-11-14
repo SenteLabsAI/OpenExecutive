@@ -233,6 +233,14 @@ _REFUSED: ContextVar[list[int] | None] = ContextVar("executive_refused", default
 # What ``Executive.chat`` answers for a turn the model refused.
 REFUSED_REPLY = "I can't help with that one."
 
+
+def _with_refusal(collected: str, refused_chars: int) -> str:
+    """A collected reply whose last round the model refused: the earlier
+    rounds' text without the refused round's (its last ``refused_chars``),
+    then ``REFUSED_REPLY``."""
+    kept = collected[: max(0, len(collected) - refused_chars)].strip()
+    return f"{kept}\n\n{REFUSED_REPLY}" if kept else REFUSED_REPLY
+
 # The tools that read the speaker's own notes or earlier chats: private rows,
 # withheld from the process log, and checked like a mail read.
 _OWN_RECALL_TOOL_NAMES: frozenset[str] = HISTORY_TOOL_NAMES | CHAT_SEARCH_TOOL_NAMES
@@ -2093,6 +2101,10 @@ class Executive:
             own_words=memory_text,
         )
         turn_calls: list[tuple[str, str]] = []
+        # A refused draft goes to no review or revision: they could rewrite
+        # it into an answer.
+        draft_refused: list[int] = []
+        refusing = _REFUSED.set(draft_refused)
         try:
             async for item in self._stream_agent_loop(
                 system_blocks,
@@ -2119,6 +2131,7 @@ class Executive:
                 else:
                     yield item
         finally:
+            _REFUSED.reset(refusing)
             outside_content.end_turn(outside_turn)
 
         draft_ms = round((time.monotonic() - t0) * 1000)
@@ -2133,7 +2146,7 @@ class Executive:
         # review — there is nothing to critique. Still emit the remaining
         # phase events so the UI's stepper completes; otherwise it stays
         # frozen on "drafting" until the connection closes.
-        if not draft.strip():
+        if draft_refused or not draft.strip():
             yield {
                 "type": "phase",
                 "phase": "reviewing",
@@ -2144,7 +2157,10 @@ class Executive:
                 "phase": "finalizing",
                 "session_id": session.session_id,
             }
-            fallback = "I was unable to complete the analysis. Please try again."
+            fallback = (
+                REFUSED_REPLY if draft_refused
+                else "I was unable to complete the analysis. Please try again."
+            )
             yield fallback
             session.add_user_message(user_message)
             for added_text in inbox.taken_texts() if inbox is not None else []:
@@ -2847,7 +2863,8 @@ class Executive:
                     logger.warning("round %d refused by the model", iteration)
                     refused = _REFUSED.get()
                     if refused is not None:
-                        refused.append(iteration)
+                        # How much of the collected text the refused round wrote.
+                        refused.append(len(full_text))
                     else:
                         # A streamed reply (the web chat) ends on a plain
                         # refusal, not on what the refused round began.
@@ -4041,7 +4058,7 @@ class Executive:
         cards: list[int] | None = None,
     ) -> str:
         """Non-streaming chat — collects and returns the full response.
-        A turn the model refused returns ``REFUSED_REPLY``.
+        A turn the model refused ends on ``REFUSED_REPLY``.
 
         ``cards``, when given, collects the ids of the approval cards the
         reply left (the ``decision_id`` on its ``action_taken`` events, as the
@@ -4132,9 +4149,10 @@ class Executive:
             # A retry that wrote nothing keeps the first reply.
             result = result.lstrip() or before
         if refused:
-            # Nothing a refused round began ("You're") is sent: email and
-            # chat apps get a plain refusal.
-            result = REFUSED_REPLY
+            # Nothing the refused round began ("You're") is sent. What the
+            # earlier rounds said stays (what their tools did), then a plain
+            # refusal.
+            result = _with_refusal(result, refused[-1])
         # A card named by its number ("card 220") tells the reader nothing:
         # name it by its headline, linked to it on Home (alerts.card_refs).
         # Private cards only when the principal reads it alone.
