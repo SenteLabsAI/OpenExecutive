@@ -289,32 +289,42 @@ def test_a_scheduled_workflow_run_moves_with_the_zone(monkeypatch: pytest.Monkey
     assert times["on"].endswith(("14:00:00+00:00", "13:00:00+00:00"))  # 9 AM New York
 
 
-def test_check_ins_survive_a_failed_retime(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_check_ins_move_with_the_zone_all_or_nothing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from openexecutive.departments import cadence
     from openexecutive.departments import store as dept_store
 
-    cancelled: list[str] = []
-    monkeypatch.setattr(cadence, "cancel_pending_cadences", lambda *a, **k: cancelled.append("x") or 0)
+    db = tmp_path / "episodic.db"
+    dept_store.initialize_db(db)
+    sales = dept_store.create_department("Sales", db_path=db)
+    dept_store.update_department(sales.config.slug, cadences={"check_in": "weekly@mon@09:00"}, db_path=db)
+    ops = dept_store.create_department("Ops", db_path=db)
+    dept_store.update_department(ops.config.slug, cadences={"check_in": ""}, db_path=db)
+    for slug in (sales.config.slug, ops.config.slug):  # Ops has no check-in any more
+        episodic.insert_scheduled_action(run_at="2026-11-16T09:00:00+00:00", channel="__internal__",
+                                         channel_ref=slug, intent_text="x", department=slug,
+                                         kind="dept_cadence", db_path=db)
 
-    # The departments can't be read: nothing is cancelled.
-    def unreadable(**_: object) -> list[object]:
+    def pending() -> dict[str, str]:
+        with episodic._get_conn(db) as conn:
+            rows = conn.execute(
+                "SELECT department, run_at FROM scheduled_actions WHERE kind = 'dept_cadence' AND status = 'pending'"
+            ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    _set_zone("America/New_York")
+    # A failure part way leaves every row as it was.
+    real = cadence._parse_cadence_spec
+
+    def broken(*_: object, **__: object) -> None:
         raise RuntimeError("database is locked")
 
-    monkeypatch.setattr(dept_store, "list_departments", unreadable)
+    monkeypatch.setattr(cadence, "_parse_cadence_spec", broken)
     with pytest.raises(RuntimeError):
-        cadence.retime_pending()
-    assert cancelled == []
+        cadence.retime_pending(db)
+    assert pending() == {s: "2026-11-16T09:00:00+00:00" for s in (sales.config.slug, ops.config.slug)}
 
-    # Scheduling fails once after the cancel: it is tried again.
-    monkeypatch.setattr(dept_store, "list_departments", lambda **_: [])
-    tries: list[int] = []
-
-    def flaky(*_: object, **__: object) -> int:
-        tries.append(1)
-        if len(tries) == 1:
-            raise RuntimeError("database is locked")
-        return 2
-
-    monkeypatch.setattr(cadence, "bootstrap_cadences", flaky)
-    assert cadence.retime_pending() == 2
-    assert cancelled == ["x"] and len(tries) == 2
+    monkeypatch.setattr(cadence, "_parse_cadence_spec", real)
+    assert cadence.retime_pending(db) == 1
+    after = pending()
+    assert list(after) == [sales.config.slug]  # Ops: cancelled
+    assert after[sales.config.slug].endswith(("14:00:00+00:00", "13:00:00+00:00"))  # 9 AM New York

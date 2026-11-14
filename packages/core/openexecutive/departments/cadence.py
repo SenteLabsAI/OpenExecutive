@@ -452,19 +452,46 @@ def next_check_in_at(slug: str, db_path: Path | None = None) -> str | None:
 
 def retime_pending(db_path: Path | None = None) -> int:
     """After the company's time zone changes: the pending check-ins move to
-    the new zone's clock (cancelled and scheduled again from now). Returns
-    the count scheduled. Best effort; a no-op in solo.
-
-    The departments are read before anything is cancelled, so a store
-    failure leaves the old rows in place; once cancelled, scheduling again
-    gets one more try, so a passing lock can't leave every check-in off
-    until the next start."""
+    the new zone's clock. Each pending row gets its next time from its
+    department's spec in one transaction, so a failure part way leaves
+    every row as it was; a row whose department has no spec any more is
+    cancelled. Then any department still without one is queued. Returns
+    the count moved. A no-op in solo."""
     from openexecutive.departments import store as dept_store
+    from openexecutive.memory.episodic import _get_conn, _resolve_db_path
+    from openexecutive.memory.workspace_settings import get_workspace
 
-    dept_store.list_departments(db_path=db_path)
-    cancel_pending_cadences(db_path)
-    try:
-        return bootstrap_cadences(db_path)
-    except Exception:
-        logger.warning("cadence.retime: scheduling failed once, trying again", exc_info=True)
-        return bootstrap_cadences(db_path)
+    if get_workspace(db_path).mode == "solo":
+        return 0
+    resolved = _resolve_db_path(db_path)
+    if not resolved.exists():
+        return 0
+    specs = {
+        s.config.slug: s.config.cadences.get("check_in", "")
+        for s in dept_store.list_departments(db_path=db_path)
+    }
+    now = datetime.now(UTC)
+    zone = company_zone()
+    moved = 0
+    with _get_conn(resolved) as conn:
+        table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scheduled_actions'"
+        ).fetchone()
+        if table is None:
+            return 0
+        rows = conn.execute(
+            "SELECT id, department FROM scheduled_actions "
+            "WHERE kind = 'dept_cadence' AND status = 'pending'"
+        ).fetchall()
+        for row in rows:
+            spec = specs.get(row["department"] or "", "")
+            run_at = _parse_cadence_spec(spec, now, zone) if spec else None
+            if run_at is None:
+                conn.execute("UPDATE scheduled_actions SET status = 'cancelled' WHERE id = ?", (row["id"],))
+                continue
+            conn.execute(
+                "UPDATE scheduled_actions SET run_at = ? WHERE id = ?", (run_at.isoformat(), row["id"]),
+            )
+            moved += 1
+    bootstrap_cadences(db_path)
+    return moved
