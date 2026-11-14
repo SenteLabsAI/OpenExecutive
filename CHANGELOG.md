@@ -9,6 +9,29 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.7.4](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.7.3...v0.7.4) (2026-11-13)
+
+
+### Added
+
+* **orchestrator:** make Approvals the only gate ([#813](https://github.com/SenteLabsAI/OpenExecutive/issues/813)) ([2525224](https://github.com/SenteLabsAI/OpenExecutive/commit/2525224f50ae204f469c0e452fb87da6ba58acfd))
+* **today:** show Home's Done for you rows on What it does ([#825](https://github.com/SenteLabsAI/OpenExecutive/issues/825)) ([fa58c68](https://github.com/SenteLabsAI/OpenExecutive/commit/fa58c68f48f8f7253b76fd571c20d23ee416aa60))
+* **workflows:** say what a paused run waits on and stop it on a no ([#826](https://github.com/SenteLabsAI/OpenExecutive/issues/826)) ([d57447f](https://github.com/SenteLabsAI/OpenExecutive/commit/d57447f456aa3dcc1ded8b5b2ee838aebc4767cb))
+
+
+### Fixed
+
+* **chat:** stop a "no topic" reply from becoming a topic ([#824](https://github.com/SenteLabsAI/OpenExecutive/issues/824)) ([ef51622](https://github.com/SenteLabsAI/OpenExecutive/commit/ef516222ff5cffd5f4ed7d695938722bb071f549))
+* **memory:** keep only lasting business figures in What it worked out ([#823](https://github.com/SenteLabsAI/OpenExecutive/issues/823)) ([f76e509](https://github.com/SenteLabsAI/OpenExecutive/commit/f76e5095a7ff0fe10bf994e229b8ea78c384979b))
+* **memory:** keep unanswered questions that stand on their own ([#822](https://github.com/SenteLabsAI/OpenExecutive/issues/822)) ([7855a5c](https://github.com/SenteLabsAI/OpenExecutive/commit/7855a5ca827c61781aed2b5926b6b5a37512ac38))
+* **orchestrator:** apply your rules to asked steps and answer repeat email once ([#827](https://github.com/SenteLabsAI/OpenExecutive/issues/827)) ([c7bdfd2](https://github.com/SenteLabsAI/OpenExecutive/commit/c7bdfd24789704b1335a5b9b3caf4cae97b0d89a))
+* **orchestrator:** route a teammate's watch to them and let the Executive read its activity ([#821](https://github.com/SenteLabsAI/OpenExecutive/issues/821)) ([7f7b547](https://github.com/SenteLabsAI/OpenExecutive/commit/7f7b547a5f3da7eec519e3f13d32215942765fba))
+* **providers:** ask a streaming backend for the final usage chunk ([#818](https://github.com/SenteLabsAI/OpenExecutive/issues/818)) ([3ed919a](https://github.com/SenteLabsAI/OpenExecutive/commit/3ed919a231a943de70423fe7bfa45bdd00595d72))
+* **ui:** ignore the Enter that ends an IME composition ([#820](https://github.com/SenteLabsAI/OpenExecutive/issues/820)) ([88ba54b](https://github.com/SenteLabsAI/OpenExecutive/commit/88ba54b83bb0095d60c49d31021ad84e6bd2d336))
+* **ui:** keep the sign-in callbackUrl on this site ([#815](https://github.com/SenteLabsAI/OpenExecutive/issues/815)) ([d35a762](https://github.com/SenteLabsAI/OpenExecutive/commit/d35a762ea52560aaf8c94ee52a3d9da09e022682))
+* **ui:** say only what needs you in Home's summary line ([#814](https://github.com/SenteLabsAI/OpenExecutive/issues/814)) ([ac9856f](https://github.com/SenteLabsAI/OpenExecutive/commit/ac9856fe87f77dadf2d919348560c3b4f47e6260))
+* **workflows:** start a workflow from Run in one tap ([#828](https://github.com/SenteLabsAI/OpenExecutive/issues/828)) ([a832616](https://github.com/SenteLabsAI/OpenExecutive/commit/a8326167b5814248250c4e328d38cfd47de8f7fd))
+
 ## [0.7.3](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.7.2...v0.7.3) (2026-11-12)
 
 
