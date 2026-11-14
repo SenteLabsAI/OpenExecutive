@@ -89,6 +89,7 @@ from openexecutive.orchestrator.chat_search_tools import (
     CHAT_SEARCH_TOOL_HANDLERS,
     CHAT_SEARCH_TOOL_NAMES,
     CHAT_SEARCH_TOOLS,
+    recent_chats_block,
     search_person,
 )
 from openexecutive.orchestrator.content_trust import (
@@ -1425,6 +1426,15 @@ class Executive:
         if drive_memory:
             user_content_parts.append(
                 {"type": "text", "text": f"<drive_memory>\n{drive_memory}\n</drive_memory>"}
+            )
+        # The speaker's own chats from the last two days, titles only
+        # (chat_search_tools.recent_chats_block), so "we did it earlier"
+        # reaches search_past_chats. Only where that tool is offered; per
+        # turn, so the user turn.
+        recent_chats = recent_chats_block(session)
+        if recent_chats:
+            user_content_parts.append(
+                {"type": "text", "text": f"<recent_chats>\n{recent_chats}\n</recent_chats>"}
             )
         # The follow-ups this speaker scheduled that haven't gone out
         # (correction_tools.pending_followups_block), so a turn about the

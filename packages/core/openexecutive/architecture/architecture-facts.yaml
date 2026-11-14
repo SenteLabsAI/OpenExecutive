@@ -3065,6 +3065,12 @@ memory:
       the tool says to confirm figures in the source. A hit from a
       mail_private chat sets touched_mail and marks the conversation, as
       recall does; a plain hit changes nothing.
+    - On that surface every turn carries <recent_chats> in the user turn
+      (chat_search_tools.recent_chats_block): titles and last-message times
+      of the speaker's own other chats from the last two days, 15 newest
+      (session_store.recent_own_chats), so "again" / "we did it earlier"
+      reaches search_past_chats first. A mail_private chat is counted, not
+      named, unless the chat in progress is mail_private too.
     - The owner's briefs read the owner's own notes (memory.history_brief):
       the morning brief a FROM YOUR NOTES - DUE SOON block, the end-of-day
       digest a FROM YOUR NOTES - TODAY block. Only on the scheduler's
