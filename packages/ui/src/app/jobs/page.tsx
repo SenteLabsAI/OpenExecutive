@@ -452,6 +452,8 @@ function YourWorkflows({
   onBrowse: () => void;
 }) {
   const cadenceByName = new Map(customDefs.map((d) => [d.name, d.cadence] as const));
+  // Its creator or the principal deletes a workflow; the server says who.
+  const canDelete = new Map(customDefs.map((d) => [d.name, d.can_delete] as const));
 
   if (workflows.length === 0 && offWorkflows.length === 0) {
     return (
@@ -492,7 +494,9 @@ function YourWorkflows({
                 label={`More for ${d.title}`}
                 items={[
                   { label: "Edit", href: `/jobs/new?edit=${encodeURIComponent(d.name)}` },
-                  { label: "Delete", danger: true, onSelect: () => onDeleteCustom(d.name) },
+                  ...(d.can_delete === false
+                    ? []
+                    : [{ label: "Delete", danger: true, onSelect: () => onDeleteCustom(d.name) }]),
                 ]}
               />
             </div>
@@ -511,7 +515,9 @@ function YourWorkflows({
         const more: OverflowItem[] = [
           ...(action.kind === "signoff" ? [{ label: "Run again", href }] : []),
           { label: "Edit", href: `/jobs/new?edit=${encodeURIComponent(w.name)}` },
-          { label: "Delete", danger: true, onSelect: () => onDeleteCustom(w.name) },
+          ...(canDelete.get(w.name) === false
+            ? []
+            : [{ label: "Delete", danger: true, onSelect: () => onDeleteCustom(w.name) }]),
         ];
         return (
           <div key={w.name} className={cardCls}>

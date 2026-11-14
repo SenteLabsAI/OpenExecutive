@@ -611,3 +611,31 @@ def test_only_the_signing_refusal_becomes_a_card() -> None:
     signed = asyncio.run(go("This needs signed sign-ins on this server, so that nobody else can change it for you."))
     assert signed["code"] == "caller_signing_required"
     assert asyncio.run(go("That rule is already there.")) == "That rule is already there."
+
+
+def test_chat_deletes_a_workflow_only_for_its_creator_or_the_principal(
+    roster: dict[str, Any], db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.workflows import dynamic_store
+    from openexecutive.workflows.dynamic_store import DynamicWorkflowDef
+
+    monkeypatch.setattr(dynamic_store, "DB_PATH", db)
+    dynamic_store.initialize_dynamic_workflows_db(db)
+    defn = DynamicWorkflowDef.model_validate({
+        "name": "owners_review", "title": "Owner's review",
+        "input_fields": [{"name": "topic", "label": "Topic", "required": True}],
+        "steps": [
+            {"kind": "specialist", "id": "research", "title": "Research",
+             "specialist": "cso", "goal": "Analyze {topic}."},
+            {"kind": "synthesis", "id": "assemble", "title": "Assemble"},
+        ],
+    })
+    assert dynamic_store.save_if_unchanged(defn, None, owner_person_id=roster["owner"].id)
+
+    args = {"action": "delete_workflow", "id": "owners_review"}
+    out = _run(app_control.handle_do_in_app, args, _web(roster["ben"], "s-ben"))
+    assert "created this workflow" in out["error"]
+    assert dynamic_store.get_definition("owners_review") is not None
+
+    out = _run(app_control.handle_do_in_app, args, _web(roster["owner"], "s-own"))
+    assert "error" not in out

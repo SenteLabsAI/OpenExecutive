@@ -352,10 +352,39 @@ def _keeps_approvals(name: str, request: Request) -> bool:
     return kept_on_edit_by(name, editor)
 
 
+def _may_delete(name: str, request: Request) -> bool:
+    """Whether the caller may delete the custom workflow ``name``: the person
+    who created it, or the principal. One with no recorded creator is the
+    principal's to delete, and an install with no principal yet is never
+    locked out (``chat._caller_is_principal_or_unclaimed``). Workflows stay
+    shared for editing and running; one teammate doesn't remove another's.
+    Fails closed."""
+    from openexecutive.api.routes.chat import (
+        _caller_is_principal_or_unclaimed,
+        _resolve_caller_person_id,
+    )
+
+    if _caller_is_principal_or_unclaimed(request):
+        return True
+    try:
+        caller = _resolve_caller_person_id(request)
+        owner = get_owner(name)
+    except Exception:
+        logger.exception("workflows: caller or creator lookup failed, delete refused")
+        return False
+    return caller is not None and owner is not None and caller == owner
+
+
 @router.get("/workflows/custom")
-async def list_custom_workflows() -> dict[str, Any]:
-    """All dynamic definitions (active and inactive) for the builder UI."""
-    return {"definitions": [_with_owner(d) for d in list_definitions(active_only=False)]}
+async def list_custom_workflows(request: Request) -> dict[str, Any]:
+    """All dynamic definitions (active and inactive) for the builder UI, each
+    with ``can_delete`` for this caller (``_may_delete``)."""
+    return {
+        "definitions": [
+            {**_with_owner(d), "can_delete": _may_delete(d.name, request)}
+            for d in list_definitions(active_only=False)
+        ]
+    }
 
 
 @router.post("/workflows/custom", status_code=201)
@@ -417,9 +446,16 @@ async def update_custom_workflow(name: str, request: Request) -> dict[str, Any]:
 
 
 @router.delete("/workflows/custom/{name}")
-async def delete_custom_workflow(name: str) -> dict[str, str]:
+async def delete_custom_workflow(name: str, request: Request) -> dict[str, str]:
     from openexecutive.workflows.dynamic_cadence import cancel_cadence_rows
 
+    if get_definition(name) is None:
+        raise HTTPException(status_code=404, detail=f"Custom workflow {name!r} not found")
+    if not _may_delete(name, request):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the person who created this workflow or the principal can delete it.",
+        )
     cancel_cadence_rows(name)
     if not delete_definition(name):
         raise HTTPException(status_code=404, detail=f"Custom workflow {name!r} not found")
