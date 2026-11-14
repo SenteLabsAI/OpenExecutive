@@ -90,10 +90,34 @@ def one_line(text: object, cap: int) -> str:
     return " ".join(str(text or "").split())[:cap].strip()
 
 
+def _drop(handover: Handover) -> None:
+    """Forget a hand-over that was left over: a turn still waiting on it is
+    told to stop now rather than sitting out its wait, since its bar can no
+    longer be answered."""
+    _open.pop(handover.id, None)
+    future = handover.future
+    if future is None or future.done():
+        return
+
+    def _stop() -> None:
+        if not future.done():
+            future.set_result("stop")
+
+    loop = handover.loop
+    try:
+        here = asyncio.get_running_loop()
+    except RuntimeError:
+        here = None
+    if loop is None or loop is here:
+        _stop()
+    elif not loop.is_closed():
+        loop.call_soon_threadsafe(_stop)
+
+
 def _prune(now: float | None = None) -> None:
     now = time.monotonic() if now is None else now
-    for key in [k for k, h in _open.items() if now - h.created >= TTL_S]:
-        _open.pop(key, None)
+    for h in [h for h in _open.values() if now - h.created >= TTL_S]:
+        _drop(h)
 
 
 def start(person_id: int, need: str, *, card_id: int | None = None, workflow_key: str = "") -> Handover:
@@ -101,7 +125,7 @@ def start(person_id: int, need: str, *, card_id: int | None = None, workflow_key
     _prune()
     mine = sorted((h for h in _open.values() if h.person_id == person_id), key=lambda h: h.created)
     for old in mine[: max(0, len(mine) - MAX_PER_PERSON + 1)]:
-        _open.pop(old.id, None)
+        _drop(old)
     try:
         loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
     except RuntimeError:

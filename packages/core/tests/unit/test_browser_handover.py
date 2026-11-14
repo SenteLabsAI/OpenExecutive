@@ -172,6 +172,16 @@ def test_a_person_keeps_only_a_few_open() -> None:
     assert len([h for h in browser_handover._open.values() if h.person_id == 7]) == browser_handover.MAX_PER_PERSON
 
 
+async def test_a_turn_waiting_on_a_left_over_hand_over_stops_at_once() -> None:
+    oldest = browser_handover.start(7, "sign in")
+    waiting = asyncio.ensure_future(browser_handover.wait(oldest, timeout=30))
+    await asyncio.sleep(0)
+    for i in range(browser_handover.MAX_PER_PERSON):
+        browser_handover.start(7, f"step {i}")
+    assert browser_handover.get(oldest.id) is None
+    assert await asyncio.wait_for(waiting, 1) == "stop"
+
+
 async def test_not_connected_says_so_and_makes_no_card(alerts_db: Path, chat_turn: None) -> None:
     out = json.loads(await browser_tools._handler("browser_hand_over")({"need": "sign in"}))
     assert "isn't connected" in out["error"]
