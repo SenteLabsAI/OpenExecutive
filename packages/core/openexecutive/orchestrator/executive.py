@@ -1427,10 +1427,6 @@ class Executive:
             user_content_parts.append(
                 {"type": "text", "text": f"<drive_memory>\n{drive_memory}\n</drive_memory>"}
             )
-        # The follow-ups this speaker scheduled that haven't gone out
-        # (correction_tools.pending_followups_block), so a turn about the
-        # thing one waits for closes it instead of leaving it to fire stale.
-        # Changes as they are set and sent, so the user turn.
         # The speaker's own chats from the last two days, titles only
         # (chat_search_tools.recent_chats_block), so "we did it earlier"
         # reaches search_past_chats. Only where that tool is offered; per
@@ -1440,6 +1436,10 @@ class Executive:
             user_content_parts.append(
                 {"type": "text", "text": f"<recent_chats>\n{recent_chats}\n</recent_chats>"}
             )
+        # The follow-ups this speaker scheduled that haven't gone out
+        # (correction_tools.pending_followups_block), so a turn about the
+        # thing one waits for closes it instead of leaving it to fire stale.
+        # Changes as they are set and sent, so the user turn.
         followups = pending_followups_block(session)
         if followups:
             user_content_parts.append(

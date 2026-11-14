@@ -522,7 +522,7 @@ def recent_own_chats(
             SELECT s.title, s.updated_at, COALESCE(s.mail_private, 0) AS mail_private
             FROM sessions s
             WHERE s.caller_person_id = ? AND s.session_id != ?
-              AND s.updated_at >= ?
+              AND datetime(s.updated_at) >= datetime(?)
               AND EXISTS (SELECT 1 FROM chat_messages m WHERE m.session_id = s.session_id)
             ORDER BY s.updated_at DESC
             LIMIT ?

@@ -364,3 +364,11 @@ def test_the_user_turn_carries_recent_chats(db: Path, roster: SimpleNamespace) -
     messages = Executive.__new__(Executive)._build_messages(session, "check it again")
     texts = [p["text"] for p in messages[-1]["content"] if p.get("type") == "text"]
     assert any(t.startswith("<recent_chats>") and "Play Store review" in t for t in texts)
+
+
+def test_recent_chats_compares_times_not_strings(db: Path, roster: SimpleNamespace) -> None:
+    # A chat-app row stores a naive time with no offset.
+    _dated_chat(db, "naive", roster.principal, "Slack chat", "2026-10-12T20:00:00.500000")
+    _dated_chat(db, "older", roster.principal, "Too old", "2026-10-12T19:59:59.900000")
+    block = cs.recent_chats_block(_web(roster.principal), now=_NOW)
+    assert "Slack chat" in block and "Too old" not in block
